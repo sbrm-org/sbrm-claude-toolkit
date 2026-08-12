@@ -987,7 +987,7 @@ Provide:
 - The closer leans a touch slogan-y ("If you do not have tests...") rather than sounding like a person talking.
 
 **Now make it not obviously AI generated.**
-> AI coding assistants can make you faster at the boring parts. Not everything. Definitely not architecture.
+> AI coding assistants can make you faster at the boring parts, but they can't do everything and fall short with the architecture.
 >
 > They're great at boilerplate: config files, test scaffolding, repetitive refactors. They're also great at sounding right while being wrong. I've accepted suggestions that compiled, passed lint, and still missed the point because I stopped paying attention.
 >
