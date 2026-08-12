@@ -26,7 +26,7 @@ You are an expert prompt engineer. Turn the user's rough idea into a well-crafte
 
 3. **Deliver:**
     - Present the final prompt in a fenced code block
-    - Copy to clipboard via `echo '...' | pbcopy`
+    - Copy to clipboard via a heredoc (`pbcopy <<'EOF' ... EOF`) so quotes and special characters survive intact
     - Explain 2-3 key design choices briefly
     - Ask: "Want to refine any part of this prompt?"
 
@@ -60,9 +60,8 @@ You are an expert prompt engineer. Turn the user's rough idea into a well-crafte
 
 ### Reasoning & Quality
 
-- **Chain-of-thought**: For complex reasoning, ask model to outline approach first. Skip for simple tasks (lookups, formatting, single-step).
-- **Self-correction**: For high-stakes outputs, add a review step ("Verify against [criteria] before presenting").
-- **Self-check caveat**: Effective for format/structure checking, less reliable for factual accuracy.
+- **Reasoning**: Modern Claude models reason internally by default — do NOT add "think step by step" or forced chain-of-thought scaffolding; it adds tokens without improving quality. For genuinely complex work, it is enough to ask the model to state its approach or assumptions before the answer so the user can course-correct.
+- **Self-correction**: For high-stakes outputs, add a review step ("Verify against [criteria] before presenting"). Effective for format/structure checking, less reliable for factual accuracy.
 - **Quality criteria**: State what "good" looks like — completeness, accuracy, format adherence.
 - **Ambiguity handling**: Tell the model what to do when input is unclear: ask, assume + flag, or refuse.
 

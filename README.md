@@ -30,11 +30,10 @@ A Claude Code plugin for Santa Barbara Rescue Mission staff. It bundles the skil
 | Command | What it does |
 |---|---|
 | /prompt | Turns a rough idea into a well-crafted prompt |
-| /research | Structured research with sources and practical implications |
 | /interview | Extracts specifics, stories, and numbers through targeted questions before drafting |
 | /analyze | Structured analysis document |
 | /report | Structured report document |
-| /sheet | Builds a spreadsheet deliverable |
+| /sheet | Builds a spreadsheet deliverable (uses the xlsx skill when available, falls back to Python/CSV) |
 | /policy | Drafts an organizational policy |
 | /write | Multi-angle drafting: three materially different drafts, then synthesis |
 | /new-slash-command | Creates a new Claude Code slash command |
