@@ -1,0 +1,13 @@
+{
+  "name": "sbrm-claude-toolkit",
+  "owner": {
+    "name": "Tim Molloy"
+  },
+  "plugins": [
+    {
+      "name": "sbrm-toolkit",
+      "source": "./",
+      "description": "SBRM staff toolkit for Claude Code: writing, analysis, web research, nonprofit operations coaching, and quality-discipline skills and commands."
+    }
+  ]
+}
