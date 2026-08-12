@@ -48,10 +48,10 @@ Success criteria: [how the user knows this is done right]
 ### Phase 2: Execute
 
 1. Load the hr-policy protocol template
-3. If topic involves compliance/regulatory claims: research first (web search for authoritative sources)
-4. Generate policy following all 12 required sections from the protocol
-5. Include version block at top
-6. Match the user's voice and register
+2. If topic involves compliance/regulatory claims: research first (web search for authoritative sources)
+3. Generate policy following all 12 required sections from the protocol
+4. Include version block at top
+5. Match the user's voice and register
 
 ### Phase 3: Review
 
