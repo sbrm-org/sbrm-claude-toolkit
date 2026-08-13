@@ -20,7 +20,7 @@ A Claude Code plugin for Santa Barbara Rescue Mission staff. It bundles the skil
 | nonprofit-ops-coach | Evidence-based operations guidance for anyone on the operations team in a nonprofit shelter + residential treatment context ($5M budget, ~200 daily census): board briefs, cash forecasts, rubrics, policies |
 | markdown-linter | Validates and auto-fixes markdown formatting (spacing, tables, headings, syntax); includes runnable scripts |
 | coding-protocols | Coding discipline: red-green TDD, plan-before-code, root-cause debugging, no placeholders, verify before claiming done |
-| anthropic-docs | Navigates Anthropic's official docs efficiently (Claude API + Claude Code) via the llms.txt indexes |
+| anthropic-docs | Finds the right page in Anthropic's official documentation: plans, seats, billing, usage limits, Projects, org administration and SSO (Help Center), data training and retention (Privacy Center), legal/status/pricing, plus the Claude API and Claude Code developer docs |
 | non-coding-protocols | 4-phase workflow (Scope, Execute, Review, Deliver) for substantial non-coding tasks, with planning briefs and self-review |
 | sbrm-notion | Map and conventions for the SBRM Notion workspace: what lives in each database, naming/status conventions, and safe-editing rules for the Notion connector |
 | web-research | Layered web search and fetching beyond the built-in tools: Tavily API (paid, if key set) plus free fallbacks (DuckDuckGo search, Jina Reader fetch) |
@@ -56,7 +56,7 @@ Skills load automatically when relevant; commands are available as `/prompt`, `/
 
 ## Using skills on claude.ai (no Claude Code needed)
 
-The `claude-ai-zips/` folder contains upload-ready zips of the skills most useful in plain claude.ai chat: `humanizer`, `nonprofit-ops-coach`, `non-coding-protocols`, and `sbrm-notion`.
+The `claude-ai-zips/` folder contains upload-ready zips of the skills most useful in plain claude.ai chat: `humanizer`, `nonprofit-ops-coach`, `non-coding-protocols`, `sbrm-notion`, and `anthropic-docs`.
 
 To install one: on claude.ai go to **Settings > Capabilities > Skills** and upload the zip. The skill then activates automatically in your chats when relevant.
 
