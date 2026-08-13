@@ -23,6 +23,7 @@ A Claude Code plugin for Santa Barbara Rescue Mission staff. It bundles the skil
 | anthropic-docs | Finds the right page in Anthropic's official documentation: plans, seats, billing, usage limits, Projects, org administration and SSO (Help Center), data training and retention (Privacy Center), legal/status/pricing, plus the Claude API and Claude Code developer docs |
 | non-coding-protocols | 4-phase workflow (Scope, Execute, Review, Deliver) for substantial non-coding tasks, with planning briefs and self-review |
 | sbrm-notion | Map and conventions for the SBRM Notion workspace: what lives in each database, naming/status conventions, and safe-editing rules for the Notion connector |
+| documenso | Using SBRM's self-hosted e-signature service at sign.sbrmapps.com: getting access, creating your own API key, and driving documents through the API (upload a PDF, place fields, send for signing, download the signed file and certificate) |
 | web-research | Layered web search and fetching beyond the built-in tools: Tavily API (paid, if key set) plus free fallbacks (DuckDuckGo search, Jina Reader fetch) |
 
 ### Commands
