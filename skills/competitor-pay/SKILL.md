@@ -68,7 +68,7 @@ echo "Preflight complete. Every later block must re-derive CP_DIR and CP_DB on i
 
 **6. Microsoft 365 access.** Two ways in. Which one you have depends on the machine, and **the CLI wrapper is the preferred path where it exists**:
 
-- **`ms365` CLI wrapper (preferred).** An on-demand wrapper over the same Graph API, at `~/.local/bin/ms365`. Check with `command -v ms365`. Verify auth with `ms365 verify-login`; on failure run `ms365 login`, which prints a device code the user enters at `https://login.microsoft.com/device`. Flags are kebab-case (`--site-id`, not `--siteId`). Pass `--account sbrmappadmin@sbrm.org` on every SharePoint call. That is the account holding the list permissions. Subcommand syntax, JSON parsing and the auth-failure runbook live in the `mcp2cli` skill; load it before the first call.
+- **`ms365` CLI wrapper (preferred).** An on-demand wrapper over the same Graph API, at `~/.local/bin/ms365`. Check with `command -v ms365`. Verify auth with `ms365 verify-login`; on failure run `ms365 login`, which prints a device code the user enters at `https://login.microsoft.com/device`. **Argument spellings are not uniform across subcommands, and getting one wrong fails at argument parsing before Graph is ever called.** Prefer the `--stdin` form below, which sidesteps the problem entirely. Subcommand syntax, JSON parsing and the auth-failure runbook live in the `mcp2cli` skill; load it before the first call.
 - **MCP server (fallback).** `@softeria/ms-365-mcp-server` under `mcpServers` in settings, exposing `mcp__ms365__*` tools. Verify with `mcp__ms365__verify-login`. Only relevant on a machine without the wrapper.
 
 **Do not re-add the MCP server on a machine that has the wrapper.** The resident servers were removed deliberately to reclaim ~2 GB of idle RAM; re-adding one defeats that.
@@ -80,10 +80,23 @@ Every Graph call below is written in **CLI form**. The MCP equivalent is the sam
 ```bash
 CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
 SITE=$(python3 "$CP_DIR/scripts/sharepoint_target.py" site_id)
-ms365 get-sharepoint-site --site-id "$SITE" --account sbrmappadmin@sbrm.org
+echo "{\"siteId\": \"$SITE\"}" | ms365 get-sharepoint-site --stdin
 ```
 
-**Parameter naming trips people up.** `config.json` stores snake_case `site_id` / `list_id`; the CLI takes kebab-case `--site-id` / `--list-id`; the MCP tools take camelCase `siteId` / `listId`. Same values, three spellings, and the wrong one fails schema validation.
+**Pass every argument on stdin. This is the reliable form, verified against the live list 2026-08-21.**
+
+```bash
+echo '{"siteId": "...", "listId": "...", "listItemId": "42", "body": {"fields": {...}}}' \
+  | ms365 <subcommand> --stdin
+```
+
+`--stdin` supplies *all* arguments, so any `--site-id` / `--list-id` flags alongside it are ignored, and stdin keys use the MCP tools' **camelCase** names (`siteId`, `listId`, `listItemId`, `columnDefinitionId`).
+
+Flag-based calls are a trap. Spellings differ per subcommand (`--list-item-id` on items, `--column-definition-id` on columns) and several subcommands reject `--account` outright, which makes argparse fail the whole call. That failure looks like a crash, not a bad write, so it is safe but it will stop a run dead. **Do not pass `--account` to the column or item subcommands.** Confirm the default account instead:
+
+```bash
+ms365 list-accounts    # sbrmappadmin@sbrm.org must be isDefault
+```
 
 **Always resolve the IDs through `scripts/sharepoint_target.py`, never by reading `config.json` directly.** This repository is public, so the committed `config.json` carries `REPLACE_ME` placeholders. The real values live in `$COMPETITOR_PAY_HOME/config.local.json` (default `~/.competitor-pay/`), which sits outside the skill directory and is therefore never committed and never lost to a plugin update. Resolution order is CLI flag, then `CP_SITE_ID` / `CP_LIST_ID`, then that local file, then `config.json`. A missing ID fails with instructions rather than sending `REPLACE_ME` to Graph.
 
@@ -95,11 +108,13 @@ ms365 get-sharepoint-site --site-id "$SITE" --account sbrmappadmin@sbrm.org
 CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
 SITE=$(python3 "$CP_DIR/scripts/sharepoint_target.py" site_id)
 LIST=$(python3 "$CP_DIR/scripts/sharepoint_target.py" list_id)
-ms365 list-sharepoint-list-columns --site-id "$SITE" --list-id "$LIST" \
-  --account sbrmappadmin@sbrm.org --fetch-all-pages
+echo "{\"siteId\": \"$SITE\", \"listId\": \"$LIST\"}" \
+  | ms365 list-sharepoint-list-columns --stdin
 ```
 
-Check for `PayUnit` and `Credential`, and confirm `SBRM Equivalent` is still **multi**-select with `allowTextEntry` off. If `PayUnit` or `Credential` is missing, **treat it as a NOTICE, carry `can_push=NO` for the rest of the run, and skip Phase 6b**, because the push spec below makes `PayUnit` mandatory and every write would error. Collection and reporting still work.
+Check for `PayUnit` and `Credential`, and confirm `SBRM Equivalent` is still **multi**-select with `allowTextEntry` off.
+
+**Graph does not report a `multipleValues` flag on choice columns.** Read `choice.displayAs` instead: `checkBoxes` means multi-select, `dropDownMenu` means single. Looking for a flag that is never present makes every multi-select column read as single, which would argue for scalar writes and silently destroy the second label on the rows that carry two. If `PayUnit` or `Credential` is missing, **treat it as a NOTICE, carry `can_push=NO` for the rest of the run, and skip Phase 6b**, because the push spec below makes `PayUnit` mandatory and every write would error. Collection and reporting still work.
 
 Report which boards are available before starting, so the user knows up front what coverage this run will have.
 ## File locations
@@ -199,8 +214,7 @@ So: read the `Title`, the `Organization`, the description snippet, and the posti
    SITE=$(python3 "$CP_DIR/scripts/sharepoint_target.py" site_id)
    LIST=$(python3 "$CP_DIR/scripts/sharepoint_target.py" list_id)
    ms365 list-sharepoint-site-list-items --site-id "$SITE" --list-id "$LIST" \
-       --expand '["fields"]' --fetch-all-pages --top 100 \
-       --account sbrmappadmin@sbrm.org > "$CP_DATA/data/items.json"
+       --expand '["fields"]' --fetch-all-pages --top 100 > "$CP_DATA/data/items.json"
    python3 "$CP_DIR/scripts/seed_from_sharepoint.py" --db "$CP_DB" \
        --from-file "$CP_DATA/data/items.json"
    ```
@@ -281,9 +295,9 @@ Write with `ms365 create-sharepoint-list-item`. The fields go **inside** `body.f
 CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
 SITE=$(python3 "$CP_DIR/scripts/sharepoint_target.py" site_id)
 LIST=$(python3 "$CP_DIR/scripts/sharepoint_target.py" list_id)
-ms365 create-sharepoint-list-item --site-id "$SITE" --list-id "$LIST" \
-  --account sbrmappadmin@sbrm.org --stdin <<'JSON'
-{"body": {"fields": { ... the field map below ... }}}
+ms365 create-sharepoint-list-item --stdin <<JSON
+{"siteId": "$SITE", "listId": "$LIST",
+ "body": {"fields": { ... the field map below ... }}}
 JSON
 ```
 

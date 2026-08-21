@@ -73,7 +73,16 @@ Use the `ms365` CLI wrapper. Load the `mcp2cli` skill first for the subcommand s
 ms365 verify-login
 ```
 
-If that fails, run `ms365 login`. It prints a device code; have the user open `https://login.microsoft.com/device`, enter the code, and sign in with the SBRM account that has access to the HR site. Then re-run `ms365 verify-login` to confirm.
+If that fails, the login needs care. **`ms365 login` prints a device code and then exits without polling**, so nobody collects the token and signing in achieves nothing. Use the underlying package, which stays alive and polls, and point it at the token cache the wrapper actually reads:
+
+```bash
+MS365_MCP_TOKEN_CACHE_PATH="$HOME/.ms-365-mcp-server/data/token-cache.json" \
+MS365_MCP_SELECTED_ACCOUNT_PATH="$HOME/.ms-365-mcp-server/data/selected-account.json" \
+NODE_OPTIONS="--dns-result-order=ipv4first" \
+npx -y @softeria/ms-365-mcp-server --login
+```
+
+Leave it running while the user enters the code at `https://login.microsoft.com/device`. Without those two env vars the token lands in the package's own default location and `ms365` will keep reporting a failed login even though the sign-in succeeded. `NODE_OPTIONS` works around an undici IPv6 failure that surfaces as `network_error: fetch failed`. Confirm with `ms365 verify-login`.
 
 **Do not re-add the `@softeria/ms-365-mcp-server` MCP server on a machine that has the wrapper.** The resident MCP servers were removed deliberately to reclaim idle RAM. Only fall back to the MCP server on a machine where the wrapper genuinely is not installed.
 
@@ -83,10 +92,10 @@ Verify the site resolves, then confirm the list itself returns roughly 202 items
 SKILL_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
 SITE=$(python3 "$SKILL_DIR/scripts/sharepoint_target.py" site_id)
 LIST=$(python3 "$SKILL_DIR/scripts/sharepoint_target.py" list_id)
-ms365 get-sharepoint-site --site-id "$SITE" --account sbrmappadmin@sbrm.org
+echo "{\"siteId\": \"$SITE\"}" | ms365 get-sharepoint-site --stdin
 ms365 list-sharepoint-site-list-items --site-id "$SITE" --list-id "$LIST" \
     --expand '["fields"]' --fetch-all-pages --top 100 \
-    --account sbrmappadmin@sbrm.org | python3 -c "import json,sys;print(len(json.load(sys.stdin).get('value',[])),'items')"
+    | python3 -c "import json,sys;print(len(json.load(sys.stdin).get('value',[])),'items')"
 ```
 
 The CLI takes kebab-case `--site-id` / `--list-id`; `config.json` stores the same values under snake_case; the MCP tools want camelCase. Using the wrong spelling fails schema validation.
@@ -130,8 +139,8 @@ Two independent gates, and sync requires **both**:
    SKILL_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
    SITE=$(python3 "$SKILL_DIR/scripts/sharepoint_target.py" site_id)
    LIST=$(python3 "$SKILL_DIR/scripts/sharepoint_target.py" list_id)
-   ms365 list-sharepoint-list-columns --site-id "$SITE" --list-id "$LIST" \
-       --account sbrmappadmin@sbrm.org --fetch-all-pages
+   echo "{\"siteId\": \"$SITE\", \"listId\": \"$LIST\"}" \
+       | ms365 list-sharepoint-list-columns --stdin
    ```
 
    Every write makes `PayUnit` mandatory, so until it exists each write errors.

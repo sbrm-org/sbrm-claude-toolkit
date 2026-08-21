@@ -84,6 +84,23 @@ def ms365(*args):
     loudly instead of treating an error payload as data.
     """
     proc = subprocess.run(["ms365", *args], capture_output=True, text=True)
+
+    # Not every subcommand accepts --account; the column tools reject it and
+    # argparse fails the whole call. The wrapper's default account is asserted
+    # by assert_default_account() at startup, so dropping the flag targets the
+    # same identity rather than silently switching users.
+    if proc.returncode != 0 and "unrecognized arguments: --account" in proc.stderr:
+        trimmed, skip = [], False
+        for a in args:
+            if skip:
+                skip = False
+                continue
+            if a == "--account":
+                skip = True
+                continue
+            trimmed.append(a)
+        proc = subprocess.run(["ms365", *trimmed], capture_output=True, text=True)
+
     if proc.returncode != 0:
         _fail(f"ms365 {args[0]} exited {proc.returncode}: {proc.stderr[-400:]}")
     try:
@@ -96,9 +113,27 @@ def ms365(*args):
     return data
 
 
+def assert_default_account(expected):
+    """Refuse to run if the wrapper's default account is not the expected one.
+
+    Some subcommands reject --account, so those calls run as whatever the
+    wrapper defaults to. Writing 202 rows to HR's list as the wrong identity is
+    not something to discover afterwards.
+    """
+    data = ms365("list-accounts")
+    accounts = data.get("accounts", []) if isinstance(data, dict) else []
+    default = next((a.get("email") for a in accounts if a.get("isDefault")), None)
+    if default != expected:
+        _fail(f"default ms365 account is {default!r}, expected {expected!r}. "
+              f"Some subcommands ignore --account and would run as {default!r}. "
+              f"Fix with: ms365 select-account")
+    return default
+
+
 # --- stage 1: snapshot ---------------------------------------------------
 
 def cmd_snapshot(args):
+    print(f"Acting as: {assert_default_account(args.account)}")
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -135,6 +170,28 @@ def _choice_values(column):
     return choice.get("choices") or []
 
 
+def _is_multi_select(column):
+    """Whether a choice column accepts more than one value.
+
+    Graph's columnDefinition does NOT expose a `multipleValues` flag for choice
+    columns, so an earlier version of this check looked for one, never found it,
+    and reported every multi-select column as single-select. On this list that
+    was a false alarm that would have argued for scalar writes and silently
+    destroyed the second label on 16 rows.
+
+    SharePoint renders a multi-choice column as check boxes and a single-choice
+    one as a dropdown, so `displayAs` is the signal actually present in the
+    payload. `Location` on this list is the control: checkBoxes, and its live
+    data is arrays.
+    """
+    choice = column.get("choice") or {}
+    if choice.get("displayAs") == "checkBoxes":
+        return True
+    # Fall back to whatever the payload says, for columns Graph describes
+    # differently, rather than assuming single.
+    return bool(column.get("multipleValues") or column.get("allowMultipleValues"))
+
+
 def _report_schema(columns):
     """Check the prerequisites REMEDIATION steps 1, 5 and 6 were meant to set up."""
     cols = columns.get("value", columns if isinstance(columns, list) else [])
@@ -158,13 +215,14 @@ def _report_schema(columns):
         print(f"  MISSING: {FIELD_LABELS} column not found.")
         return
     choices = _choice_values(labels)
-    allow_text = (labels.get("choice") or {}).get("allowTextEntry")
-    multi = bool(labels.get("multipleValues") or labels.get("allowMultipleValues"))
+    choice_block = labels.get("choice") or {}
+    allow_text = choice_block.get("allowTextEntry")
+    multi = _is_multi_select(labels)
     print(f"  {FIELD_LABELS}: multi={multi} allowTextEntry={allow_text} "
           f"({len(choices)} choices)")
     if not multi:
-        print("  WARNING: column is NOT multi-select. 16 rows carry two labels "
-              "and a single-select write would discard one.")
+        print("  WARNING: column does not look multi-select. 16 rows carry two "
+              "labels and a single-select write would discard one.")
     if allow_text:
         print("  NOTE: allowTextEntry is still on (REMEDIATION step 6 not applied).")
 
@@ -371,13 +429,36 @@ def _patch_body(changes):
     return {"body": {"fields": fields}}
 
 
+def _stdin_call(tool, payload):
+    """Invoke a tool with every argument on stdin.
+
+    Flag spellings differ per tool (`--list-item-id` here,
+    `--column-definition-id` there) and several reject `--account` outright, so
+    a flag-based call fails at argument parsing rather than reaching Graph. The
+    stdin form takes the MCP tool's own camelCase parameter names and works
+    uniformly. Argument-parse failures are indistinguishable from "no write
+    happened", which is safe but silent, so this raises instead.
+    """
+    proc = subprocess.run(["ms365", tool, "--stdin"],
+                          input=json.dumps(payload), capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{tool} exit {proc.returncode}: {proc.stderr[-300:]}")
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"{tool} non-JSON: {proc.stdout[:200]}")
+    if isinstance(data, dict) and "error" in data:
+        raise RuntimeError(str(data["error"])[:300])
+    return data
+
+
 def _read_back(args, item_id):
-    item = ms365(
-        "get-sharepoint-site-list-item",
-        "--site-id", args.site_id, "--list-id", args.list_id,
-        "--item-id", str(item_id), "--expand", '["fields"]',
-        "--account", args.account,
-    )
+    item = _stdin_call("get-sharepoint-site-list-item", {
+        "siteId": args.site_id,
+        "listId": args.list_id,
+        "listItemId": str(item_id),
+        "expand": ["fields"],
+    })
     return _fields(item)
 
 
@@ -453,22 +534,13 @@ def cmd_apply(args):
 
 
 def _do_patch(args, item_id, changes):
-    body = json.dumps(_patch_body(changes))
-    proc = subprocess.run(
-        ["ms365", "update-sharepoint-list-item",
-         "--site-id", args.site_id, "--list-id", args.list_id,
-         "--item-id", str(item_id), "--account", args.account, "--stdin"],
-        input=body, capture_output=True, text=True,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"exit {proc.returncode}: {proc.stderr[-300:]}")
-    try:
-        data = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        raise RuntimeError(f"non-JSON: {proc.stdout[:200]}")
-    if isinstance(data, dict) and "error" in data:
-        raise RuntimeError(str(data["error"]))
-    return data
+    payload = {
+        "siteId": args.site_id,
+        "listId": args.list_id,
+        "listItemId": str(item_id),
+        **_patch_body(changes),
+    }
+    return _stdin_call("update-sharepoint-list-item", payload)
 
 
 def main():
