@@ -247,9 +247,21 @@ The orgs worth checking are the ones already in the list. The top recurring empl
 
 For each org, search its careers page for the tracked roles and extract postings with pay, using `web-research`'s search and fetch scripts.
 
-**This phase is specified but not yet implemented.** There is no `search_org_website.py` in `scripts/`, and no existing script accepts a `--board` argument. Preflight reports `org_website=NO` when the script is absent; carry that as a decision and skip this phase, naming it in the final report. Writing it is a P0 item in `BUGS.md`, alongside the seeder.
+`scripts/search_org_website.py` parses and stores; it does no fetching of its own. You do the searching with `web-research` and pipe what you found into it, exactly like the board scrapers. It accepts either JSON or the same `**Field:**` block format, and tolerates the label variations career pages actually use (`Compensation`, `Pay range`, `Position`, `View job URL`).
 
-When it is written, the source key is `org_website` (underscore), matching `config.json` and the `--boards` flag.
+The full target-org list and the `market_reference_keywords` that surface director-level and development roles live in `config.json` under `boards.org_website`. Sweep each org for the tracked roles **and** those keywords. The source key is `org_website` (underscore), matching `config.json` and the `--boards` flag.
+
+```bash
+CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+CP_DB="${COMPETITOR_PAY_HOME:-$HOME/.competitor-pay}/data/comp_research.db"
+echo '{"results": [{"title": "...", "employer": "...", "salary": "...", "location": "...", "url": "..."}]}' \
+  | python3 "$CP_DIR/scripts/search_org_website.py" --store --org "<org name>" \
+      --role-id <N> --run-id <N> --db "$CP_DB"
+```
+
+`--org` is what lands in `search_log`, so `--resume` skips orgs already swept. Use `--parse-only` to see what a payload parses to before storing it.
+
+**A market-reference posting still needs a `--role-id`**, because the flag is required even though the column is nullable. Pass the role whose sweep surfaced it. That value only records provenance; the row's `SBRM Equivalent` is decided at push time in Phase 6b, and for these rows it is `Market Reference - No SBRM Equivalent`.
 
 Rate limit: 3 seconds between fetches. Respect `robots.txt`.
 ### Phase 3: LinkedIn
