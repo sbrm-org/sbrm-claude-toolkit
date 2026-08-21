@@ -1,7 +1,7 @@
 {
   "name": "sbrm-toolkit",
   "description": "SBRM staff toolkit for Claude Code: writing, analysis, web research, nonprofit operations coaching, and quality-discipline skills and commands.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": {
     "name": "Tim Molloy"
   }
