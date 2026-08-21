@@ -12,16 +12,27 @@ updated: 2026-08-21
 Walk the user through setting up the competitor-pay skill. Assume zero technical knowledge, go one step at a time, and wait for confirmation before moving on.
 ## Steps
 ### 1. Check dependencies
+**These are not equally important, and treating them as one list is how a working machine gets reported as broken.** Only the first two block anything.
+
 ```bash
-which python3         # Python 3.10+
-which node            # Node.js
-which uv              # Python package runner
-which claude          # Claude Code CLI
-which playwright-cli  # Browser automation (needed for LinkedIn, ZipRecruiter, Glassdoor)
-command -v ms365      # Microsoft 365 CLI wrapper
+python3 --version     # REQUIRED. macOS ships 3.9.6 with the Xcode Command Line Tools, which is enough.
+node --version        # REQUIRED. v18 or newer, and only so npx can run the Microsoft 365 server.
+git --version         # REQUIRED, to install this plugin. Also from the Command Line Tools.
+command -v ms365      # Branch only. Absent is normal and fine; see step 4.
+which playwright-cli  # OPTIONAL. LinkedIn, ZipRecruiter and Glassdoor only.
 ```
 
-For anything missing, explain what it is in plain language and give the install command. `single-file` is NOT needed; archiving is disabled.
+`uv`, `pip`, Homebrew and `single-file` are **not** needed. No script here imports a third-party Python package, so the system `python3` runs everything as shipped, and archiving is disabled.
+
+**On a managed or locked-down Mac, do not hand the user install commands.** They cannot run them, and a stream of Homebrew instructions reads as "this tool does not work here" when the truth is that two things are missing. Instead, tell them exactly this much to pass to whoever administers the machine:
+
+- **Xcode Command Line Tools** (Apple, free, `xcode-select --install`), which provides `git` and `python3`.
+- **Node.js LTS** from the official installer at nodejs.org, which provides `node`, `npm` and `npx`.
+- Allow `npx` to fetch from `registry.npmjs.org`, and allow `login.microsoftonline.com` and `graph.microsoft.com`.
+
+Then stop and wait. Setup cannot continue past a missing `node`, and there is no workaround worth attempting.
+
+If only `playwright-cli` is missing, **carry on**. Say which three boards will be skipped and move to step 2.
 ### 2. Create the data directory and initialize the database
 The database must live **outside** the skill directory. When the skill is installed as a plugin, that directory is replaced wholesale on every update, and the database holds `sharepoint_item_id`, the only thing preventing duplicate rows being pushed to SharePoint.
 
