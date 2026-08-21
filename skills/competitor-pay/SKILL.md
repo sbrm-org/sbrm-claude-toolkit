@@ -219,6 +219,8 @@ So: read the `Title`, the `Organization`, the description snippet, and the posti
        --from-file "$CP_DATA/data/items.json"
    ```
 
+   **On a machine running the MCP server instead of the wrapper, `--from-file` is the only path.** The script shells out to `ms365`, so its self-fetching mode dies with `command not found`. That is not a reason to carry `can_push=NO`: call `mcp__ms365__list-sharepoint-site-list-items` yourself, write the payload to `$CP_DATA/data/items.json`, and pass it in. The script accepts the Graph response as-is, either `{"value": [...]}` or a bare array.
+
    Report the seed count: `Seeded N existing SharePoint items; M matched to local postings.`
 
    **If the seed returns zero items, stop the run.** Either auth or the list ID is wrong, and pushing on top of that would duplicate the entire list. As of 2026-08-14 the list holds 202 items, so a healthy seed reports at least that many.

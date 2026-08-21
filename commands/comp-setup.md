@@ -84,7 +84,13 @@ npx -y @softeria/ms-365-mcp-server --login
 
 Leave it running while the user enters the code at `https://login.microsoft.com/device`. Without those two env vars the token lands in the package's own default location and `ms365` will keep reporting a failed login even though the sign-in succeeded. `NODE_OPTIONS` works around an undici IPv6 failure that surfaces as `network_error: fetch failed`. Confirm with `ms365 verify-login`.
 
-**Do not re-add the `@softeria/ms-365-mcp-server` MCP server on a machine that has the wrapper.** The resident MCP servers were removed deliberately to reclaim idle RAM. Only fall back to the MCP server on a machine where the wrapper genuinely is not installed.
+**Do not re-add the `@softeria/ms-365-mcp-server` MCP server on a machine that has the wrapper.** The resident MCP servers were removed deliberately to reclaim idle RAM. Only fall back to the MCP server on a machine where the wrapper genuinely is not installed. On such a machine, add it under the name `ms365` so the tools land at `mcp__ms365__*`, which is what this skill looks for, then restart the session so they load:
+
+```bash
+claude mcp add ms365 -s user -- npx -y @softeria/ms-365-mcp-server
+```
+
+Sign-in there is the server's own `login` tool, not the block above. From then on, every Graph call in the skill is the same tool name with the `mcp__ms365__` prefix and camelCase parameters, and **the SharePoint seed must go through `--from-file`** (Phase 0 step 4 of SKILL.md), because `seed_from_sharepoint.py` shells out to a command this machine does not have.
 
 Verify the site resolves, then confirm the list itself returns roughly 202 items:
 
