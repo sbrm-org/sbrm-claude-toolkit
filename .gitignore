@@ -1,2 +1,13 @@
 managed-settings-claude-code.json
 .DS_Store
+
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# competitor-pay runtime data. The database holds sharepoint_item_id, which is
+# machine-local state, not source. Committing it would push one machine's dedup
+# view onto every other install.
+skills/competitor-pay/data/
+skills/competitor-pay/logs/
