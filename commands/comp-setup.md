@@ -103,6 +103,15 @@ Leave it running while the user enters the code at `https://login.microsoft.com/
 claude mcp add ms365 -s user -- npx -y @softeria/ms-365-mcp-server
 ```
 
+**On a machine running application allowlisting (ThreatLocker, Jamf, Santa), install it globally instead and point at the fixed path.** `npx -y` re-resolves into `~/.npm/_npx/<hash>/`, a directory whose name is opaque and whose contents change with every published version, so an approval granted today stops matching on the next release. A global install gives the administrator one stable path:
+
+```bash
+npm install -g @softeria/ms-365-mcp-server
+claude mcp add ms365 -s user -- ms-365-mcp-server
+```
+
+With Node from the official installer that lands at `/usr/local/bin/ms-365-mcp-server`, linked to `/usr/local/lib/node_modules/@softeria/ms-365-mcp-server/`. Same software either way. Worth knowing when talking to an administrator: the only Mach-O binary in play is `node` itself, since `npm`, `npx` and this package are all scripts that node interprets, so approving `node` is the approval that matters.
+
 Sign-in there is the server's own `login` tool, **not** the `npx` block above, and it must not carry those environment variables: the server keeps its own token cache and the overrides would hide the token from it. Call `mcp__ms365__login`, which returns `device_code_required` with a message holding the code and the URL. Give the user both, wait while they sign in, then confirm with `mcp__ms365__verify-login`. The polling continues inside the running server, so this completes on its own, unlike the wrapper. **Do not end the session while they are signing in**, because that kills the server and the poll with it. From then on, every Graph call in the skill is the same tool name with the `mcp__ms365__` prefix and camelCase parameters, and **the SharePoint seed must go through `--from-file`** (Phase 0 step 4 of SKILL.md), because `seed_from_sharepoint.py` shells out to a command this machine does not have.
 
 Verify the site resolves, then confirm the list itself returns roughly 202 items:
