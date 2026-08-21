@@ -1,0 +1,204 @@
+{
+  "version": "0.3.0",
+  "db_name": "comp_research.db",
+  "roles_file": "roles/roles.json",
+  "rate_limits_seconds": {
+    "indeed": 2,
+    "linkedin_jina": 3,
+    "linkedin_playwright": 8,
+    "ziprecruiter": 3,
+    "glassdoor": 6,
+    "handshake": 3,
+    "org_website": 3
+  },
+  "max_results_per_keyword": 25,
+  "max_detail_pages_per_role": 10,
+  "archive_enabled": false,
+  "archive_retention_months": 6,
+  "sharepoint": {
+    "site_id": "REPLACE_ME",
+    "list_id": "REPLACE_ME",
+    "min_match_score": 0.4,
+    "push_enabled": true,
+    "url_field": "URL",
+    "notes": {
+      "multi_select_odata_type": "Collection(Edm.String) annotation required for SBRMEquivalent and Location arrays",
+      "hyperlink_workaround": "Original JobPosting hyperlink column cannot be written via Graph API. Tim created a 'URL' text column instead.",
+      "target_ids": "site_id and list_id are placeholders. This is a public repository. Put the real values in $COMPETITOR_PAY_HOME/config.local.json (default ~/.competitor-pay/) as {\"sharepoint\": {\"site_id\": \"...\", \"list_id\": \"...\"}}, or set CP_SITE_ID / CP_LIST_ID. Resolution order is CLI flag, environment, config.local.json, then this file; see scripts/sharepoint_target.py."
+    }
+  },
+  "source_map": {
+    "indeed": "Indeed",
+    "linkedin": "LinkedIn",
+    "ziprecruiter": "ZipRecruiter",
+    "glassdoor": "Glassdoor",
+    "handshake": "Handshake",
+    "org_website": "Org-Website"
+  },
+  "sector_map": {
+    "501c3": "Non-Profit",
+    "public": "Non-Profit",
+    "for-profit": "For Profit",
+    "unknown": null
+  },
+  "location_map": {
+    "Santa Barbara County": "SB County",
+    "Ventura County": "Ventura County",
+    "Other California": "Other CA",
+    "Remote": null,
+    "Out of State": null,
+    "Unknown": null
+  },
+  "boards": {
+    "indeed": {
+      "enabled": true,
+      "method": "mcp",
+      "location": "Santa Barbara, CA",
+      "country_code": "US"
+    },
+    "linkedin": {
+      "enabled": true,
+      "method": "jina+playwright",
+      "jina_search_url": "https://r.jina.ai/https://www.linkedin.com/jobs/search/?keywords={keywords}&location=Santa%20Barbara%20County",
+      "session_name": "linkedin",
+      "login_url": "https://www.linkedin.com/login",
+      "login_check_url": "https://www.linkedin.com/feed/",
+      "login_indicator": "Sign in",
+      "detail_enabled": true,
+      "notes": "Phase 2a: Jina for discovery. Phase 2b: Playwright for salary/detail. --skip-linkedin-detail disables 2b."
+    },
+    "ziprecruiter": {
+      "enabled": true,
+      "method": "playwright",
+      "session_name": "ziprecruiter",
+      "search_url": "https://www.ziprecruiter.com/jobs-search?search={keywords}&location=Santa+Barbara,+CA&radius=50",
+      "login_required": false
+    },
+    "glassdoor": {
+      "enabled": true,
+      "method": "playwright",
+      "session_name": "glassdoor",
+      "search_url": "https://www.glassdoor.com/Job/santa-barbara-{keywords}-jobs-SRCH_IL.0,13_IC1146821.htm",
+      "login_url": "https://www.glassdoor.com/profile/login_input.htm",
+      "login_check_url": "https://www.glassdoor.com/member/home/index.htm",
+      "login_indicator": "Sign In",
+      "login_required": true
+    },
+    "handshake": {
+      "enabled": false,
+      "method": "playwright",
+      "session_name": "handshake",
+      "search_url": "https://app.joinhandshake.com/emp/jobs?q={keywords}&loc=Santa+Barbara",
+      "login_url": "https://app.joinhandshake.com/login",
+      "login_check_url": "https://app.joinhandshake.com/emp/jobs",
+      "login_indicator": "Log in",
+      "login_required": true,
+      "notes": "Disabled by default — primarily student/entry-level jobs"
+    },
+    "org_website": {
+      "enabled": true,
+      "method": "web-research",
+      "notes": "Primary discovery path as of 0.3.0. Uses the sbrm-toolkit web-research skill (Tavily, then DuckDuckGo and Jina as keyless fallbacks). Never use the web-access skill; it depends on Tim's private Tailscale network.",
+      "target_orgs": [
+        "Good Samaritan Shelter",
+        "CADA",
+        "Salvation Army",
+        "PATH",
+        "New Beginnings",
+        "City Net",
+        "Community Solutions",
+        "Pinnacle Treatment Centers",
+        "Passages",
+        "Mercy House",
+        "St. Vincent's",
+        "Transition House",
+        "Mental Wellness Center",
+        "PathPoint",
+        "Casa Serena",
+        "Channel Islands YMCA",
+        "Family Service Agency of Santa Barbara",
+        "Noah's Anchorage"
+      ],
+      "market_reference_keywords": [
+        "executive director",
+        "chief executive",
+        "chief operating officer",
+        "chief financial officer",
+        "director of development",
+        "development director",
+        "development manager",
+        "major gifts",
+        "grant writer",
+        "grants manager",
+        "director of programs",
+        "program director",
+        "clinical director",
+        "director of operations",
+        "director of finance",
+        "human resources director",
+        "hr manager",
+        "communications director",
+        "philanthropy"
+      ]
+    }
+  },
+  "location_buckets": {
+    "santa_barbara_county": [
+      "Santa Barbara",
+      "Goleta",
+      "Carpinteria",
+      "Lompoc",
+      "Santa Maria",
+      "Solvang",
+      "Buellton",
+      "Guadalupe",
+      "Santa Ynez",
+      "Montecito",
+      "Summerland",
+      "Isla Vista",
+      "Los Olivos",
+      "Orcutt",
+      "Vandenberg",
+      "Gaviota",
+      "Los Alamos",
+      "New Cuyama",
+      "Casmalia"
+    ],
+    "ventura_county": [
+      "Ventura",
+      "Oxnard",
+      "Thousand Oaks",
+      "Simi Valley",
+      "Camarillo",
+      "Moorpark",
+      "Ojai",
+      "Fillmore",
+      "Santa Paula",
+      "Port Hueneme",
+      "Newbury Park",
+      "Westlake Village",
+      "Agoura Hills"
+    ],
+    "remote_indicators": [
+      "remote",
+      "work from home",
+      "anywhere",
+      "telecommute",
+      "wfh"
+    ]
+  },
+  "pay_unit_map": {
+    "hourly": "Hourly",
+    "annual": "Annual",
+    "weekly": "Weekly",
+    "biweekly": "Bi-weekly",
+    "monthly": "Monthly",
+    "not_listed": "Not listed",
+    "_note": "biweekly MUST NOT collapse to Weekly. extract_salary.py treats them as distinct (x26 vs x52); mapping biweekly to Weekly would read a $2,000 biweekly posting as $104k/yr instead of $52k. Every value here must exist as a choice on the PayUnit column."
+  },
+  "credential_map": {
+    "licensed": "Licensed / Certified",
+    "not_required": "Not required",
+    "unknown": "N/A"
+  }
+}

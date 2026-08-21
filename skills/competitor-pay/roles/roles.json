@@ -1,0 +1,353 @@
+{
+  "metadata": {
+    "organization": "Santa Barbara Rescue Mission",
+    "last_updated": "2026-08-21",
+    "notes": "16 canonical roles, aligned to the SharePoint 'Competitor's Pay' list SBRMEquivalent choices. Description summaries derived from SBRM job descriptions. Resolved 2026-08-17 (Tim): 'Program Tech' and the 'Tech' label both retired into 'Residential Coordinator'; 'RTS no license' renamed to 'Case Manager Unlicensed - Treatment Services' and added here as a canonical role. 'Market Reference - No SBRM Equivalent' is a writable choice on the SBRM Equivalent column but deliberately NOT a canonical role -- see sbrm_equivalent_extra_choices below. Writable vocabulary = these 16 titles plus that one extra choice. Resolved 2026-08-21 (Tim): the canonical role 'Associate' is renamed 'Associate - Administration', matching REMEDIATION's crosswalk. That value must exist as a choice on the live SBRM Equivalent column (REMEDIATION step 5) before historical rows are written."
+  },
+  "roles": [
+    {
+      "title": "Custodian",
+      "department": "Homeless Services",
+      "classification": "part-time",
+      "search_keywords": [
+        "custodian",
+        "janitor",
+        "building custodian",
+        "cleaning staff shelter"
+      ],
+      "education": "None specified",
+      "description_summary": "Part-time (20 hrs/week) custodian maintaining cleanliness of shelter facility bathrooms, hallways, and dorms. Sanitizes floors, sinks, mirrors, and counters; restocks supplies. May encounter biohazard materials requiring PPE. Reports to HGS Treatment and Facilities Associate.",
+      "exclude_keywords": [
+        "facilities manager",
+        "facilities director",
+        "maintenance supervisor",
+        "head custodian"
+      ]
+    },
+    {
+      "title": "Case Manager - Treatment Services",
+      "department": "Treatment",
+      "classification": "full-time",
+      "search_keywords": [
+        "case manager substance abuse",
+        "case manager behavioral health",
+        "case manager residential treatment"
+      ],
+      "education": "Addiction treatment credentials or in-process",
+      "description_summary": "Provides case management for residents in SBRM's 12-month residential substance abuse treatment program (men's and women's). Meets weekly with assigned residents to monitor recovery progress, facilitates program elements, conducts drug testing, and manages behavioral interventions. Requires addiction treatment credentials (CADC, MFT, LCSW) or actively working toward them. NOTE: Distinguish jobs requiring full licensure vs in-process -- pay rates differ significantly. Bachelor's/Master's degree not required.",
+      "exclude_keywords": [
+        "RN",
+        "registered nurse",
+        "hospital",
+        "utilization management",
+        "insurance",
+        "managed care",
+        "acute care"
+      ]
+    },
+    {
+      "title": "Case Manager Unlicensed - Treatment Services",
+      "department": "Treatment",
+      "classification": "full-time",
+      "search_keywords": [
+        "resident support technician",
+        "treatment counselor",
+        "adult residential treatment counselor",
+        "substance abuse technician",
+        "recovery support specialist",
+        "behavioral health technician"
+      ],
+      "education": "None required; no license or credential",
+      "description_summary": "Provides case management for residents in SBRM's 12-month residential substance abuse treatment program WITHOUT holding or pursuing an addiction treatment credential. Same duties as Case Manager - Treatment Services -- weekly resident meetings, recovery progress monitoring, drug testing, behavioral interventions -- at the unlicensed pay tier. Licensure is the single largest pay driver in residential treatment hiring, so postings that require CADC/MFT/LCSW belong on Case Manager - Treatment Services instead, not here.",
+      "exclude_keywords": [
+        "RN",
+        "registered nurse",
+        "hospital",
+        "utilization management",
+        "insurance",
+        "managed care",
+        "acute care"
+      ],
+      "_note": "Renamed from the SharePoint label 'RTS no license' on 2026-08-17 (Tim's decision). Its licensed counterpart is 'Case Manager - Treatment Services'."
+    },
+    {
+      "title": "Case Manager - Homeless Services",
+      "department": "Homeless Services",
+      "classification": "full-time",
+      "search_keywords": [
+        "case manager homeless",
+        "case manager social services",
+        "case manager shelter",
+        "housing case manager",
+        "shelter technician",
+        "shelter operator",
+        "homeless outreach worker"
+      ],
+      "education": "None required; Bachelor's preferred",
+      "description_summary": "Develops individualized case management services for emergency shelter guests to reduce shelter stays and connect guests with housing, benefits, and supportive services. Uses motivational interviewing, harm reduction, and trauma-informed care. This is NOT a staff supervisor role -- manages cases, not people. College degree and license/credential not required.",
+      "exclude_keywords": [
+        "RN",
+        "registered nurse",
+        "hospital",
+        "utilization management",
+        "insurance",
+        "managed care",
+        "acute care"
+      ]
+    },
+    {
+      "title": "Night Security",
+      "department": "Operations",
+      "classification": "full-time",
+      "search_keywords": [
+        "night security",
+        "overnight security",
+        "security guard night shift",
+        "security officer overnight"
+      ],
+      "education": "Guard card",
+      "description_summary": "Overnight security officer (10:30pm-7am, Sun-Thu) responsible for hourly facility rounds, security alarm and camera monitoring, fire alarm response, and maintaining detailed security logs. Requires CPR/First Aid certification. Reports on resident and homeless guest activity, monitors facility temperatures, and enforces SBRM policies.",
+      "exclude_keywords": [
+        "cybersecurity",
+        "information security",
+        "network security"
+      ]
+    },
+    {
+      "title": "Shelter Operator",
+      "department": "Homeless Services",
+      "classification": "full-time",
+      "search_keywords": [
+        "shelter operator",
+        "shelter monitor",
+        "shelter attendant",
+        "shelter staff",
+        "shelter technician",
+        "homeless coordinator"
+      ],
+      "education": "High school diploma",
+      "description_summary": "Oversees daily and nightly emergency shelter operations including guest check-in/check-out, meals, showers, bed assignments, data entry, and volunteer coordination. Works rotating morning/afternoon and evening shifts including weekends and holidays. Handles in-kind donations, guest mail, and administrative support for homeless guest services.",
+      "exclude_keywords": [
+        "animal shelter",
+        "veterinary",
+        "pet"
+      ]
+    },
+    {
+      "title": "Food Services Supervisor",
+      "department": "Kitchen",
+      "classification": "full-time",
+      "search_keywords": [
+        "food service supervisor",
+        "kitchen supervisor",
+        "food service manager",
+        "kitchen manager institutional",
+        "soup kitchen cook"
+      ],
+      "education": "Food handler certification, management experience",
+      "description_summary": "Manages all food service operations for the Mission including menu planning, food donation receiving/tracking, USDA inventory, and meal preparation for residents, staff, and homeless guests. Supervises volunteer and resident work crews, maintains health department compliance and ServSafe certifications, manages food/beverage budget, and plans four annual holiday feasts.",
+      "exclude_keywords": [
+        "fast food",
+        "restaurant manager",
+        "catering director"
+      ]
+    },
+    {
+      "title": "Bookkeeper",
+      "department": "Admin",
+      "classification": "part-time",
+      "search_keywords": [
+        "bookkeeper",
+        "bookkeeper nonprofit",
+        "accounting clerk",
+        "accounts payable clerk"
+      ],
+      "education": "Associate's degree or equivalent experience",
+      "description_summary": "Part-time (10-15 hrs/week) bookkeeper processing accounts payable/receivable, bank and credit card reconciliations, payroll via Paychex, and monthly/quarterly/year-end close. Handles fixed asset tracking, depreciation schedules, 403b deduction reporting, and financial statement preparation for grants. Supports annual audit with outside CPA firm.",
+      "exclude_keywords": [
+        "CPA",
+        "controller",
+        "CFO",
+        "audit manager"
+      ]
+    },
+    {
+      "title": "Front Office Coordinator",
+      "department": "Admin",
+      "classification": "part-time",
+      "search_keywords": [
+        "front office coordinator",
+        "receptionist",
+        "office coordinator",
+        "front desk coordinator",
+        "administrative assistant"
+      ],
+      "education": "High school diploma",
+      "description_summary": "Part-time receptionist serving as first point of contact for visitors, callers, and donors at SBRM. Manages incoming calls, mail sorting, package distribution, document scanning, donation receipting and in-kind coordination, and general administrative support including shredding, printing, and supply ordering. Maintains front office organization.",
+      "exclude_keywords": [
+        "dental",
+        "medical office",
+        "chiropractic",
+        "veterinary"
+      ]
+    },
+    {
+      "title": "Manager",
+      "department": "Programs",
+      "classification": "full-time",
+      "search_keywords": [
+        "program manager nonprofit",
+        "program manager social services",
+        "operations manager nonprofit",
+        "manager homeless services",
+        "Program Supervisor"
+      ],
+      "education": "Bachelor's degree",
+      "description_summary": "Manages and supervises staff members in a client-facing social services organization. Responsible to execute and implement the policies and plans set by department and organizational heads. Has experience working with the target population in a similar social service setting and program offerings. Could be homeless guest, drug and alcohol treatment, or administration departments.",
+      "exclude_keywords": [
+        "software manager",
+        "engineering manager",
+        "product manager tech",
+        "project manager IT"
+      ]
+    },
+    {
+      "title": "Residential Coordinator",
+      "department": "Treatment",
+      "classification": "full-time",
+      "search_keywords": [
+        "residential coordinator",
+        "residential program coordinator",
+        "housing coordinator",
+        "residential services coordinator",
+        "program technician",
+        "program tech social services",
+        "residential aide",
+        "program assistant shelter"
+      ],
+      "education": "High school diploma",
+      "description_summary": "Supports SBRM's residential treatment programs -- the men's program and the women's program (Bethel House) -- by supervising residents' daily activities, managing chore schedules and facility cleanliness, conducting drug/alcohol screenings and inspections for safety and contraband, facilitating house meetings, and assisting with intake/orientation and clerical duties. Handles behavioral interventions using the Behavior Modification System and crisis de-escalation. Provides occasional support to homeless guest services operations. Requires experience with drug and alcohol recovery. Does NOT require drug/alcohol counselor licensure or even pursuit of licensure.",
+      "exclude_keywords": [
+        "real estate",
+        "property management",
+        "leasing",
+        "IT technician",
+        "software",
+        "information technology",
+        "help desk"
+      ],
+      "_note": "Absorbed the former 'Program Tech' role and the 'Tech' label on 2026-08-17 (Tim's decision). Both retired into this role; historical SharePoint rows labelled 'Program Tech' or 'Tech' crosswalk here."
+    },
+    {
+      "title": "Database Coordinator",
+      "department": "Admin",
+      "classification": "full-time",
+      "search_keywords": [
+        "database coordinator",
+        "data coordinator nonprofit",
+        "database administrator nonprofit",
+        "HMIS coordinator"
+      ],
+      "education": "Bachelor's degree",
+      "description_summary": "Manages SBRM's donor database and data systems, coordinates gift reconciliation with finance, ensures accurate data entry and reporting, and maintains data compliance. Prints and mails receipt letters to donors. Supports development and administrative functions with database expertise.",
+      "exclude_keywords": [
+        "DBA senior",
+        "database engineer",
+        "cloud architect"
+      ]
+    },
+    {
+      "title": "Associate - Administration",
+      "department": "Admin",
+      "classification": "full-time",
+      "search_keywords": [
+        "program associate nonprofit",
+        "administrative associate nonprofit",
+        "HR generalist nonprofit",
+        "grants coordinator nonprofit",
+        "Finance assistant",
+        "IT coordinator",
+        "volunteer coordinator",
+        "Facility coordinator",
+        "facility assistant"
+      ],
+      "education": "Bachelor's degree required",
+      "description_summary": "Entry-level cross-functional role handling any combination of admin functions including: HR (payroll, benefits, hiring, personnel files, compliance), foundation grant writing, donor database administration, board meeting coordination, volunteer/intern management, finance, budgeting, A/P, A/R, cash management, data reporting, facility maintenance coordination, IT vendor coordination, data collecting. Requires strong writing skills and ability to learn multiple nonprofit disciplines quickly. Requires at least a bachelor's degree. No prior experience necessary with degree.",
+      "exclude_keywords": [
+        "attorney",
+        "law firm",
+        "investment",
+        "sales associate retail"
+      ],
+      "_note": "Renamed from 'Associate' on 2026-08-21 (Tim's decision) to match the crosswalk target for the 'Administrative Associate', 'Operations Associate' and 'Finance and Data Associate' labels. The name also distinguishes this admin role from any future program-side associate."
+    },
+    {
+      "title": "Program Director - Treatment Services",
+      "department": "Treatment",
+      "classification": "full-time",
+      "search_keywords": [
+        "program director substance abuse",
+        "program director behavioral health",
+        "program director residential treatment",
+        "clinical director"
+      ],
+      "education": "Master's in Social Work or related field",
+      "description_summary": "Responsible for setting the priorities, plan and policies for a department. Directs SBRM's women's residential treatment program, overseeing regulatory compliance with DHCS standards and ASAM level 3.1 requirements. Leads, trains, and supports a team of 5+ staff including case managers and program techs. Manages program operations, client care documentation, and crisis intervention. Requires clinical or addiction counseling certification/licensure (CADC, LAADC, LPCC, LMFT, LCSW). Manages and supervises a staff team of front-line workers and/or staff managers.",
+      "exclude_keywords": [
+        "medical director",
+        "nursing director",
+        "hospital"
+      ]
+    },
+    {
+      "title": "Program Director - Homeless Services",
+      "department": "Homeless Services",
+      "classification": "full-time",
+      "search_keywords": [
+        "program director homeless services",
+        "director of homeless services",
+        "shelter director",
+        "director of housing programs"
+      ],
+      "education": "Master's in Social Work or related field",
+      "description_summary": "Provides overall leadership for SBRM's homeless guest services program including emergency shelter, case management, and community outreach. Manages department budget, hires/trains staff, develops new program initiatives, and represents SBRM in community partnerships and county/state agency collaboration. Requires leadership experience in homeless services or social work. Responsible for setting the priorities, plan and policies for a department. Manages and supervises a staff team of front-line workers and/or staff managers.",
+      "exclude_keywords": [
+        "medical director",
+        "nursing director",
+        "hospital"
+      ]
+    },
+    {
+      "title": "Chief Operating Officer",
+      "department": "Admin",
+      "classification": "full-time",
+      "search_keywords": [
+        "chief operating officer nonprofit",
+        "COO nonprofit",
+        "director of operations nonprofit",
+        "VP operations nonprofit",
+        "chief financial officer",
+        "CFO",
+        "chief program officer"
+      ],
+      "education": "Bachelor's in Finance/Accounting or related field; 5-8 years experience",
+      "description_summary": "Executive role overseeing most or all internal organization functions including: program outcomes, strategic planning, finance, HR, IT, facilities, and all administrative operations for a $5M nonprofit. Manages annual budget, ensures GAAP compliance, oversees payroll/benefits/insurance, maintains technology infrastructure. Ensures Directors and Leaders are aligned with org-wide strategic direction and mission. Serves as staff representative on several board of directors committees. NOTE: Also include Chief Financial Officer and Chief Administration Officer matches.",
+      "exclude_keywords": [
+        "CEO",
+        "chief executive",
+        "president",
+        "hospital COO",
+        "manufacturing COO"
+      ]
+    }
+  ],
+  "sbrm_equivalent_extra_choices": [
+    {
+      "value": "Market Reference - No SBRM Equivalent",
+      "purpose": "Home for postings worth recording that match no SBRM job -- director-level, development, and clinical-supervisor roles. Added 2026-08-17 when the list's purpose widened from pure role-matching to doubling as a general nonprofit compensation database.",
+      "not_a_role": true,
+      "discovery": "Not searched from this file. The org_website board finds these via config.json boards.org_website.market_reference_keywords.",
+      "filtering": "Filter SBRM Equivalent != this value to get back the old role-matched view for floor-pay work."
+    }
+  ]
+}
