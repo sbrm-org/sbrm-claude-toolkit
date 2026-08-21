@@ -150,3 +150,41 @@ class TestSchemaBlockerScope:
         mech = {r[0] for r in CROSSWALK.values()
                 if r[0] and r[2] in MECHANICAL} | {MARKET_REFERENCE}
         assert not (mech - allowed), sorted(mech - allowed)
+
+
+class TestMultiSelectDetection:
+    """Graph does not expose a `multipleValues` flag on choice columns.
+
+    An earlier version of this check looked for one, never found it, and
+    reported the live SBRM Equivalent column as single-select. Acting on that
+    would have meant scalar writes, destroying the second label on 16 rows.
+    SharePoint renders multi-choice as check boxes, so `displayAs` is the signal
+    that is actually in the payload.
+    """
+
+    def test_checkboxes_means_multi_select(self):
+        from migrate_sharepoint import _is_multi_select
+        assert _is_multi_select({"choice": {"displayAs": "checkBoxes"}})
+
+    def test_dropdown_is_single_select(self):
+        from migrate_sharepoint import _is_multi_select
+        assert not _is_multi_select({"choice": {"displayAs": "dropDownMenu"}})
+
+    def test_the_live_sbrm_equivalent_shape_reads_as_multi(self):
+        """Verbatim shape returned by Graph for this list on 2026-08-21."""
+        from migrate_sharepoint import _is_multi_select
+        live = {
+            "displayName": "SBRM Equivalent", "name": "SBRMEquivalent",
+            "choice": {"allowTextEntry": True, "displayAs": "checkBoxes",
+                       "choices": ["Custodian", "Manager"]},
+        }
+        assert _is_multi_select(live)
+
+    def test_explicit_flag_still_honoured_when_present(self):
+        from migrate_sharepoint import _is_multi_select
+        assert _is_multi_select({"multipleValues": True})
+        assert _is_multi_select({"allowMultipleValues": True})
+
+    def test_absent_choice_block_does_not_crash(self):
+        from migrate_sharepoint import _is_multi_select
+        assert not _is_multi_select({})
