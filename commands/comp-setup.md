@@ -67,7 +67,9 @@ sqlite3 "$CP_DATA/data/comp_research.db" \
 
 Note that `Market Reference - No SBRM Equivalent` is deliberately **not** among the 16. It is a writable choice on the SharePoint column for postings with no SBRM equivalent, not a role this tool searches for. It lives under `sbrm_equivalent_extra_choices` in `roles.json`.
 ### 4. Connect Microsoft 365
-Use the `ms365` CLI wrapper. Load the `mcp2cli` skill first for the subcommand syntax and auth runbook.
+**Branch first: `command -v ms365`.** The two paths sign in differently and their token caches are not interchangeable, so running the wrong one leaves a valid token somewhere nothing reads. If the wrapper is absent, skip straight to the MCP paragraph at the end of this step and ignore the `npx` block, whose environment variables exist only to redirect the token into the wrapper's cache.
+
+With the wrapper, load the `mcp2cli` skill first for the subcommand syntax and auth runbook.
 
 ```bash
 ms365 verify-login
@@ -90,7 +92,7 @@ Leave it running while the user enters the code at `https://login.microsoft.com/
 claude mcp add ms365 -s user -- npx -y @softeria/ms-365-mcp-server
 ```
 
-Sign-in there is the server's own `login` tool, not the block above. From then on, every Graph call in the skill is the same tool name with the `mcp__ms365__` prefix and camelCase parameters, and **the SharePoint seed must go through `--from-file`** (Phase 0 step 4 of SKILL.md), because `seed_from_sharepoint.py` shells out to a command this machine does not have.
+Sign-in there is the server's own `login` tool, **not** the `npx` block above, and it must not carry those environment variables: the server keeps its own token cache and the overrides would hide the token from it. Call `mcp__ms365__login`, which returns `device_code_required` with a message holding the code and the URL. Give the user both, wait while they sign in, then confirm with `mcp__ms365__verify-login`. The polling continues inside the running server, so this completes on its own, unlike the wrapper. **Do not end the session while they are signing in**, because that kills the server and the poll with it. From then on, every Graph call in the skill is the same tool name with the `mcp__ms365__` prefix and camelCase parameters, and **the SharePoint seed must go through `--from-file`** (Phase 0 step 4 of SKILL.md), because `seed_from_sharepoint.py` shells out to a command this machine does not have.
 
 Verify the site resolves, then confirm the list itself returns roughly 202 items:
 
@@ -116,7 +118,9 @@ The CLI takes kebab-case `--site-id` / `--list-id`; `config.json` stores the sam
 ### 5. Check the Indeed connector
 Call `mcp__claude_ai_Indeed__search_jobs` with `search="case manager"`, `location="Santa Barbara, CA"`, `country_code="US"`.
 
-**Expect only 2 or 3 results, and expect zero on narrower queries.** This connector is a thin curated feed, not full Indeed search. A small result count is correct behavior, not a broken install. Only escalate if no Indeed tool exists at all.
+**Expect only 2 or 3 results, and expect zero on narrower queries.** This connector is a thin curated feed, not full Indeed search. A small result count is correct behavior, not a broken install.
+
+**If no Indeed tool exists at all, that is a switch nobody has flipped, not a bug.** Indeed is a Claude connector, enabled per account rather than installed by this plugin. Tell the user to turn it on in their Claude settings under Connectors, then restart the session. If they would rather not, say so plainly and carry on: Indeed is the thinnest of the six sources, and the career-page sweep does not depend on it.
 ### 6. Check web-research
 Confirm the `web-research` skill is available. It ships with the SBRM toolkit and handles career-page fetching, which is the highest-yield source. Do **not** use the `web-access` skill; it depends on Tim's private network and will not work here.
 ### 7. Set up browser sessions
