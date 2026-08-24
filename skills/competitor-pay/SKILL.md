@@ -22,19 +22,25 @@ Run these checks first. Three severities, and they behave differently:
 
 Degrading is allowed; degrading *silently* is not. Any NOTICE or WARN must be repeated in the final report, so a partial run never reads as a complete one.
 
-**Shell state does not persist between tool calls.** Every Bash call gets a fresh shell, so a variable set in one block is empty in the next. Rather than sharing a state file, **every Bash block in this skill re-derives its two paths on its own first two lines.** They are pure functions of the environment, so they cannot drift or go stale:
+**Shell state does not persist between tool calls.** Every Bash call gets a fresh shell, so a variable set in one block is empty in the next. Rather than sharing a state file, **every Bash block in this skill re-derives its two paths on its own first four lines.** They are pure functions of what is on disk, so they cannot drift or go stale:
 
 ```bash
-CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+CP_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+[ -d "$CP_DIR" ] || CP_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+[ -d "$CP_DIR" ] || CP_DIR="$HOME/.claude/skills/competitor-pay"
 CP_DB="${COMPETITOR_PAY_HOME:-$HOME/.competitor-pay}/data/comp_research.db"
 ```
 
-Copy those two lines verbatim into the top of **every block that touches the skill directory or the database**. A block that omits them runs `python3 /scripts/init_db.py --db /data/comp_research.db` against the filesystem root. (The preflight block below derives `CP_DATA` instead, since it creates the directories; the `caffeinate` block needs neither.)
+Copy those four lines verbatim into the top of **every block that touches the skill directory or the database**. A block that omits them runs `python3 /scripts/init_db.py --db /data/comp_research.db` against the filesystem root. (The preflight block below derives `CP_DATA` instead, since it creates the directories; the `caffeinate` block needs neither.)
+
+**Why `CP_DIR` is three lines and not one.** `CLAUDE_PLUGIN_ROOT` is **not** exported into the Bash tool's environment. The obvious `${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay` therefore falls back to `$HOME/.claude/skills/competitor-pay`, which does not exist on a plugin install: preflight fails with `ERROR: competitor-pay not found`, and on a machine where someone has since symlinked that path by hand, every other block silently points at whatever the symlink caught. The probe order is deliberate — the env var when it is genuinely set, then the **highest-versioned** plugin cache entry (the cache keeps old versions rather than deleting them, so a plain glob or a lexical sort can pin you to `1.2.9` forever once `1.2.10` ships), then a hand-installed skill directory.
 
 The capability flags (`can_push`, `org_website`) are **not** shell variables. Preflight prints them, and you carry them as decisions for the rest of the run.
 
 ```bash
-CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+CP_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+[ -d "$CP_DIR" ] || CP_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+[ -d "$CP_DIR" ] || CP_DIR="$HOME/.claude/skills/competitor-pay"
 CP_DATA="${COMPETITOR_PAY_HOME:-$HOME/.competitor-pay}"
 
 # 1. Skill directory present
@@ -78,7 +84,9 @@ Every Graph call below is written in **CLI form**. The MCP equivalent is the sam
 **7. Confirm the target list resolves** before collecting anything, so a bad site or list ID fails in 10 seconds rather than 90 minutes:
 
 ```bash
-CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+CP_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+[ -d "$CP_DIR" ] || CP_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+[ -d "$CP_DIR" ] || CP_DIR="$HOME/.claude/skills/competitor-pay"
 SITE=$(python3 "$CP_DIR/scripts/sharepoint_target.py" site_id)
 echo "{\"siteId\": \"$SITE\"}" | ms365 get-sharepoint-site --stdin
 ```
@@ -105,7 +113,9 @@ ms365 list-accounts    # sbrmappadmin@sbrm.org must be isDefault
 **8. Confirm the required columns exist.**
 
 ```bash
-CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+CP_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+[ -d "$CP_DIR" ] || CP_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+[ -d "$CP_DIR" ] || CP_DIR="$HOME/.claude/skills/competitor-pay"
 SITE=$(python3 "$CP_DIR/scripts/sharepoint_target.py" site_id)
 LIST=$(python3 "$CP_DIR/scripts/sharepoint_target.py" list_id)
 echo "{\"siteId\": \"$SITE\", \"listId\": \"$LIST\"}" \
@@ -189,7 +199,9 @@ So: read the `Title`, the `Organization`, the description snippet, and the posti
 3. Initialize the database:
 
    ```bash
-   CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+   CP_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+   [ -d "$CP_DIR" ] || CP_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+   [ -d "$CP_DIR" ] || CP_DIR="$HOME/.claude/skills/competitor-pay"
    CP_DB="${COMPETITOR_PAY_HOME:-$HOME/.competitor-pay}/data/comp_research.db"
    python3 "$CP_DIR/scripts/init_db.py" --db "$CP_DB"
    ```
@@ -200,7 +212,9 @@ So: read the `Title`, the `Organization`, the description snippet, and the posti
    `seed_from_sharepoint.py` fetches the list itself, so the normal path is one command:
 
    ```bash
-   CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+   CP_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+   [ -d "$CP_DIR" ] || CP_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+   [ -d "$CP_DIR" ] || CP_DIR="$HOME/.claude/skills/competitor-pay"
    CP_DB="${COMPETITOR_PAY_HOME:-$HOME/.competitor-pay}/data/comp_research.db"
    python3 "$CP_DIR/scripts/seed_from_sharepoint.py" --db "$CP_DB"
    ```
@@ -208,7 +222,9 @@ So: read the `Title`, the `Organization`, the description snippet, and the posti
    To seed from a payload you already have, fetch it first and pass `--from-file`. Note `--expand '["fields"]'` is a JSON array, not a bare string, and paginate until exhausted:
 
    ```bash
-   CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+   CP_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+   [ -d "$CP_DIR" ] || CP_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+   [ -d "$CP_DIR" ] || CP_DIR="$HOME/.claude/skills/competitor-pay"
    CP_DB="${COMPETITOR_PAY_HOME:-$HOME/.competitor-pay}/data/comp_research.db"
    CP_DATA="${COMPETITOR_PAY_HOME:-$HOME/.competitor-pay}"
    SITE=$(python3 "$CP_DIR/scripts/sharepoint_target.py" site_id)
@@ -225,6 +241,8 @@ So: read the `Title`, the `Organization`, the description snippet, and the posti
 
    **If the seed returns zero items, stop the run.** Either auth or the list ID is wrong, and pushing on top of that would duplicate the entire list. As of 2026-08-14 the list holds 202 items, so a healthy seed reports at least that many.
 
+   **A Phase 0 seed that stamps zero rows is not a failure, and not a pass either.** On an empty or freshly rebuilt database there is nothing yet to match, so this run's matching happens in the Phase 6b re-seed instead. Note the count and carry it; do not read `0 matched` here as "nothing to dedup against".
+
 5. Open a run: `INSERT INTO search_runs (run_date, triggered_by, status) VALUES (date('now'), 'manual', 'running')`
 6. Parse flags: `--resume`, `--boards`, `--roles`, `--dry-run`, `--skip-archive`, `--skip-linkedin-detail`
 ### Phase 1: Indeed connector
@@ -234,7 +252,9 @@ For each active role, for each keyword in `search_keywords`:
 2. Pipe the response into the parser:
 
    ```bash
-   CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+   CP_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+   [ -d "$CP_DIR" ] || CP_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+   [ -d "$CP_DIR" ] || CP_DIR="$HOME/.claude/skills/competitor-pay"
    CP_DB="${COMPETITOR_PAY_HOME:-$HOME/.competitor-pay}/data/comp_research.db"
    echo '<response>' | python3 "$CP_DIR/scripts/search_indeed.py" \
        --store --role-id <N> --run-id <N> --db "$CP_DB"
@@ -254,7 +274,9 @@ For each org, search its careers page for the tracked roles and extract postings
 The full target-org list and the `market_reference_keywords` that surface director-level and development roles live in `config.json` under `boards.org_website`. Sweep each org for the tracked roles **and** those keywords. The source key is `org_website` (underscore), matching `config.json` and the `--boards` flag.
 
 ```bash
-CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+CP_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+[ -d "$CP_DIR" ] || CP_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+[ -d "$CP_DIR" ] || CP_DIR="$HOME/.claude/skills/competitor-pay"
 CP_DB="${COMPETITOR_PAY_HOME:-$HOME/.competitor-pay}/data/comp_research.db"
 echo '{"results": [{"title": "...", "employer": "...", "salary": "...", "location": "...", "url": "..."}]}' \
   | python3 "$CP_DIR/scripts/search_org_website.py" --store --org "<org name>" \
@@ -270,7 +292,9 @@ Rate limit: 3 seconds between fetches. Respect `robots.txt`.
 **3a, discovery via Jina.** 3 seconds between calls.
 
 ```bash
-CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+CP_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+[ -d "$CP_DIR" ] || CP_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+[ -d "$CP_DIR" ] || CP_DIR="$HOME/.claude/skills/competitor-pay"
 CP_DB="${COMPETITOR_PAY_HOME:-$HOME/.competitor-pay}/data/comp_research.db"
 python3 "$CP_DIR/scripts/search_linkedin.py" --discover --keyword "<kw>" \
     --role-id <N> --run-id <N> --db "$CP_DB"
@@ -301,12 +325,31 @@ The canonical bad match to watch for: an RN Case Manager at a hospital. The list
 
 **6b. SharePoint sync.**
 
+**Seed again before you push. This is not the Phase 0 seed repeated for safety; it is the seed that actually does the work on a fresh database.** Phase 0 runs against whatever the database already held, so on a machine seeing this list for the first time it has nothing to match and stamps zero rows. Collection then fills the table with `sharepoint_item_id IS NULL`, and pushing that straight out duplicates every still-live posting among the 202. Run the seeder once more, now that the rows to match against exist:
+
+```bash
+CP_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+[ -d "$CP_DIR" ] || CP_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+[ -d "$CP_DIR" ] || CP_DIR="$HOME/.claude/skills/competitor-pay"
+CP_DB="${COMPETITOR_PAY_HOME:-$HOME/.competitor-pay}/data/comp_research.db"
+python3 "$CP_DIR/scripts/seed_from_sharepoint.py" --db "$CP_DB"
+```
+
+Read its output before pushing anything:
+
+- **`WAGE MOVES:`** lists postings that match a list row on title and employer but at a **different rate**. These are left unstamped on purpose and are the most valuable rows in the run — a named local competitor visibly moving its wage. Push them, and call them out by name in the Phase 6c report.
+- **`WARNING: this database has no original_rate_low/high columns`** means the database predates the migration and pay was ignored. Run `init_db.py` against it, then seed again, before pushing.
+- If the seed reports fewer than 202 items, stop, exactly as in Phase 0.
+- On an MCP-server machine, `--from-file` is again the only path. Re-fetch the list into `$CP_DATA/data/items.json` rather than reusing the Phase 0 copy, so anything HR added during the run is seen.
+
 Push postings from this run with `relevance_score >= 0.4` and `sharepoint_item_id IS NULL`. Skip anything whose `location_map` value is null (remote, out of state, unknown stay in SQLite only).
 
 Write with `ms365 create-sharepoint-list-item`. The fields go **inside** `body.fields`, not at the top level, and the body is easiest to pass on stdin so quoting does not mangle the JSON:
 
 ```bash
-CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+CP_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+[ -d "$CP_DIR" ] || CP_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+[ -d "$CP_DIR" ] || CP_DIR="$HOME/.claude/skills/competitor-pay"
 SITE=$(python3 "$CP_DIR/scripts/sharepoint_target.py" site_id)
 LIST=$(python3 "$CP_DIR/scripts/sharepoint_target.py" list_id)
 ms365 create-sharepoint-list-item --stdin <<JSON
@@ -355,7 +398,9 @@ Rules that are easy to get wrong:
 1. Generate the report:
 
    ```bash
-   CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+   CP_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+   [ -d "$CP_DIR" ] || CP_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+   [ -d "$CP_DIR" ] || CP_DIR="$HOME/.claude/skills/competitor-pay"
    CP_DB="${COMPETITOR_PAY_HOME:-$HOME/.competitor-pay}/data/comp_research.db"
    python3 "$CP_DIR/scripts/report.py" --run-id <N> --db "$CP_DB"
    ```
@@ -365,6 +410,8 @@ Rules that are easy to get wrong:
 Re-read this section and check the run against it. Report any line that fails.
 
 - [ ] The SharePoint seed ran and reported at least 202 items, or is N/A because `can_push=NO`.
+- [ ] The seeder ran **again in Phase 6b, after collection and before the first push**, and its output was read. A run that seeded only in Phase 0 has not been deduped.
+- [ ] Any `WAGE MOVES:` the re-seed printed were pushed and named in the report. Silently dropping them discards the single most valuable observation this tool makes.
 - [ ] Every pushed row has a `PayUnit`, including `"Not listed"` where pay was unparseable, and no `biweekly` was written as `Weekly`.
 - [ ] Every pushed `SBRMEquivalent` is one of the 16 canonical titles or `Market Reference - No SBRM Equivalent`. No `Program Tech`, no `Tech`, no `RTS no license`.
 - [ ] Every pushed row was **read back** and its fields compared against what was sent. A `200` is not evidence.
@@ -388,7 +435,9 @@ Generic titles are the weak spot: Manager, Associate, Custodian, Night Security.
 After editing `roles.json`:
 
 ```bash
-CP_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+CP_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+[ -d "$CP_DIR" ] || CP_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+[ -d "$CP_DIR" ] || CP_DIR="$HOME/.claude/skills/competitor-pay"
 CP_DB="${COMPETITOR_PAY_HOME:-$HOME/.competitor-pay}/data/comp_research.db"
 python3 "$CP_DIR/scripts/init_db.py" --load-roles "$CP_DIR/roles/roles.json" --db "$CP_DB"
 ```

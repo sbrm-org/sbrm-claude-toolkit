@@ -19,7 +19,25 @@ Usage:
 Matching, in priority order:
     1. the Job Posting hyperlink (hand-entered, ~150 rows)
     2. the URL column (where this skill's own writes land)
-    3. title + employer, normalised
+    3. title + employer + pay, normalised
+    4. title + employer alone, but ONLY when the local row carries no pay
+       figure at all
+
+Why 3 and 4 are split
+---------------------
+Local nonprofits repost the same job several times a year and a repost gets a
+fresh URL, so it always lands on the title+employer fallback. Stamping it with
+the old row's id makes the push skip it, which silently discards the most
+valuable observation this tool makes: a named local competitor moving its wage.
+Pay is therefore part of the fallback key. A row with no pay figure carries no
+benchmark value, so collapsing it onto the older record is the cheap error;
+pushing a payless duplicate into a list HR reads is not.
+
+Pay is compared on the ORIGINAL rate, never the annualized one, because that is
+what SharePoint stores. See the field map in SKILL.md Phase 6b: $17/hr goes into
+Low/Only as 17, with the unit in PayUnit. Comparing salary_low (35360) against
+that would never match, and every hourly repost would be misread as a wage move
+and re-pushed.
 
 Exit status is non-zero if the list looks empty or unreachable — a zero-item
 seed means auth or the list ID is wrong, and continuing would duplicate the
@@ -32,6 +50,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+from typing import NamedTuple
 from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
 
 import sharepoint_target
@@ -129,6 +148,47 @@ def _norm_employer(value):
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _norm_pay(value):
+    """Normalise one pay figure to a stable key fragment, or "" if there is none.
+
+    SharePoint returns these as int on some rows, float on others, and the
+    local database stores REAL, so the raw values are not comparable. Zero is
+    treated as absent: no employer advertises a $0 rate, and a stray 0 that
+    compares unequal to NULL would split a row off into a false wage move.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        value = value.replace("$", "").replace(",", "").strip()
+        if not value:
+            return ""
+    try:
+        num = round(float(value), 2)
+    except (TypeError, ValueError):
+        return ""
+    if num == 0:
+        return ""
+    return f"{num:.2f}"
+
+
+def _pay_key(low, high):
+    """Build the comparable pay half of the fallback key.
+
+    A missing bound is mirrored from the one that is present. Both sides of the
+    comparison produce half-open ranges routinely and inconsistently: 46 of the
+    202 live list items carry Low/Only with High null, and locally a "from $20"
+    posting yields original_rate_high None while a flat "$20/hr" yields 20/20.
+    Without this, the same wage compares unequal and a repost at unchanged pay
+    is re-pushed. Collapsing the two forms cannot hide a real move -- (20, null)
+    against a later (20, 24) still differs.
+    """
+    lo = _norm_pay(low)
+    hi = _norm_pay(high)
+    if not lo and not hi:
+        return None
+    return (lo or hi, hi or lo)
+
+
 def extract_urls(fields):
     """Every URL an item carries. One item can hold the same link twice."""
     urls = []
@@ -143,10 +203,25 @@ def extract_urls(fields):
     return [u for u in (normalize_url(u) for u in urls) if u]
 
 
+class Index(NamedTuple):
+    """Result of build_index.
+
+    A NamedTuple rather than a bare tuple so a future lookup can be added
+    without silently breaking every positional unpack at the call sites.
+    """
+    by_url: dict          # normalised URL           -> item id
+    by_name: dict         # (title, employer)        -> item id
+    by_name_pay: dict     # (title, employer, lo, hi) -> item id
+    name_pays: dict       # (title, employer)        -> [(item id, lo, hi)]
+    ambiguous: int
+
+
 def build_index(items):
-    """Map normalised URL -> item id, and (title, employer) -> item id."""
+    """Index the list by URL, by title+employer, and by title+employer+pay."""
     url_owners = {}
     by_name = {}
+    by_name_pay = {}
+    name_pays = {}
     for item in items:
         fields = item.get("fields") or {}
         item_id = str(item.get("id") or fields.get("id") or "").strip()
@@ -158,6 +233,13 @@ def build_index(items):
                _norm_employer(fields.get("Organization")))
         if key != ("", ""):
             by_name.setdefault(key, item_id)
+            # Same job, same employer, same money is the posting already on
+            # record. Same job at DIFFERENT money is a competitor visibly
+            # moving its wage, and must not collapse into the older row.
+            pay = _pay_key(fields.get("Low_x002f_Only"), fields.get("High"))
+            if pay:
+                by_name_pay.setdefault(key + pay, item_id)
+                name_pays.setdefault(key, []).append((item_id,) + pay)
 
     # A URL claimed by more than one item cannot identify a row. The live list
     # has both causes: the same posting entered twice (84/85, 134/135), and
@@ -168,34 +250,67 @@ def build_index(items):
     by_url = {u: next(iter(ids)) for u, ids in url_owners.items()
               if len(ids) == 1}
     ambiguous = sum(1 for ids in url_owners.values() if len(ids) > 1)
-    return by_url, by_name, ambiguous
+    return Index(by_url, by_name, by_name_pay, name_pays, ambiguous)
 
 
 def seed(db_path, items, dry_run=False):
-    by_url, by_name, ambiguous = build_index(items)
+    idx = build_index(items)
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
-        rows = conn.execute(
-            "SELECT id, source_url, title, employer, sharepoint_item_id "
-            "FROM job_postings"
-        ).fetchall()
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(job_postings)").fetchall()}
+        # original_rate_low/high are added by init_db's migration. If this
+        # database predates it, degrade to the pre-1.2.2 title+employer
+        # fallback rather than reaching for salary_low, which holds the
+        # ANNUALIZED figure and would never equal what SharePoint stores.
+        pay_aware = {"original_rate_low", "original_rate_high"} <= cols
 
-        matched_url = matched_name = already = 0
+        select = ("SELECT id, source_url, title, employer, sharepoint_item_id"
+                  + (", original_rate_low, original_rate_high" if pay_aware
+                     else "")
+                  + " FROM job_postings")
+        rows = conn.execute(select).fetchall()
+
+        matched_url = matched_pay = matched_name = already = 0
         updates = []
+        wage_moves = []
         for row in rows:
             if row["sharepoint_item_id"]:
                 already += 1
                 continue
-            item_id = by_url.get(normalize_url(row["source_url"]))
+
+            item_id = idx.by_url.get(normalize_url(row["source_url"]))
             if item_id:
                 matched_url += 1
             else:
-                item_id = by_name.get((_norm_text(row["title"]),
-                                       _norm_employer(row["employer"])))
-                if item_id:
-                    matched_name += 1
+                name_key = (_norm_text(row["title"]),
+                            _norm_employer(row["employer"]))
+                pay = _pay_key(row["original_rate_low"],
+                               row["original_rate_high"]) if pay_aware else None
+
+                if pay is None:
+                    # No pay figure, so nothing to benchmark. Collapsing onto
+                    # the older record is the cheap error here.
+                    item_id = idx.by_name.get(name_key)
+                    if item_id:
+                        matched_name += 1
+                else:
+                    item_id = idx.by_name_pay.get(name_key + pay)
+                    if item_id:
+                        matched_pay += 1
+                    elif name_key in idx.by_name:
+                        # Known job, new money. Left unstamped on purpose so
+                        # the push records it as a fresh observation.
+                        wage_moves.append({
+                            "title": row["title"],
+                            "employer": row["employer"],
+                            "low": row["original_rate_low"],
+                            "high": row["original_rate_high"],
+                            "known": idx.name_pays.get(name_key, []),
+                        })
+
             if item_id:
                 updates.append((item_id, row["id"]))
 
@@ -212,10 +327,13 @@ def seed(db_path, items, dry_run=False):
         "items": len(items),
         "local": len(rows),
         "matched_url": matched_url,
+        "matched_pay": matched_pay,
         "matched_name": matched_name,
+        "wage_moves": wage_moves,
+        "pay_aware": pay_aware,
         "already": already,
         "updates": len(updates),
-        "ambiguous_urls": ambiguous,
+        "ambiguous_urls": idx.ambiguous,
     }
 
 
@@ -251,16 +369,37 @@ def main():
     stats = seed(args.db, items, dry_run=args.dry_run)
 
     prefix = "DRY-RUN: would seed" if args.dry_run else "Seeded"
+    name_label = ("by title+employer with no pay figure" if stats["pay_aware"]
+                  else "by title+employer, pay not compared")
     print(f"{prefix} {stats['items']} existing SharePoint items; "
           f"{stats['updates']} matched to local postings "
-          f"({stats['matched_url']} by URL, {stats['matched_name']} by "
-          f"title+employer).")
+          f"({stats['matched_url']} by URL, {stats['matched_pay']} by "
+          f"title+employer+pay, {stats['matched_name']} {name_label}).")
+    if not stats["pay_aware"]:
+        print("  WARNING: this database has no original_rate_low/high columns, "
+              "so pay was ignored and reposts at a changed wage will be "
+              "collapsed into the older row. Run init_db.py to migrate, then "
+              "seed again.")
     if stats["already"]:
         print(f"  {stats['already']} local postings were already seeded.")
-    unmatched = stats["local"] - stats["updates"] - stats["already"]
+    unmatched = (stats["local"] - stats["updates"] - stats["already"]
+                 - len(stats["wage_moves"]))
     if unmatched > 0:
         print(f"  {unmatched} local postings had no SharePoint match "
               f"(these are genuinely new and will be pushed).")
+    if stats["wage_moves"]:
+        print(f"\n  WAGE MOVES: {len(stats['wage_moves'])} posting(s) match a "
+              f"list row on title+employer but at DIFFERENT pay. They are "
+              f"left unstamped on purpose and will be pushed as new "
+              f"observations:")
+        for w in stats["wage_moves"]:
+            known = ", ".join(f"{lo}-{hi} (item {i})"
+                              for i, lo, hi in w["known"][:3]) or "unknown"
+            if len(w["known"]) > 3:
+                known += f", +{len(w['known']) - 3} more"
+            print(f"    - {w['title']} / {w['employer']}: "
+                  f"now {_norm_pay(w['low']) or '?'}-"
+                  f"{_norm_pay(w['high']) or '?'}; on the list as {known}")
     if stats["ambiguous_urls"]:
         print(f"  note: {stats['ambiguous_urls']} URLs are claimed by more "
               f"than one list item and were ignored for matching.")
