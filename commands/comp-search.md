@@ -19,7 +19,16 @@ updated: 2026-08-21
 # Competitor Pay Search
 Run the monthly competitive pay research for SBRM.
 ## Instructions
-1. Load the skill definition from `${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay/SKILL.md`
+1. Load the skill definition from `$CP_DIR/SKILL.md`, where `$CP_DIR` is
+   resolved by this snippet. `CLAUDE_PLUGIN_ROOT` is **not** exported into
+   the Bash tool's environment, so a bare `${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}`
+   silently resolves to a directory that does not exist on a plugin install:
+
+   ```bash
+   CP_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+   [ -d "$CP_DIR" ] || CP_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+   [ -d "$CP_DIR" ] || CP_DIR="$HOME/.claude/skills/competitor-pay"
+   ```
 2. Load the `mcp2cli` skill before the first Microsoft 365 call. It carries the `ms365` subcommand syntax, the JSON parsing rules, and the auth-failure runbook.
 3. Follow the phases exactly as described in SKILL.md
 4. Parse any arguments passed by the user

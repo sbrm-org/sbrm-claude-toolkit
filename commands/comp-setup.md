@@ -37,7 +37,9 @@ If only `playwright-cli` is missing, **carry on**. Say which three boards will b
 The database must live **outside** the skill directory. When the skill is installed as a plugin, that directory is replaced wholesale on every update, and the database holds `sharepoint_item_id`, the only thing preventing duplicate rows being pushed to SharePoint.
 
 ```bash
-SKILL_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+SKILL_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+[ -d "$SKILL_DIR" ] || SKILL_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+[ -d "$SKILL_DIR" ] || SKILL_DIR="$HOME/.claude/skills/competitor-pay"
 CP_DATA="${COMPETITOR_PAY_HOME:-$HOME/.competitor-pay}"
 mkdir -p "$CP_DATA/data" "$CP_DATA/logs"
 python3 "$SKILL_DIR/scripts/init_db.py" --db "$CP_DATA/data/comp_research.db"
@@ -117,7 +119,9 @@ Sign-in there is the server's own `login` tool, **not** the `npx` block above, a
 Verify the site resolves, then confirm the list itself returns roughly 202 items:
 
 ```bash
-SKILL_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+SKILL_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+[ -d "$SKILL_DIR" ] || SKILL_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+[ -d "$SKILL_DIR" ] || SKILL_DIR="$HOME/.claude/skills/competitor-pay"
 SITE=$(python3 "$SKILL_DIR/scripts/sharepoint_target.py" site_id)
 LIST=$(python3 "$SKILL_DIR/scripts/sharepoint_target.py" list_id)
 echo "{\"siteId\": \"$SITE\"}" | ms365 get-sharepoint-site --stdin
@@ -162,11 +166,13 @@ ZipRecruiter needs no login.
 ### 8. Confirm both sync preconditions before anything runs live
 Two independent gates, and sync requires **both**:
 
-1. **The duplicate guard.** Does `scripts/seed_from_sharepoint.py` exist inside the skill directory (`${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay`)? Without it a sync pushes duplicates of postings already among the 202 rows.
+1. **The duplicate guard.** Does `scripts/seed_from_sharepoint.py` exist inside the skill directory (`$SKILL_DIR`, resolved by the snippet above)? Without it a sync pushes duplicates of postings already among the 202 rows.
 2. **The required columns.** Check the list has `PayUnit` and `Credential`, and that `SBRM Equivalent` is still multi-select with fill-in text off:
 
    ```bash
-   SKILL_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+   SKILL_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+   [ -d "$SKILL_DIR" ] || SKILL_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+   [ -d "$SKILL_DIR" ] || SKILL_DIR="$HOME/.claude/skills/competitor-pay"
    SITE=$(python3 "$SKILL_DIR/scripts/sharepoint_target.py" site_id)
    LIST=$(python3 "$SKILL_DIR/scripts/sharepoint_target.py" list_id)
    echo "{\"siteId\": \"$SITE\", \"listId\": \"$LIST\"}" \
@@ -190,7 +196,9 @@ If the user runs `/comp-setup --update`:
 2. Reload the roles, which is safe to repeat because the loader matches on title and updates in place:
 
    ```bash
-   SKILL_DIR="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/competitor-pay"
+   SKILL_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+   [ -d "$SKILL_DIR" ] || SKILL_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+   [ -d "$SKILL_DIR" ] || SKILL_DIR="$HOME/.claude/skills/competitor-pay"
    CP_DATA="${COMPETITOR_PAY_HOME:-$HOME/.competitor-pay}"
    python3 "$SKILL_DIR/scripts/init_db.py" --load-roles "$SKILL_DIR/roles/roles.json" \
        --db "$CP_DATA/data/comp_research.db"
