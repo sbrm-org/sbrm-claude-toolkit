@@ -21,7 +21,8 @@ Output format (long pages):
     - anchor text — https://...
 
 Ranking is BM25 + IDF-weighted coverage + term proximity (chunk_rank.py,
-ported from Tim's private web-access skill; keep the two in sync).
+which mirrors the upstream copy in the author's web-access skill; keep the
+two in sync).
 Tokens are estimated as chars/4. Python 3.9+.
 """
 from __future__ import annotations

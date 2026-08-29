@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# Ported from ~/.claude/skills/web-access/scripts/chunk_rank.py (Tim's private toolkit);
+# Mirrors the upstream chunk_rank.py maintained in the author's web-access skill;
 # code is verbatim, only this header and the docstring's source note differ.
-# Keep in sync: fix bugs there first, then re-copy here. Do not fork.
+# Keep in sync: fix bugs upstream first, then re-copy here. Do not fork.
 """Query-focused passage selection for fetched pages (stdlib only).
 
 Splits extracted page text into ~N-token chunks at paragraph/sentence
@@ -32,12 +32,15 @@ _WORD = re.compile(r"[^\W_]+")   # word chars minus underscore (Okapi_BM25 -> ok
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 # [anchor](url), [anchor](<url>), ![alt](url); URL may hold one level of
 # balanced parens (Wikipedia `..._(disambiguation)`) and an optional "title".
+# The label class excludes `[` and newline so each `[` scans only to the next
+# `[`/`]`/line end: scans from different `[` never overlap, so matching stays
+# linear on runs of unclosed `[` (with `[^\]]*` a 40k-`[` run took 15 s).
 _MD_LINK = re.compile(
-    r"!?\[([^\]]*)\]\(\s*<?((?:[^()\s<>]|\([^()\s]*\))+)>?(?:\s+\"[^\"]*\")?\s*\)"
+    r"!?\[([^\[\]\n]*)\]\(\s*<?((?:[^()\s<>]|\([^()\s]*\))+)>?(?:\s+\"[^\"]*\")?\s*\)"
 )
 # In-page fragment links carry no content: `[above](#top)`, and the escaped
 # citation markers trafilatura emits for Wikipedia, `[\[1\]](#cite_note-1)`.
-_FRAGMENT_LINK = re.compile(r"\[(?:\\\[)?[^\]]*?(?:\\\])?\]\(#[^)\s]*\)")
+_FRAGMENT_LINK = re.compile(r"\[(?:\\\[)?[^\[\]\n]*?(?:\\\])?\]\(#[^)\s]*\)")
 K1, B = 1.4, 0.75
 
 

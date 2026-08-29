@@ -227,6 +227,28 @@ class TestReviewFindings(unittest.TestCase):
                          ["https://en.wikipedia.org/wiki/Okapi_BM25"])
 
 
+class TestLinkRegexPerf(unittest.TestCase):
+    """strip_links/extract_links must stay linear on unclosed `[` runs (SBRM port review, 2026-08-29)."""
+
+    def _time(self, fn, *args) -> float:
+        import time
+        t0 = time.perf_counter()
+        fn(*args)
+        return time.perf_counter() - t0
+
+    def test_unclosed_bracket_run_is_linear(self):
+        text = "[" * 40_000
+        self.assertLess(self._time(chunk_rank.strip_links, text), 0.2)
+        self.assertLess(self._time(chunk_rank.extract_links, text), 0.2)
+
+    def test_code_page_with_sparse_close_brackets(self):
+        block = ("arr[i] = foo[bar " * 600)[:8191].replace("]", "") + "]"
+        page = "\n".join(block for _ in range(55))
+        self.assertGreater(len(page), 400_000)
+        self.assertLess(self._time(chunk_rank.strip_links, page), 0.2)
+        self.assertLess(self._time(chunk_rank.extract_links, page), 0.2)
+
+
 class TestLinks(unittest.TestCase):
     TEXT = (
         "See [Okapi BM25](https://en.wikipedia.org/wiki/Okapi_BM25) and "
