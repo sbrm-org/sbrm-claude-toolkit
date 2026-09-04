@@ -2,7 +2,7 @@
 title: SBRM Claude Toolkit
 short-title: SBRM Claude Toolkit README
 description: Distributable Claude Code plugin of skills and commands for SBRM staff
-updated: 2026-08-21
+updated: 2026-09-04
 status: active
 ---
 
@@ -20,6 +20,7 @@ A Claude Code plugin for Santa Barbara Rescue Mission staff. It bundles the skil
 | non-coding-protocols | 4-phase workflow (Scope, Execute, Review, Deliver) for substantial non-coding tasks, with planning briefs and self-review |
 | sbrm-notion | Map and conventions for the SBRM Notion workspace: what lives in each database, naming/status conventions, and safe-editing rules for the Notion connector |
 | documenso | Using SBRM's self-hosted e-signature service at sign.sbrmapps.com: getting access, creating your own API key, and driving documents through the API (upload a PDF, place fields, send for signing, download the signed file and certificate) |
+| bookstack | Using the SBRM Wiki (BookStack at wiki.sbrmapps.com) with an AI agent: how Departments, Notebooks, Sections and Pages map to the API, creating your own API token for your agent, reading/searching/creating/updating pages through the REST API, and the house rules that keep the wiki tidy |
 | web-research | Layered web search and fetching beyond the built-in tools: Tavily API (paid, if key set) plus free fallbacks (DuckDuckGo search, Jina Reader fetch). Fetches take a "what you're looking for" query and return only the matching passages of a page (focus.py, also usable on any saved or pasted text) |
 | competitor-pay | Competitive pay research for HR: sweeps local nonprofit career pages and job boards for postings with pay, matches them to SBRM's 16 tracked roles, and syncs the good ones to the "Competitor's Pay" SharePoint list HR uses to set floor pay. Needs extra setup (see below) |
 
