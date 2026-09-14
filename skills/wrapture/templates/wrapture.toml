@@ -1,0 +1,69 @@
+# wrapture starter config. Copy next to the script, edit the targets, run:
+#   uv run --with wrapture --with wrapture-instrumentation \
+#     python -m wrapture --config wrapture.toml script.py <safe args> 2> trace.log
+# Delete this file from the project when done (diagnostic use only).
+# Misspelled keys fail at load with ConfigError. Misspelled target modules
+# only warn at exit (ConfigWarning); a misspelled name drops its whole entry.
+
+# "types" prints '<str>' / '<dict>' instead of values. Keep it for anything
+# touching client, financial, or health data. "summary" shows bounded values.
+# Accepted: none, reference, snapshot, summary, types.
+capture = "types"
+
+# --- what to watch: 3 to 5 entries is a good first pass ------------------
+# target is exact: "package.module" or "package.module:Class". Not a glob.
+# Functions defined in the script file itself (__main__) cannot be observed
+# (match = silent, name = launch fails); observe importable modules only.
+# name  = exact members (every one must exist or the entire entry is dropped
+#         with a ConfigWarning at import, or the launch fails if the module
+#         was already imported; may be properties/attributes)
+# match = glob over routines the target itself defines, one level, no
+#         recursion, no inherited methods, no properties, no nested classes
+
+[[observe]]
+target = "PACKAGE.cli"          # entry point / subcommands
+match = "cmd_*"
+
+[[observe]]
+target = "PACKAGE.stages.STAGE" # one pipeline stage, all functions
+match = "*"
+exclude = "_fmt_*"              # drop tiny helpers that flood the tree
+
+[[observe]]
+target = "PACKAGE.db:Database"  # data-access class, named methods
+name = ["init_schema", "get_rows"]
+
+# --- library calls underneath (built-in instrumentation) ----------------
+# List available names:
+#   uv run --with wrapture --with wrapture-instrumentation \
+#     python -m wrapture.tools instrumentation          # add --toml to paste
+# Others: requests, httpx, urllib3, http.client, sqlalchemy, flask, fastapi, django
+
+[[instrument]]
+name = "sqlite3"
+# statement = false   # SQL text; off by default, leave it off on client or financial data
+
+# --- where the trace goes -------------------------------------------------
+# printer = live tree on stderr. Under pytest, use path = "trace.log" or
+# run pytest with -s, because pytest swallows stderr. timing defaults to true.
+# Any path/report below is relative to THIS file's folder, not the cwd.
+
+[[sink]]
+type = "printer"
+timing = true
+# depth = 2                          # only the top two levels of each tree
+# path = "trace.log"                 # file instead of stderr
+# filter = { path = "PACKAGE.stages.*" }   # keep only matching paths
+
+# Alternative for long runs: machine-readable events, one file per day.
+# [[sink]]
+# type = "jsonlines"
+# path = "trace-{date}.jsonl"
+
+# Alternative: one totals table per function, written at exit, instead of a
+# line per call. type belongs under [[window.collect]], not [[window]].
+# [[window]]
+# name = "stats"
+# report = "trace-stats-{datetime}.txt"
+# [[window.collect]]
+# type = "aggregate"
