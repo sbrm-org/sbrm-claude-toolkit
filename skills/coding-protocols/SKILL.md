@@ -60,6 +60,7 @@ When something breaks:
 3. Check recent changes (`git diff`, recent commits, env changes).
 4. In multi-component systems, instrument boundaries to find which layer fails before fixing anything.
 5. Trace bad values backward to their source. Fix at source, not at symptom.
+6. Python script slow or doing something unexpected? Run it under the `wrapture` skill (zero-code call tracing) before adding print or logging statements.
 
 **The class rule:** When fixing an error, ask whether it's a single instance or a pattern. If it reveals a class of similar issues, fix the class. Audit the full scope on first encounter rather than playing whack-a-mole across follow-up sessions.
 ### 4. No Placeholders

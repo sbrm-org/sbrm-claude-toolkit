@@ -2,7 +2,7 @@
 title: SBRM Claude Toolkit
 short-title: SBRM Claude Toolkit README
 description: Distributable Claude Code plugin of skills and commands for SBRM staff
-updated: 2026-09-04
+updated: 2026-09-14
 status: active
 ---
 
@@ -23,6 +23,7 @@ A Claude Code plugin for Santa Barbara Rescue Mission staff. It bundles the skil
 | bookstack | Using the SBRM Wiki (BookStack at wiki.sbrmapps.com) with an AI agent: how Departments, Notebooks, Sections and Pages map to the API, creating your own API token for your agent, reading/searching/creating/updating pages through the REST API, and the house rules that keep the wiki tidy |
 | web-research | Layered web search and fetching beyond the built-in tools: Tavily API (paid, if key set) plus free fallbacks (DuckDuckGo search, Jina Reader fetch). Fetches take a "what you're looking for" query and return only the matching passages of a page (focus.py, also usable on any saved or pasted text) |
 | competitor-pay | Competitive pay research for HR: sweeps local nonprofit career pages and job boards for postings with pay, matches them to SBRM's 16 tracked roles, and syncs the good ones to the "Competitor's Pay" SharePoint list HR uses to set floor pay. Needs extra setup (see below) |
+| wrapture | Zero-code call tracing for Python scripts: which functions ran, in what order, how long each took, and the sqlite3/requests/httpx calls underneath. Also a strict stand-in for unittest.mock in tests. Needs Python >=3.12 and `uv`; runs as a throwaway `uv run --with wrapture` overlay; nothing installed |
 
 ### Commands
 | Command | What it does |
