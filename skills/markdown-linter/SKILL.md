@@ -9,7 +9,9 @@ This skill validates markdown files against comprehensive formatting rules and a
 
 The skill operates in two modes: **validate** (report issues without changes) and **fix** (auto-correct deterministic issues). It's designed specifically for Obsidian-compatible markdown with support for wiki links, frontmatter, tables, and code blocks.
 ## Workflow
-The default invocation auto-fixes deterministic issues, then validates and reports anything residual:
+The default invocation auto-fixes deterministic issues, then validates and reports anything residual.
+
+**Optional guard rail.** Set `MARKDOWN_LINTER_FIX_PATHS` to a colon-separated list of path prefixes and auto-fix will only ever rewrite files underneath them; everywhere else the script degrades to read-only reporting and says so (`--force` overrides). Worth setting if you point the linter at both a prose vault and a code repo, since code-project READMEs have their own house style and the vault rules damage them. Unset (the default), auto-fix is unrestricted.
 
 ```
 python3 scripts/validate_markdown.py <filepath>
@@ -17,7 +19,7 @@ python3 scripts/validate_markdown.py <filepath>
 
 This runs `fix_spacing.py` (blank lines, horizontal rules, table blanks) and `fix_syntax.py` (heading-hash spacing, trailing whitespace, malformed bold) in place, then validates the fixed file and reports issues that need human judgment (wordy headings, broken links, table column mismatches, unclosed code fences, multiple H1s).
 
-`fix_tables.py` is **not** run automatically — its column-alignment can silently truncate cells. Run it manually if needed.
+`fix_tables.py` is **not** run automatically: its column-alignment can silently truncate cells. Run it manually if needed.
 
 For read-only validation (no file modification), pass `--check` or `--no-fix`:
 
@@ -26,6 +28,12 @@ python3 scripts/validate_markdown.py --check <filepath>
 ```
 
 Exit codes: `0` if no errors remain (warnings are OK), `1` if residual errors require manual fixing.
+
+**Never rewritten:** lines inside fenced code blocks and YAML frontmatter. `md_regions.py` is the single scanner for that set and every fixer and checker consults it. It follows CommonMark nesting (a 4-backtick fence may contain 3-backtick fences), and also protects `~~~` fences, fences indented under a bullet, and fences inside `> [!note]` callouts. Frontmatter is protected from rewriting but still reported on.
+
+**Runs to a fixed point** (max 3 rounds), so a second invocation is a no-op.
+
+**Skipped entirely** (exits 0 without reading the file): any path containing `/.obsidian/`, `/.claude/` or `/node_modules/`. Override the list with `MARKDOWN_LINTER_SKIP` (colon-separated path fragments) to exempt folders whose conventions are not prose rules, such as templates, archives or an AI-memory folder. It **replaces** the defaults rather than adding to them, so re-list any you want to keep; an empty value turns skipping off entirely. All three path gates casefold and resolve `~` and symlinks before comparing, since macOS paths are case-insensitive and a configured prefix has to normalize the same way the file path does.
 
 **Example output:**
 ```
@@ -48,12 +56,18 @@ Reference `references/formatting_rules.md` for complete documentation. Quick rul
 
 - ✗ NO blank after heading → anything (paragraph, list, subheading, code, quote)
 - ✓ Single blank after paragraph → list
-- ✓ Single blank between paragraphs
+- Adjacent prose lines are left alone: two lines with no blank between them are one paragraph in CommonMark, and nothing distinguishes a missing blank line from deliberate hard wrapping, so the linter never splits them
 - ✓ Single blank before/after tables
 - ✓ Single blank before/after blockquotes
 - ✗ NO blank lines within tables or blockquotes
 - ✗ NEVER multiple consecutive blank lines
 - ✗ NO horizontal rules (auto-removed by fix_spacing.py)
+
+**Em-dashes:**
+
+- A spaced em-dash used as a separator in a list item or table cell is allowed (`- 9:00am — SBA to LAX`, `- 2026-09-18 — note`)
+- Em-dashes in sentences, headings, titles and frontmatter values are errors, as is any unspaced em-dash (`word—word`)
+- Set `MARKDOWN_LINTER_EM_DASH_OK` to a colon-separated list of path prefixes to turn the rule off entirely for directories where em-dashes are intentional prose style
 
 **Syntax Rules:**
 
@@ -78,7 +92,7 @@ Reference `references/formatting_rules.md` for complete documentation. Quick rul
 - Wiki links `[[Note]]` as primary linking method
 - Bold sparingly (titles, eye-catching items only)
 
-**Frontmatter:** This linter only checks body formatting; YAML frontmatter is left untouched.
+**Frontmatter:** This linter only checks body formatting; YAML frontmatter is never rewritten, though em-dashes in its values are still reported.
 ## Resources
 This skill includes bundled resources for complete rule documentation and validation:
 ### references/formatting_rules.md

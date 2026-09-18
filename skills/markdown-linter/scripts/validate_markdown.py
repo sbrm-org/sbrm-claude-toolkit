@@ -1,13 +1,55 @@
 #!/usr/bin/env python3
 """
-Markdown validator for Obsidian formatting standards.
+Markdown validator for Obsidian-compatible formatting standards.
 Checks for syntax errors and style violations.
 """
 
 import re
+import os
 import sys
 from pathlib import Path
 from typing import List, Tuple, Dict
+
+from md_regions import protected_lines, fence_spans
+
+DEFAULT_SKIP_FRAGMENTS = ('/.obsidian/', '/.claude/', '/node_modules/')
+
+
+def _fragments_from_env(name, default=()):
+    """Colon-separated path fragments from the env, casefolded.
+
+    An unset variable falls back to `default`; an explicitly empty one means
+    "no fragments", so the defaults can be switched off.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return tuple(f.casefold() for f in default)
+    return tuple(part.strip().casefold() for part in raw.split(':') if part.strip())
+
+
+def _prefixes_from_env(name):
+    """Colon-separated path prefixes from the env, normalized for comparison.
+
+    The gates compare against `Path(filepath).resolve()`, so a configured
+    prefix has to go through the same normalization or it never matches: `~`
+    expanded, symlinks resolved (on macOS /tmp is a symlink to /private/tmp),
+    casefolded, and given a trailing separator so `/notes` cannot also enable
+    `/notes-archive`.
+    """
+    raw = os.environ.get(name)
+    if not raw:
+        return ()
+    out = []
+    for part in raw.split(':'):
+        part = part.strip()
+        if not part:
+            continue
+        resolved = str(Path(part).expanduser().resolve()).casefold()
+        if not resolved.endswith(os.sep):
+            resolved += os.sep
+        out.append(resolved)
+    return tuple(out)
+
 
 class MarkdownValidator:
     """Validates markdown against the bundled formatting rules."""
@@ -17,6 +59,14 @@ class MarkdownValidator:
         self.lines = self.filepath.read_text(encoding='utf-8').split('\n')
         self.errors: List[Dict] = []
         self.warnings: List[Dict] = []
+        # Lines inside code fences or frontmatter: never a style violation.
+        self.protected = protected_lines(self.lines)
+        # Frontmatter is protected from rewriting but still reported on: a
+        # title: or description: value is prose Obsidian renders.
+        self.fence_only = set()
+        for start, end in fence_spans(self.lines):
+            self.fence_only.update(range(start, end + 1))
+        self.em_dash_exempt = em_dash_exempt(self.filepath)
 
     def validate(self) -> Dict:
         """Run all validations and return results."""
@@ -36,17 +86,13 @@ class MarkdownValidator:
     def _check_blank_lines(self):
         """Validate blank line rules."""
         in_table = False
-        in_code_block = False
 
         for i in range(len(self.lines)):
             line = self.lines[i]
 
-            # Track code blocks
-            if line.strip().startswith('```'):
-                in_code_block = not in_code_block
-                continue
-
-            if in_code_block:
+            # Skip code fences and frontmatter
+            if i in self.protected:
+                in_table = False
                 continue
 
             # Track tables
@@ -68,9 +114,14 @@ class MarkdownValidator:
                         'suggestion': 'Remove blank line - keep table rows consecutive'
                     })
 
-            # Check for blank line after heading
+            # Check for blank line after heading. A table is the exception:
+            # it needs a single blank line before it, so `## H` + blank +
+            # `|...|` is correct and the fixer deliberately leaves it.
             if re.match(r'^#{1,6}\s+', line.strip()):
-                if i + 1 < len(self.lines) and not self.lines[i + 1].strip():
+                next_content = next(
+                    (l for l in self.lines[i + 1:] if l.strip()), '')
+                if (i + 1 < len(self.lines) and not self.lines[i + 1].strip()
+                        and not next_content.strip().startswith('|')):
                     self.errors.append({
                         'line': i + 1,
                         'type': 'spacing',
@@ -102,9 +153,12 @@ class MarkdownValidator:
     def _check_syntax(self):
         """Validate markdown syntax errors."""
         for i, line in enumerate(self.lines):
-            # Skip code blocks and frontmatter
-            if line.strip().startswith('```') or line.strip().startswith('---'):
+            # Skip code fences and frontmatter
+            if i in self.protected:
                 continue
+
+            # Literal brackets inside `code spans` are not broken links
+            line = re.sub(r'`[^`\n]*`', '', line)
 
             # Check for broken wiki links
             if re.search(r'\[\[[^\]]+$', line) and ']]' not in line:
@@ -142,6 +196,9 @@ class MarkdownValidator:
             line = self.lines[i]
 
             # Detect table start (header row)
+            if i in self.protected:
+                i += 1
+                continue
             if line.strip().startswith('|') and i + 1 < len(self.lines):
                 next_line = self.lines[i + 1]
                 # Check if next line is separator (all cells are dashes)
@@ -199,23 +256,44 @@ class MarkdownValidator:
                     frontmatter_delimiter_lines.append(i)
                     break
 
-        # Em-dash check — house style prohibits em-dashes (U+2014) in prose.
-        # Skip fenced code blocks and inline-code spans (single backticks).
-        in_code_block = False
+        # Em-dash check. House style objects to em-dashes inside sentences,
+        # headings and titles, not to the spaced separator used in list items
+        # and table cells ("- 9:00am — SBA to LAX", "- 2026-09-18 — note").
+        # So: a spaced em-dash on a list item or table row is fine; anywhere
+        # else, and any unspaced em-dash, is flagged.
         for i, line in enumerate(self.lines):
-            if line.strip().startswith('```') or line.strip().startswith('~~~'):
-                in_code_block = not in_code_block
+            if self.em_dash_exempt:
+                break
+            if i in self.fence_only:
                 continue
-            if in_code_block:
+            # Blank out code spans with same-length filler so the reported
+            # column still matches the real line.
+            scrubbed = re.sub(r'`[^`\n]*`', lambda m: ' ' * len(m.group(0)), line)
+            if '—' not in scrubbed:
                 continue
-            scrubbed = re.sub(r'`[^`\n]*`', '', line)
-            if '—' in scrubbed:
-                col = scrubbed.index('—') + 1
+
+            stripped = scrubbed.strip()
+            is_list = bool(re.match(r'^([-*+]|\d+\.)\s+', stripped))
+            is_table = stripped.startswith('|')
+            is_heading = bool(re.match(r'^#{1,6}\s+', stripped))
+
+            for m in re.finditer('—', scrubbed):
+                col = m.start() + 1
+                spaced = (m.start() > 0 and scrubbed[m.start() - 1] == ' '
+                          and m.end() < len(scrubbed) and scrubbed[m.end()] == ' ')
+                if spaced and (is_list or is_table) and not is_heading:
+                    continue  # formatting separator, allowed
+                if spaced:
+                    why = 'in prose - house style prohibits em-dashes in sentences, headings and titles'
+                else:
+                    why = 'unspaced - house style prohibits em-dashes inside words and sentences'
                 self.errors.append({
                     'line': i + 1,
                     'type': 'style',
-                    'message': f'Em-dash (—) at column {col} - house style prohibits em-dashes',
-                    'suggestion': 'Replace with comma, period, colon, parens, or " / " depending on context'
+                    'message': f'Em-dash (—) at column {col} {why}',
+                    'suggestion': ('Replace with comma, period, colon, parens, or " / ". '
+                                   'A spaced em-dash is allowed as a separator in list '
+                                   'items and table cells.')
                 })
 
         # Check for level 1 headings outside of title position
@@ -223,6 +301,8 @@ class MarkdownValidator:
         h1_positions = []
 
         for i, line in enumerate(self.lines):
+            if i in self.protected:
+                continue
             if line.startswith('# ') and not line.startswith('## '):
                 h1_count += 1
                 h1_positions.append(i + 1)
@@ -240,8 +320,8 @@ class MarkdownValidator:
         # Skip frontmatter delimiters
         for i, line in enumerate(self.lines):
             if re.match(r'^(-{3,}|\*{3,}|_{3,})$', line.strip()):
-                # Skip if this is a frontmatter delimiter
-                if i in frontmatter_delimiter_lines:
+                # Skip frontmatter delimiters and anything inside a code fence
+                if i in frontmatter_delimiter_lines or i in self.protected:
                     continue
 
                 self.errors.append({
@@ -253,6 +333,8 @@ class MarkdownValidator:
 
         # Check for wordy headings
         for i, line in enumerate(self.lines):
+            if i in self.protected:
+                continue
             if re.match(r'^#{1,6}\s+', line):
                 heading_text = re.sub(r'^#{1,6}\s+', '', line).strip()
 
@@ -362,6 +444,50 @@ class MarkdownValidator:
         return '\n'.join(output)
 
 
+def skip_fragments() -> tuple:
+    """Path fragments marking files whose conventions are not prose rules.
+
+    MARKDOWN_LINTER_SKIP replaces the defaults outright when set.
+    """
+    return _fragments_from_env('MARKDOWN_LINTER_SKIP', DEFAULT_SKIP_FRAGMENTS)
+
+
+def should_skip(filepath: str) -> bool:
+    """True if this file's conventions are not Obsidian prose rules.
+
+    Case-insensitive: macOS paths are case-insensitive but Path.resolve() does
+    not normalize case, so a differently-cased folder would otherwise slip past
+    the skip list and get auto-fixed.
+    """
+    resolved = str(Path(filepath).resolve()).casefold()
+    return any(frag in resolved for frag in skip_fragments())
+
+
+def fix_allowed(filepath: str) -> bool:
+    """True if auto-fix may rewrite this file.
+
+    With no MARKDOWN_LINTER_FIX_PATHS configured there is no restriction.
+    """
+    prefixes = _prefixes_from_env('MARKDOWN_LINTER_FIX_PATHS')
+    if not prefixes:
+        return True
+    resolved = str(Path(filepath).resolve()).casefold()
+    if not resolved.endswith(os.sep):
+        resolved += os.sep
+    return any(resolved.startswith(prefix) for prefix in prefixes)
+
+
+def em_dash_exempt(filepath) -> bool:
+    """True if em-dashes are intentional prose style in this file's directory."""
+    prefixes = _prefixes_from_env('MARKDOWN_LINTER_EM_DASH_OK')
+    if not prefixes:
+        return False
+    resolved = str(Path(filepath).resolve()).casefold()
+    if not resolved.endswith(os.sep):
+        resolved += os.sep
+    return any(resolved.startswith(prefix) for prefix in prefixes)
+
+
 def _run_autofix(filepath: str) -> List[str]:
     """Run deterministic auto-fixers on the file in place, return change list.
 
@@ -374,18 +500,28 @@ def _run_autofix(filepath: str) -> List[str]:
 
     all_changes: List[str] = []
 
-    spacing = SpacingFixer(filepath)
-    _, spacing_changes = spacing.fix()
-    if spacing_changes:
-        spacing.save()
-        all_changes.extend(spacing_changes)
+    # Run to a fixed point (capped): one fixer's output can create work for the
+    # other (e.g. `#NoSpace` becomes a heading, which then needs its trailing
+    # blank removed). Without this, a second invocation keeps changing the file.
+    for _ in range(3):
+        round_changes: List[str] = []
 
-    # SyntaxFixer reads from disk, so it picks up the spacing-fixed content
-    syntax = SyntaxFixer(filepath)
-    _, syntax_changes = syntax.fix()
-    if syntax_changes:
-        syntax.save()
-        all_changes.extend(syntax_changes)
+        spacing = SpacingFixer(filepath)
+        _, spacing_changes = spacing.fix()
+        if spacing_changes:
+            spacing.save()
+            round_changes.extend(spacing_changes)
+
+        # SyntaxFixer reads from disk, so it picks up the spacing-fixed content
+        syntax = SyntaxFixer(filepath)
+        _, syntax_changes = syntax.fix()
+        if syntax_changes:
+            syntax.save()
+            round_changes.extend(syntax_changes)
+
+        if not round_changes:
+            break
+        all_changes.extend(round_changes)
 
     return all_changes
 
@@ -404,6 +540,8 @@ def main():
     if '--no-fix' in args:
         check_only = True
         args.remove('--no-fix')
+    if '--force' in args:
+        args.remove('--force')
 
     if not args:
         print("Usage: python3 validate_markdown.py [--check] <filepath>")
@@ -413,9 +551,29 @@ def main():
 
     filepath = args[0]
 
-    if not Path(filepath).exists():
-        print(f"Error: File not found: {filepath}")
+    # Never lint files whose conventions are not prose rules (config folders,
+    # vendored dependencies, plus anything in MARKDOWN_LINTER_SKIP).
+    if should_skip(filepath):
+        # Say so rather than exiting silently: a silent exit reads as "clean".
+        print(f"NOTE: {Path(filepath).name} is on the linter skip list "
+              f"({', '.join(skip_fragments())}) - nothing checked.",
+              file=sys.stderr)
+        sys.exit(0)
+
+    if not Path(filepath).is_file():
+        print(f"Error: not a file: {filepath}")
         sys.exit(1)
+
+    force = False
+    if '--force' in sys.argv[1:]:
+        force = True
+
+    if not check_only and not force:
+        if not fix_allowed(filepath):
+            check_only = True
+            print(f"NOTE: {Path(filepath).name} is outside "
+                  "MARKDOWN_LINTER_FIX_PATHS - reporting only, no auto-fix "
+                  "(pass --force to override).\n")
 
     fixed_changes: List[str] = []
     if not check_only:
