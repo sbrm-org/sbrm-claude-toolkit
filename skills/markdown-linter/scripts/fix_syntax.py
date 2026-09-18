@@ -8,6 +8,24 @@ import re
 from pathlib import Path
 from typing import List, Tuple
 
+from md_regions import protected_lines
+
+# A run of N backticks closed by a run of exactly N, so `` `<x>` `` is one span.
+_CODE_SPAN_RE = re.compile(r'(`+)(.*?)(?<!`)\1(?!`)')
+
+
+def _sub_outside_code_spans(pattern, repl, line):
+    """re.sub applied only to the parts of a line outside inline code spans."""
+    out = []
+    pos = 0
+    for m in _CODE_SPAN_RE.finditer(line):
+        out.append(re.sub(pattern, repl, line[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(re.sub(pattern, repl, line[pos:]))
+    return ''.join(out)
+
+
 class SyntaxFixer:
     """Fixes syntax errors in markdown."""
 
@@ -26,45 +44,63 @@ class SyntaxFixer:
         return self.lines, self.changes
 
     def _fix_bold_formatting(self):
-        """Fix malformed bold/italic formatting."""
+        """Fix malformed bold/italic formatting (prose only).
+
+        Inline code spans are left alone. A doc that talks about markdown
+        writes its counter-examples in backticks (`` `*text**` ``); rewriting
+        those destroys the example, and the asterisks never rendered as bold
+        in the first place.
+        """
+        protected = protected_lines(self.lines)
         for i, line in enumerate(self.lines):
-            # Skip code blocks and frontmatter
-            if line.strip().startswith('```') or line.strip().startswith('---'):
+            # Never rewrite code fences or frontmatter
+            if i in protected:
                 continue
 
-            # Fix mismatched bold: *text** → **text**
-            # Negative lookbehind `(?<!\*)` prevents matching the second `*` of
-            # a valid `**word**` opener — without it, `**RED**` is "fixed" to
-            # `***RED**`, growing two asterisks per linter run.
-            if re.search(r'(?<!\*)\*[a-zA-Z]+\*\*', line):
-                original = line
-                line = re.sub(r'(?<!\*)\*([a-zA-Z]+)\*\*', r'**\1**', line)
-                if line != original:
-                    self.lines[i] = line
-                    self.changes.append(f"Line {i + 1}: Fixed malformed bold `*text**` → `**text**`")
-
-            # Fix mismatched bold: **text* → **text**
-            if re.search(r'\*\*[a-zA-Z]+\*(?!\*)', line):
-                original = line
-                line = re.sub(r'\*\*([a-zA-Z]+)\*(?!\*)', r'**\1**', line)
-                if line != original:
-                    self.lines[i] = line
-                    self.changes.append(f"Line {i + 1}: Fixed malformed bold `**text*` → `**text**`")
+            for pattern, repl, label in (
+                # Negative lookbehind `(?<!\*)` prevents matching the second `*`
+                # of a valid `**word**` opener - without it, `**RED**` is
+                # "fixed" to `***RED**`, growing two asterisks per linter run.
+                (r'(?<!\*)\*([a-zA-Z]+)\*\*', r'**\1**', '`*text**` -> `**text**`'),
+                (r'\*\*([a-zA-Z]+)\*(?!\*)', r'**\1**', '`**text*` -> `**text**`'),
+            ):
+                original = self.lines[i]
+                fixed = _sub_outside_code_spans(pattern, repl, original)
+                if fixed != original:
+                    self.lines[i] = fixed
+                    self.changes.append(
+                        f"Line {i + 1}: Fixed malformed bold {label}")
 
     def _fix_heading_spacing(self):
-        """Fix headings missing space after hash marks."""
+        """Fix headings missing space after hash marks (prose only).
+
+        The pattern matches the validator's check exactly: a hash run followed
+        by a letter or digit. Anything else after the hash (`#!`, `#{`, `#-`)
+        is not a heading attempt — matching those turned shebangs and CSS
+        selectors inside code blocks into `# !/usr/bin/env bash`.
+        """
+        protected = protected_lines(self.lines)
         for i, line in enumerate(self.lines):
+            if i in protected:
+                continue
             # Match heading without space: #Heading or ##Heading
-            if re.match(r'^#{1,6}[^\s#]', line):
+            if re.match(r'^#{1,6}[A-Za-z0-9]', line):
                 original = line
                 # Insert space after hashes
-                fixed = re.sub(r'^(#{1,6})([^\s])', r'\1 \2', line)
+                fixed = re.sub(r'^(#{1,6})([A-Za-z0-9])', r'\1 \2', line)
                 self.lines[i] = fixed
                 self.changes.append(f"Line {i + 1}: Added space after heading hash: `{original.strip()}` → `{fixed.strip()}`")
 
     def _fix_trailing_whitespace(self):
-        """Remove trailing whitespace from lines."""
+        """Remove trailing whitespace from prose lines.
+
+        Skipped inside code fences, where trailing spaces can be significant
+        (diff fixtures, whitespace-sensitive languages, test data).
+        """
+        protected = protected_lines(self.lines)
         for i, line in enumerate(self.lines):
+            if i in protected:
+                continue
             if line != line.rstrip():
                 self.lines[i] = line.rstrip()
                 self.changes.append(f"Line {i + 1}: Removed trailing whitespace")

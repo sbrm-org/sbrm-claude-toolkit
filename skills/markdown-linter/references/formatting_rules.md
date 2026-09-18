@@ -1,13 +1,8 @@
 # Markdown Formatting Rules
-
 This document defines all formatting rules for Obsidian-compatible markdown. Rules are organized by category with examples.
-
 ## Blank Line Rules
-
 Blank lines structure content readability and affect Obsidian rendering. Rules are strict.
-
 ### When SINGLE blank line is REQUIRED
-
 **After paragraph when followed by list:**
 ```markdown
 Here's what we need to do:
@@ -56,7 +51,6 @@ We should review this carefully.
 ```
 
 ### When NO blank line is allowed
-
 **Heading directly to anything (paragraph, list, subheading, code, quote):**
 ```markdown
 ## Overview
@@ -156,7 +150,6 @@ Prepared by Jane Doe
 ```
 
 ### Multiple consecutive blank lines are ALWAYS wrong
-
 NEVER allow 2 or more consecutive blank lines. Always collapse to single blank.
 
 ❌ WRONG:
@@ -174,68 +167,64 @@ Next content here.
 Next content here.
 ```
 
----
-
 ## Syntax Rules
-
 ### Bold and Italic Formatting
-
 **Correct bold syntax:** `**text**`
+
 - ❌ Wrong: `*text**` (mismatched)
 - ❌ Wrong: `**text*` (mismatched)
 - ❌ Wrong: `***text` (unclosed)
 
 **Correct italic syntax:** `*text*`
+
 - ❌ Wrong: `**text` (unclosed)
 - ❌ Wrong: `*text` (unclosed)
 
 **Combinations:**
+
 - Bold+italic: `***text***`
 - Bold in italic: `*Some **bold** text*`
-
 ### Wiki Links
-
 **Correct syntax:** `[[Note Name]]`
 - ✓ Spaces allowed: `[[My Note Name]]`
 - ✓ With aliases: `[[Reference Name|Display Text]]`
 
 **Incorrect syntax (errors):**
+
 - ❌ `[[Note Name` (missing closing brackets)
 - ❌ `[[Note Name]` (missing one bracket)
 - ❌ `[Note Name]]` (missing opening bracket)
-
 ### Links and Images
-
 **Correct link syntax:** `[text](url)`
 - ✓ `[Google](https://google.com)`
 - ✓ `[Internal link](path/to/file.md)`
 
 **Incorrect (errors):**
+
 - ❌ `[text](url` (missing closing paren)
 - ❌ `[text]url)` (mismatched brackets/parens)
 - ❌ `[text]]url)` (extra bracket)
 
 **Images:** Same as links but with leading `!`
+
 - ✓ `![alt text](image.png)`
 - ❌ `!alt text](image.png)` (missing opening bracket)
-
 ### Headings
-
 **Correct heading syntax:** Space required after hash marks
 - ✓ `# Level 1`
 - ✓ `## Level 2`
 - ✓ `### Level 3`
 
 **Incorrect (errors):**
+
 - ❌ `#No space` (missing space)
 - ❌ `#  Too many spaces` (more than one space)
 
 **Heading hierarchy:** Only use `#` for document title
+
 - ✓ Use `## Section`, `### Subsection`, `#### Detail`
 - ❌ Don't use `# Section` unless it's the document title
-
 ### Code Blocks
-
 **Correct fenced code blocks:**
 ~~~markdown
 ```python
@@ -245,16 +234,16 @@ def hello():
 ~~~
 
 **Incorrect:**
+
 - ❌ Unclosed: ` ```python` without closing ` ``` `
 - ❌ Mismatched: Opening ` ``` ` with closing ` ```` `
 - ❌ Missing backticks in fence: ` ```python` with no fence
 
 **Inline code:** Use backticks
+
 - ✓ `this is code`
 - ❌ `this is code (missing closing backtick)
-
 ### Lists and Bullets
-
 **Correct bullet lists:**
 ```markdown
 - Item 1
@@ -279,18 +268,13 @@ def hello():
 ```
 
 **Incorrect nesting:**
+
 - ❌ Inconsistent indentation (1 space, 2 spaces, 4 spaces mixed)
 - ❌ Too much indentation (8 spaces instead of 4)
 - ❌ Tab indentation (must be 4 spaces, not tabs)
-
----
-
 ## Table Formatting Rules
-
 Tables must follow strict formatting to render correctly in Obsidian.
-
 ### Structure Requirements
-
 **Must have:**
 1. Header row with pipe delimiters
 2. Separator row with dashes
@@ -305,7 +289,6 @@ Tables must follow strict formatting to render correctly in Obsidian.
 ```
 
 ### Column Count Rules
-
 **All rows must have matching column count:**
 
 ✓ CORRECT (3 columns everywhere):
@@ -325,27 +308,24 @@ Tables must follow strict formatting to render correctly in Obsidian.
 ```
 
 ### Separator Row Rules
-
 **Must contain only dashes and optional colons:**
+
 - ✓ `|---|---|---|` (simple dashes)
 - ✓ `|:---|---|---:|` (with alignment colons)
 - ❌ `|--- |---|---|` (spaces not allowed)
 - ❌ `| --- | --- | --- |` (pipes with spaces)
 - ❌ `|content|---|---|` (can't have text)
-
 ### Whitespace Rules
-
 **No trailing spaces on lines:**
 - ✓ `|Column1|Column2|`
 - ❌ `|Column1|Column2| ` (space at end)
 
 **No blank lines within table:**
+
 - ✓ Rows consecutive
 - ❌ Blank line between header and separator
 - ❌ Blank line between data rows
-
 ### Table Examples
-
 **Simple 2-column table:**
 ```markdown
 |Item|Quantity|
@@ -371,13 +351,10 @@ Tables must follow strict formatting to render correctly in Obsidian.
 |Reporting|Monthly reports|Planned|
 ```
 
----
-
 ## Style Rules
-
 ### Bold Usage
-
 Use bold **sparingly**:
+
 - ✓ For section labels that aren't headings
 - ✓ For terms that need eye-catching emphasis
 - ✓ For labels in lists
@@ -393,26 +370,27 @@ Use bold **sparingly**:
 ```
 
 ### Heading Hierarchy
-
 **Level 1 (`#`) only for document title:**
+
 - ✓ `# 2025-26 Strategic Plan`
 - ✓ `# Bylaws Amendments`
 
 **Use Level 2 (`##`) for major sections:**
+
 - ✓ `## Overview`
 - ✓ `## The Problem`
 - ✓ `## Implementation`
 
 **Use Level 3 (`###`) for subsections:**
+
 - ✓ `### Amendment 1: Staff Authority`
 - ✓ `### Validation Workflow`
 
 **Use Level 4+ sparingly:**
+
 - ✓ `#### Nested detail`
 - Avoid going deeper than level 4
-
 ### List Indentation
-
 **Nested lists use 4-space indentation:**
 ```markdown
 - Parent item
@@ -423,10 +401,8 @@ Use bold **sparingly**:
         - Double nested (8 spaces)
 ```
 
-**NOT tabs, NOT 2 spaces, NOT 3 spaces — exactly 4 spaces**
-
+**NOT tabs, NOT 2 spaces, NOT 3 spaces: exactly 4 spaces**
 ### Wiki Links
-
 Use wiki links `[[Note Name]]` as primary linking method.
 
 **Correct usage:**
@@ -437,15 +413,11 @@ Related: [[Financial Management for Nonprofits]]
 ```
 
 **Avoid markdown links when wiki links work:**
+
 - ✓ `[[Note Name]]`
 - ❌ `[Note Name](path/to/note.md)`
-
----
-
 ## Obsidian-Specific Rules
-
 ### Frontmatter
-
 Frontmatter at top of file (YAML between `---` and `---`):
 
 ```markdown
@@ -460,13 +432,12 @@ tags:
 ```
 
 **Rules:**
+
 - Frontmatter must be first content in file
 - Use dashes on own lines: `---`
 - Proper YAML formatting (colons, hyphens)
 - Common fields: `type`, `created`, `updated`, `tags`, `project`
-
 ### Code Blocks for Copy-Paste
-
 Use fenced code blocks for content meant to be copied:
 
 ~~~markdown
@@ -477,16 +448,12 @@ The Staff President may execute contracts...
 ~~~
 
 **Why:** Obsidian makes it easy to copy entire code block contents.
-
 ### LaTeX for Formulas
-
 Use LaTeX within code fences for mathematical formulas:
 
 ~~~markdown
 $$\frac{\text{Cash and equivalents}}{\text{Current Liabilities}}$$
 ~~~
-
----
 
 ## Summary Quick Reference
 
