@@ -2,7 +2,7 @@
 title: SBRM Claude Toolkit
 short-title: SBRM Claude Toolkit README
 description: Distributable Claude Code plugin of skills and commands for SBRM staff
-updated: 2026-09-14
+updated: 2026-09-21
 status: active
 ---
 
@@ -21,6 +21,7 @@ A Claude Code plugin for Santa Barbara Rescue Mission staff. It bundles the skil
 | sbrm-notion | Map and conventions for the SBRM Notion workspace: what lives in each database, naming/status conventions, and safe-editing rules for the Notion connector |
 | documenso | Using SBRM's self-hosted e-signature service at sign.sbrmapps.com: getting access, creating your own API key, and driving documents through the API (upload a PDF, place fields, send for signing, download the signed file and certificate) |
 | bookstack | Using the SBRM Wiki (BookStack at wiki.sbrmapps.com) with an AI agent: how Departments, Notebooks, Sections and Pages map to the API, creating your own API token for your agent, reading/searching/creating/updating pages through the REST API, and the house rules that keep the wiki tidy |
+| sbrmapps-operator | For approved platform operators only: operating SBRM's self-hosted app platform (Cloudron at my.sbrmapps.com) with an AI agent. Creating your own API token, the rules for adding to the platform, the install checklist, and verification. Rules and live facts are read from the restricted Platform Ops book on the SBRM Wiki |
 | web-research | Layered web search and fetching beyond the built-in tools: Tavily API (paid, if key set) plus free fallbacks (DuckDuckGo search, Jina Reader fetch). Fetches take a "what you're looking for" query and return only the matching passages of a page (focus.py, also usable on any saved or pasted text) |
 | competitor-pay | Competitive pay research for HR: sweeps local nonprofit career pages and job boards for postings with pay, matches them to SBRM's 16 tracked roles, and syncs the good ones to the "Competitor's Pay" SharePoint list HR uses to set floor pay. Needs extra setup (see below) |
 | wrapture | Zero-code call tracing for Python scripts: which functions ran, in what order, how long each took, and the sqlite3/requests/httpx calls underneath. Also a strict stand-in for unittest.mock in tests. Needs Python >=3.12 and `uv`; runs as a throwaway `uv run --with wrapture` overlay; nothing installed |
