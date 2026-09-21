@@ -130,6 +130,30 @@ Writing rules for agents:
 
 - **Do not bulk-edit** (renaming or moving many pages, deleting sections) without checking with the notebook's owner. Every change is attributed to you and shows in the department's activity feed.
 
+### Who is the page for: a person or an agent?
+
+Decide before you write, because it changes how the page is written. Split by what the page is, not by writing two versions:
+
+| The page is | Write it for | How |
+|---|---|---|
+| An explanation: what something is, why it was chosen, how it works | People | Plain language. Agents read prose fine, so it serves both |
+| Rules or a procedure an agent will follow: checklists, endpoints, exact settings | Agents | Exact and terse. One summary callout on top for people |
+| Live facts: a list of what exists, IDs, versions, owners | Both | A table, kept current by whoever changes the thing |
+
+Rules that keep this from rotting:
+
+- **Never write a human version and an agent version of the same topic.** Two pages stating the same rule will disagree within a month. Each fact lives on one page; other pages link to it.
+- **An agent-first page opens with exactly one callout**: the words "Written for AI agents", then a two-to-four-sentence summary a person can act on (what this is, when you would care, who owns it):
+
+  ```html
+  <p class="callout info"><strong>Written for AI agents.</strong> Human summary: ...what this is, when you would care. Owner: Name.</p>
+  ```
+
+- **A people-first page needs no label.** If it sits in a book that is mostly agent pages, open its callout with "Written for people."
+- **When you edit a page, re-read its summary callout and fix it in the same edit.** The summary drifting from the body is the main way this pattern fails.
+- **Anything a person may have to do by hand when no agent is available** (an outage, a lockout) stays step-by-step readable, even on an agent-first page.
+- **Agent-first pages full of system detail belong in a restricted notebook**, not a department notebook everyone reads. Ask the administrator if you are unsure where that is.
+
 ### Worked example: agent adds a how-to to a department notebook
 
 1. Find the notebook: `GET /books?filter[name]=Finance%20Knowledge%20Base` → note its `id`.
