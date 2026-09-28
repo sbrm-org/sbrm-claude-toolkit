@@ -1,4 +1,5 @@
 ---
+name: new-slash-command
 description: Create a new Claude Code slash command
 argument-hint: "[command-name] [description]"
 model: sonnet

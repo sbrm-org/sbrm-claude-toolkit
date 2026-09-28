@@ -1,4 +1,5 @@
 ---
+name: analyze
 description: Orchestrate data analysis/comparison with structured protocol
 argument-hint: "[!quick|!full] [topic or file path]"
 allowed-tools: Read, Write, Edit, Bash(mkdir:*,python3:*,uv:*), WebSearch, WebFetch

@@ -1,4 +1,5 @@
 ---
+name: policy
 description: Orchestrate HR/operational policy creation with structured protocol
 argument-hint: "[!quick|!full] [topic]"
 allowed-tools: Read, Write, Edit, Bash(mkdir:*), WebSearch, WebFetch

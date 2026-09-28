@@ -1,4 +1,5 @@
 ---
+name: sheet
 description: Orchestrate spreadsheet/tracker builds with structured protocol
 argument-hint: "[!quick|!full] [topic]"
 allowed-tools: Read, Write, Edit, Bash(mkdir:*,python3:*,uv:*)

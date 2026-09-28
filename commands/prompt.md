@@ -1,4 +1,5 @@
 ---
+name: prompt
 description: Turn a rough idea into a well-crafted prompt for Claude Code
 argument-hint: "<idea or goal for the prompt>"
 allowed-tools: Read, Bash(pbcopy:*), AskUserQuestion

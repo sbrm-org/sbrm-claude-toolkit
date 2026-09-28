@@ -1,4 +1,5 @@
 ---
+name: report
 description: Orchestrate executive/stakeholder report creation with structured protocol
 argument-hint: "[!quick|!full] [topic]"
 allowed-tools: Read, Write, Edit, Bash(mkdir:*,python3:*,uv:*), WebSearch, WebFetch

@@ -1,4 +1,5 @@
 ---
+name: write
 description: Generate 3-angle drafts in the user's voice (full project or quick mode)
 argument-hint: "[full|quick] [topic-or-slug]"
 allowed-tools: Read, Write, Bash(mkdir:*)

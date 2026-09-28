@@ -4,21 +4,13 @@ metadata:
   version: "3.4.0"
 description: |
   Remove signs of AI-generated writing from text. Use when editing or reviewing
-  text to make it sound more natural and human-written. Based on Wikipedia's
-  comprehensive "Signs of AI writing" guide, Simon Willison's LLM cliché
-  highlighter, and further 2026 research (GPTZero, academic stylometry papers,
-  independent AI-cliché writeups). 67 patterns across content, language,
-  style, communication, filler/hedging, structure/voice, chat-response
-  clichés, and a further researched/deduced batch. v3.0 adds authorship modes
-  (preservation-first editing vs whole-cloth), personal-voice precedence over
-  generic patterns, structural rhythm checks, and a one-rewrite cap. v3.2 adds
-  12 chat-response clichés (41-52). v3.3 adds 15 more patterns (53-67),
-  including an explicit Voice Precedence override for pattern #55
-  (Validation-Then-Pivot) so it never overwrites an author's documented
-  concede-then-redirect voice in chat/work-chat registers. v3.4 re-syncs with
-  the Aug-2026 revision of the Wikipedia page: era-dated vocabulary tiers in
-  #7, a signs-of-human-writing allow list, the regression-to-the-mean core
-  diagnostic and audit question, and a no-fake-imperfection guard on #30.
+  text to make it sound more natural and human-written. 67 patterns across
+  content, language, style, communication, filler/hedging, structure/voice, and
+  chat-response clichés, drawn from Wikipedia's "Signs of AI writing" guide
+  (re-synced Aug 2026), Simon Willison's LLM cliché highlighter, and 2026
+  stylometry research. Includes authorship modes (preservation-first editing vs
+  whole-cloth), personal-voice precedence over generic patterns, structural
+  rhythm checks, a signs-of-human-writing allow list, and a one-rewrite cap.
   ROUTING: if the text must match a specific person's voice, seed the draft
   with their real writing samples first, then run these patterns. Use
   humanizer alone when no specific personal voice is targeted (other AI
@@ -1013,6 +1005,12 @@ Provide:
 - Removed filler phrases ("In order to", "At its core")
 - Removed generic positive conclusion ("the future looks bright", "exciting times lie ahead")
 - Made the voice more personal and less "assembled" (varied rhythm, fewer placeholders)
+## Version History
+- **v3.0** — authorship modes (preservation-first editing vs whole-cloth), personal-voice precedence over generic patterns, structural rhythm checks, one-rewrite cap
+- **v3.2** — 12 chat-response clichés (patterns 41-52)
+- **v3.3** — 15 more patterns (53-67), plus a Voice Precedence override on #55 (Validation-Then-Pivot) so it never overwrites an author's documented concede-then-redirect voice in chat/work-chat registers
+- **v3.4** — re-sync with the Aug-2026 revision of the Wikipedia page: era-dated vocabulary tiers in #7, a signs-of-human-writing allow list, the regression-to-the-mean core diagnostic and audit question, and a no-fake-imperfection guard on #30
+
 ## Reference
 Patterns 1-40 are based on [Wikipedia:Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing), maintained by WikiProject AI Cleanup. The patterns documented there come from observations of thousands of instances of AI-generated text on Wikipedia. v3.4 re-synced against the August 2026 revision of that page, which added the model-era vocabulary data, the regression-to-the-mean framing, the signs-of-human-writing section, and the ineffective-indicators (false positive) guidance now folded in above. The page updates continuously; re-sync roughly yearly or when a new model generation lands.
 

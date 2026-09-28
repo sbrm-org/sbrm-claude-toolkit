@@ -1,4 +1,5 @@
 ---
+name: interview
 description: AI writing interviewer to extract specifics, stories, and constraints
 argument-hint: "[topic]"
 allowed-tools: Read, Write
