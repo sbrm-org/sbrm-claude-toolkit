@@ -56,6 +56,8 @@ A Claude Code plugin for Santa Barbara Rescue Mission staff. It bundles the skil
    ```
 
 Skills load automatically when relevant; commands are available as `/prompt`, `/write`, etc.
+
+**If updates stop working.** Claude Code keeps its own copy of the marketplace, and if that copy goes stale, new versions never arrive. In Claude Code, type `/plugin`, open **Marketplaces**, choose `sbrm-claude-toolkit`, then **Update marketplace**. Then open **Installed**, choose `sbrm-toolkit`, then **Update now**. Or, in a terminal, run `claude plugin marketplace update sbrm-claude-toolkit` and then `claude plugin update sbrm-toolkit@sbrm-claude-toolkit`. Restart Claude Code afterwards.
 ## Extra setup: competitor-pay
 Everything else in this plugin works the moment it is installed. `competitor-pay` does not, because it writes to a Microsoft 365 SharePoint list and this repository is public, so the list's address is not committed here.
 
