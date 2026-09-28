@@ -61,13 +61,13 @@ Everything else in this plugin works the moment it is installed. `competitor-pay
 
 After installing the plugin, run `/comp-setup` in Claude Code and follow it. It walks through the whole thing one step at a time and assumes no technical background. Two items it cannot get for you:
 
-- **The list address.** Ask Tim for the `site_id` and `list_id`, then save them as `~/.competitor-pay/config.local.json`:
+- **The list address and service account.** Ask Tim for the `site_id` and `list_id`, and for which Microsoft 365 account is the SharePoint service account. They all go in `~/.competitor-pay/config.local.json` (`/comp-setup` asks for the account and saves it there for you):
 
   ```json
-  {"sharepoint": {"site_id": "...", "list_id": "..."}}
+  {"sharepoint": {"site_id": "...", "list_id": "...", "account": "..."}}
   ```
 
-  Nothing else in the skill reads the address directly, so this one file is the whole configuration.
+  Nothing else in the skill reads these directly, so this one file is the whole configuration.
 
 - **Microsoft 365 access.** `/comp-setup` step 4 handles the sign-in. On a machine without the `ms365` command it falls back to the Microsoft 365 MCP server, which Claude Code can add for you.
 

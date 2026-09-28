@@ -188,3 +188,101 @@ class TestMultiSelectDetection:
     def test_absent_choice_block_does_not_crash(self):
         from migrate_sharepoint import _is_multi_select
         assert not _is_multi_select({})
+
+
+# --- service account ---------------------------------------------------------
+
+import argparse  # noqa: E402
+import json  # noqa: E402
+
+import migrate_sharepoint  # noqa: E402
+import sharepoint_target  # noqa: E402
+
+NO_ACCOUNT = ("No service account configured. "
+              "Run /comp-setup or set CP_ACCOUNT.")
+
+
+@pytest.fixture
+def unconfigured(tmp_path, monkeypatch):
+    """No account anywhere: empty data home, placeholder config, and an ms365
+    that fails the test if anything reaches it."""
+    monkeypatch.setenv("COMPETITOR_PAY_HOME", str(tmp_path / "home"))
+    for var in ("CP_SITE_ID", "CP_LIST_ID", "CP_ACCOUNT"):
+        monkeypatch.delenv(var, raising=False)
+    fake = tmp_path / "config.json"
+    fake.write_text(json.dumps({"sharepoint": {
+        "site_id": "REPLACE_ME", "list_id": "REPLACE_ME",
+        "account": "REPLACE_ME"}}))
+    monkeypatch.setattr(sharepoint_target, "_config_path", lambda: fake)
+
+    def no_ms365(*args):
+        raise AssertionError(f"ms365 called: {args}")
+    monkeypatch.setattr(migrate_sharepoint, "ms365", no_ms365)
+
+
+def _accounts(default, *others):
+    return {"accounts": [{"email": default, "isDefault": True}]
+            + [{"email": o, "isDefault": False} for o in others]}
+
+
+class TestServiceAccount:
+    def test_compares_against_the_configured_account(self, unconfigured,
+                                                     monkeypatch):
+        monkeypatch.setenv("CP_ACCOUNT", "svc@example.org")
+        monkeypatch.setattr(migrate_sharepoint, "ms365",
+                            lambda *a: _accounts("svc@example.org",
+                                                 "someone@example.org"))
+        assert migrate_sharepoint.assert_default_account() == "svc@example.org"
+
+    def test_wrong_default_account_refuses_to_run(self, unconfigured,
+                                                  monkeypatch):
+        monkeypatch.setenv("CP_ACCOUNT", "svc@example.org")
+        monkeypatch.setattr(migrate_sharepoint, "ms365",
+                            lambda *a: _accounts("someone@example.org"))
+        with pytest.raises(SystemExit):
+            migrate_sharepoint.assert_default_account()
+
+    def test_comparison_ignores_case(self, unconfigured, monkeypatch):
+        """Microsoft 365 addresses are case-insensitive; a capitalised entry in
+        config.local.json must not stop a run."""
+        monkeypatch.setenv("CP_ACCOUNT", "Svc@Example.org")
+        monkeypatch.setattr(migrate_sharepoint, "ms365",
+                            lambda *a: _accounts("svc@example.org"))
+        assert migrate_sharepoint.assert_default_account() == "svc@example.org"
+
+    def test_cli_account_is_the_one_compared(self, unconfigured, monkeypatch):
+        monkeypatch.setenv("CP_ACCOUNT", "env@example.org")
+        monkeypatch.setattr(migrate_sharepoint, "ms365",
+                            lambda *a: _accounts("cli@example.org"))
+        assert migrate_sharepoint.assert_default_account(
+            "cli@example.org") == "cli@example.org"
+
+    def test_unresolved_account_fails_before_calling_ms365(self, unconfigured):
+        with pytest.raises(SystemExit) as exc:
+            migrate_sharepoint.assert_default_account()
+        assert NO_ACCOUNT in str(exc.value)
+
+    def test_no_account_is_hardcoded(self):
+        assert not hasattr(migrate_sharepoint, "DEFAULT_ACCOUNT")
+
+    def test_snapshot_sends_the_resolved_account(self, unconfigured, tmp_path,
+                                                 monkeypatch):
+        monkeypatch.setenv("CP_ACCOUNT", "svc@example.org")
+        calls = []
+
+        def fake_ms365(*args):
+            calls.append(args)
+            if args[0] == "list-accounts":
+                return _accounts("svc@example.org")
+            if args[0] == "list-sharepoint-list-columns":
+                return {"value": []}
+            return {"value": [{"id": "1", "fields": {}}]}
+        monkeypatch.setattr(migrate_sharepoint, "ms365", fake_ms365)
+
+        migrate_sharepoint.cmd_snapshot(argparse.Namespace(
+            site_id="site", list_id="list", account=None,
+            out_dir=str(tmp_path / "snap")))
+        graph = [c for c in calls if c[0] != "list-accounts"]
+        assert len(graph) == 2
+        for call in graph:
+            assert call[call.index("--account") + 1] == "svc@example.org"

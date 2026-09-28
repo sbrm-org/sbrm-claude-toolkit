@@ -55,8 +55,6 @@ from crosswalk import (  # noqa: E402
 
 import sharepoint_target  # noqa: E402
 
-DEFAULT_ACCOUNT = "admin@example.org"
-
 # Internal names of the columns this migration touches. `JobPosting` is
 # deliberately absent and must stay that way.
 FIELD_LABELS = "SBRMEquivalent"
@@ -113,17 +111,23 @@ def ms365(*args):
     return data
 
 
-def assert_default_account(expected):
-    """Refuse to run if the wrapper's default account is not the expected one.
+def assert_default_account(cli_value=None):
+    """Refuse to run if the wrapper's default account is not the configured one.
 
     Some subcommands reject --account, so those calls run as whatever the
     wrapper defaults to. Writing 202 rows to HR's list as the wrong identity is
     not something to discover afterwards.
+
+    The expected account resolves through sharepoint_target (--account, then
+    CP_ACCOUNT, then config.local.json), and an unconfigured install stops
+    here, before anything reaches Graph.
     """
+    expected = sharepoint_target.require("account", cli_value)
     data = ms365("list-accounts")
     accounts = data.get("accounts", []) if isinstance(data, dict) else []
     default = next((a.get("email") for a in accounts if a.get("isDefault")), None)
-    if default != expected:
+    # Microsoft 365 addresses are case-insensitive.
+    if (default or "").lower() != expected.lower():
         _fail(f"default ms365 account is {default!r}, expected {expected!r}. "
               f"Some subcommands ignore --account and would run as {default!r}. "
               f"Fix with: ms365 select-account")
@@ -133,7 +137,8 @@ def assert_default_account(expected):
 # --- stage 1: snapshot ---------------------------------------------------
 
 def cmd_snapshot(args):
-    print(f"Acting as: {assert_default_account(args.account)}")
+    args.account = assert_default_account(args.account)
+    print(f"Acting as: {args.account}")
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -548,7 +553,10 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--site-id", default=None)
     ap.add_argument("--list-id", default=None)
-    ap.add_argument("--account", default=DEFAULT_ACCOUNT)
+    ap.add_argument("--account", default=None,
+                    help="Microsoft 365 service account; defaults to the one "
+                         "configured by /comp-setup (CP_ACCOUNT or "
+                         "config.local.json)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("snapshot", help="fetch all rows and the schema to disk")

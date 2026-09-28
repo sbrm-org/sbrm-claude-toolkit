@@ -5,7 +5,7 @@ argument-hint: "[--update]"
 allowed-tools: Bash(claude:*), Bash(python3:*), Bash(uv:*), Bash(npm:*), Bash(npx:*), Bash(brew:*), Bash(which:*), Bash(command:*), Bash(node:*), Bash(sqlite3:*), Bash(playwright-cli:*), Bash(curl:*), Bash(mkdir:*), Bash(echo:*), Bash(ms365:*), Read, Write, mcp__claude_ai_Indeed__search_jobs
 model: inherit
 created: 2026-04-14
-updated: 2026-08-21
+updated: 2026-09-28
 ---
 
 # Competitor Pay Setup
@@ -99,6 +99,43 @@ npx -y @softeria/ms-365-mcp-server --login
 
 Leave it running while the user enters the code at `https://login.microsoft.com/device`. Without those two env vars the token lands in the package's own default location and `ms365` will keep reporting a failed login even though the sign-in succeeded. `NODE_OPTIONS` works around an undici IPv6 failure that surfaces as `network_error: fetch failed`. Confirm with `ms365 verify-login`.
 
+**Then record which account is the SharePoint service account.** The scripts that call the wrapper (`seed_from_sharepoint.py` when it fetches the list itself, and `migrate_sharepoint.py`) refuse to run until they know which Microsoft 365 account should be acting, and the plugin ships none because this repo is public. Show the signed-in accounts:
+
+```bash
+ms365 list-accounts
+```
+
+Ask the user which of these is the SharePoint service account for the Competitor's Pay list. If they are not sure, that is a question for Tim, not a guess. Save their answer into the same local file that holds the site and list IDs, keeping anything already in it (replace `ACCOUNT_THE_USER_NAMED` with their answer):
+
+```bash
+CP_DATA="${COMPETITOR_PAY_HOME:-$HOME/.competitor-pay}"
+mkdir -p "$CP_DATA"
+python3 - "$CP_DATA/config.local.json" "ACCOUNT_THE_USER_NAMED" <<'PY'
+import json, sys
+path, account = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as fh:
+        cfg = json.load(fh)
+except (OSError, ValueError):
+    cfg = {}
+cfg.setdefault("sharepoint", {})["account"] = account
+with open(path, "w") as fh:
+    json.dump(cfg, fh, indent=2)
+print("saved", account, "to", path)
+PY
+```
+
+Confirm it resolves, and that `ms365 list-accounts` shows that same account as `isDefault` (if it does not, run `ms365 select-account`):
+
+```bash
+SKILL_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+[ -d "$SKILL_DIR" ] || SKILL_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+[ -d "$SKILL_DIR" ] || SKILL_DIR="$HOME/.claude/skills/competitor-pay"
+python3 "$SKILL_DIR/scripts/sharepoint_target.py" account
+```
+
+A machine on the MCP server rather than the wrapper can skip this: it seeds through `--from-file`, which needs no account.
+
 **Do not re-add the `@softeria/ms-365-mcp-server` MCP server on a machine that has the wrapper.** The resident MCP servers were removed deliberately to reclaim idle RAM. Only fall back to the MCP server on a machine where the wrapper genuinely is not installed. On such a machine, add it under the name `ms365` so the tools land at `mcp__ms365__*`, which is what this skill looks for, then restart the session so they load:
 
 ```bash
@@ -132,10 +169,10 @@ ms365 list-sharepoint-site-list-items --site-id "$SITE" --list-id "$LIST" \
 
 The CLI takes kebab-case `--site-id` / `--list-id`; `config.json` stores the same values under snake_case; the MCP tools want camelCase. Using the wrong spelling fails schema validation.
 
-**If those commands fail saying no site_id is configured**, the install has no local target file yet. This repo is public, so the committed `config.json` ships placeholders. Create `~/.competitor-pay/config.local.json` with the real values, which Tim can supply:
+**If those commands fail saying no site_id is configured**, the local target file has no IDs yet. This repo is public, so the committed `config.json` ships placeholders. Add the real values, which Tim can supply, to `~/.competitor-pay/config.local.json` beside the account saved above:
 
 ```json
-{"sharepoint": {"site_id": "...", "list_id": "..."}}
+{"sharepoint": {"site_id": "...", "list_id": "...", "account": "..."}}
 ```
 
 **If the list returns 0 items, stop.** Either auth or the list ID is wrong, and running a search on top of that would create duplicates. Note the wrapper exits 0 on auth failure and returns `{"error": ...}`, so an empty result is not proof the list is empty.
@@ -204,10 +241,18 @@ If the user runs `/comp-setup --update`:
        --db "$CP_DATA/data/comp_research.db"
    ```
 
-   `SKILL_DIR` is re-derived here on purpose. Each Bash call runs in a fresh shell, so a variable
-
-   set back in step 2 is empty by the time this block runs.
+   `SKILL_DIR` is re-derived here on purpose. Each Bash call runs in a fresh shell, so a variable set back in step 2 is empty by the time this block runs.
 
 3. Re-verify the role count is still 16, re-run the `Program Tech` check from step 3, and re-check dependencies.
+4. Confirm the SharePoint service account is recorded. An install set up before this step existed has none, and the scripts that call the `ms365` wrapper stop until it does:
+
+   ```bash
+   SKILL_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+   [ -d "$SKILL_DIR" ] || SKILL_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+   [ -d "$SKILL_DIR" ] || SKILL_DIR="$HOME/.claude/skills/competitor-pay"
+   python3 "$SKILL_DIR/scripts/sharepoint_target.py" account
+   ```
+
+   If that prints an error instead of an address, run the "record which account is the SharePoint service account" part of setup step 4 (Connect Microsoft 365), then run this check again. A machine on the MCP server rather than the wrapper can skip this step.
 
 **Schema upgrades are automatic, but they are the only thing that is.** `init_db.py` carries versioned migrations (`SCHEMA_VERSION`, currently 3) and applies any it needs when run against an older database. It does **not** reload roles, so a plugin update that changes `roles.json` still needs step 2 above. A change the migrations do not cover is a code change, not something this command performs.

@@ -18,6 +18,7 @@
   "sharepoint": {
     "site_id": "REPLACE_ME",
     "list_id": "REPLACE_ME",
+    "account": "REPLACE_ME",
     "min_match_score": 0.4,
     "push_enabled": true,
     "url_field": "URL",

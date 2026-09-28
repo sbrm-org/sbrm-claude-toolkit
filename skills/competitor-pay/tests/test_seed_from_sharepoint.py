@@ -1,12 +1,23 @@
-"""Tests for seed_from_sharepoint, run against a 202-item list payload."""
+"""Tests for seed_from_sharepoint.
+
+The payload tests run against fixtures/sharepoint_items.json, a fully
+synthetic 202-item list. It invents every title, employer, pay figure, date
+and URL, and keeps only the shape of the live list: the id sequence, which
+optional fields are present, and which rows share a posting URL or a
+title+employer pair.
+"""
 import json
 import sqlite3
 import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
+import seed_from_sharepoint  # noqa: E402
+import sharepoint_target  # noqa: E402
 from seed_from_sharepoint import (  # noqa: E402
     build_index, extract_urls, normalize_url, seed,
 )
@@ -240,7 +251,8 @@ def test_new_job_at_a_known_employer_is_not_a_wage_move():
 def test_legacy_db_without_rate_columns_degrades_safely():
     """A database that predates the migration keeps the 1.2.1 behaviour and
     says so, rather than reaching for the annualized column."""
-    db = _db_with([(None, "Program Monitor", "Example Recovery Org")], legacy=True)
+    db = _db_with([(None, "Program Monitor", "Example Recovery Org")],
+                  legacy=True)
     stats = seed(db, _listed_item())
     assert stats["pay_aware"] is False
     assert stats["matched_name"] == 1 and _stamp_of(db) == "133"
@@ -284,8 +296,9 @@ def test_dry_run_writes_nothing():
 def test_ambiguous_url_never_matches():
     """A URL shared by several items must not seed any of them.
 
-    smartapply.indeed.com/.../contact-info is carried by items 101, 114 and
-    115 — it is a generic application form, not a posting identifier.
+    Items 101, 114 and 115 carry the fixture's stand-in for a generic
+    application-form URL (on the live list, smartapply.indeed.com/.../
+    contact-info), which is not a posting identifier.
     """
     items = _load_items()
     shared = "https://apply.board-a.example.com/posting/035"
@@ -300,3 +313,84 @@ def test_duplicate_posting_urls_excluded():
     assert normalize_url(
         "https://www.board-a.example.com/viewjob?jk=df4318dd9971af15"
         "&from=shareddesktop_copy") not in idx.by_url
+
+
+# --- where the live fetch points ---------------------------------------------
+
+NO_ACCOUNT = ("No service account configured. "
+              "Run /comp-setup or set CP_ACCOUNT.")
+
+
+@pytest.fixture
+def unconfigured(tmp_path, monkeypatch):
+    """No site, list or account anywhere, and an ms365 that fails the test if
+    anything reaches it."""
+    monkeypatch.setenv("COMPETITOR_PAY_HOME", str(tmp_path / "home"))
+    for var in ("CP_SITE_ID", "CP_LIST_ID", "CP_ACCOUNT"):
+        monkeypatch.delenv(var, raising=False)
+    fake = tmp_path / "config.json"
+    fake.write_text(json.dumps({"sharepoint": {
+        "site_id": "REPLACE_ME", "list_id": "REPLACE_ME",
+        "account": "REPLACE_ME"}}))
+    monkeypatch.setattr(sharepoint_target, "_config_path", lambda: fake)
+
+    def no_ms365(*args):
+        raise AssertionError(f"ms365 called: {args}")
+    monkeypatch.setattr(seed_from_sharepoint, "ms365", no_ms365)
+
+
+def _run_main(monkeypatch, *argv):
+    monkeypatch.setattr(sys, "argv", ["seed_from_sharepoint.py", *argv])
+    return seed_from_sharepoint.main()
+
+
+def test_from_file_needs_no_account(unconfigured, tmp_path, monkeypatch):
+    """The MCP-only path never talks to ms365, so it must not demand an
+    account, a site or a list."""
+    payload = tmp_path / "items.json"
+    payload.write_text(json.dumps({"value": _listed_item()}))
+    db = _db_with([(None, "Program Monitor", "Example Recovery Org", 19, 22)])
+    assert _run_main(monkeypatch, "--db", db, "--from-file", str(payload)) == 0
+    assert _stamp_of(db) == "133"
+
+
+def test_live_fetch_without_an_account_fails_clearly(unconfigured,
+                                                     monkeypatch):
+    monkeypatch.setenv("CP_SITE_ID", "site")
+    monkeypatch.setenv("CP_LIST_ID", "list")
+    with pytest.raises(SystemExit) as exc:
+        _run_main(monkeypatch, "--db", _db_with([]))
+    assert NO_ACCOUNT in str(exc.value)
+
+
+def test_live_fetch_uses_the_configured_target(unconfigured, monkeypatch):
+    monkeypatch.setenv("CP_SITE_ID", "site-from-env")
+    monkeypatch.setenv("CP_LIST_ID", "list-from-env")
+    monkeypatch.setenv("CP_ACCOUNT", "svc@example.org")
+    calls = []
+
+    def fake_fetch(site_id, list_id, account):
+        calls.append((site_id, list_id, account))
+        return {"value": _listed_item()}
+    monkeypatch.setattr(seed_from_sharepoint, "fetch_items", fake_fetch)
+    assert _run_main(monkeypatch, "--db", _db_with([])) == 0
+    assert calls == [("site-from-env", "list-from-env", "svc@example.org")]
+
+
+def test_account_flag_beats_config(unconfigured, monkeypatch):
+    monkeypatch.setenv("CP_SITE_ID", "site")
+    monkeypatch.setenv("CP_LIST_ID", "list")
+    monkeypatch.setenv("CP_ACCOUNT", "env@example.org")
+    calls = []
+
+    def fake_fetch(site_id, list_id, account):
+        calls.append(account)
+        return {"value": _listed_item()}
+    monkeypatch.setattr(seed_from_sharepoint, "fetch_items", fake_fetch)
+    _run_main(monkeypatch, "--db", _db_with([]),
+              "--account", "cli@example.org")
+    assert calls == ["cli@example.org"]
+
+
+def test_no_account_is_hardcoded():
+    assert not hasattr(seed_from_sharepoint, "DEFAULT_ACCOUNT")

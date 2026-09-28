@@ -27,6 +27,7 @@ def home(tmp_path, monkeypatch):
     (tmp_path / "home").mkdir()
     monkeypatch.delenv("CP_SITE_ID", raising=False)
     monkeypatch.delenv("CP_LIST_ID", raising=False)
+    monkeypatch.delenv("CP_ACCOUNT", raising=False)
     fake = tmp_path / "config.json"
     fake.write_text(json.dumps({"sharepoint": dict(COMMITTED)}))
     monkeypatch.setattr(st, "_config_path", lambda: fake)
@@ -80,6 +81,7 @@ class TestPlaceholders:
         committed = json.loads(fresh._config_path().read_text())["sharepoint"]
         assert committed["site_id"] == "REPLACE_ME"
         assert committed["list_id"] == "REPLACE_ME"
+        assert committed["account"] == "REPLACE_ME"
 
     def test_empty_cli_value_does_not_win(self, home):
         assert st.list_id("") == COMMITTED["list_id"]
@@ -105,3 +107,66 @@ class TestMissingConfig:
 
     def test_require_returns_the_value_when_present(self, home):
         assert st.require("list_id") == COMMITTED["list_id"]
+
+
+class TestAccount:
+    """The Microsoft 365 service account resolves exactly like the IDs.
+
+    It is a real mailbox, so it is configured per install rather than
+    committed, and must not pin every install to one tenant.
+    """
+
+    def test_cli_beats_env_and_local(self, home, monkeypatch):
+        monkeypatch.setenv("CP_ACCOUNT", "env@example.org")
+        _write_local(home, account="local@example.org")
+        assert st.account("cli@example.org") == "cli@example.org"
+
+    def test_env_beats_local(self, home, monkeypatch):
+        monkeypatch.setenv("CP_ACCOUNT", "env@example.org")
+        _write_local(home, account="local@example.org")
+        assert st.account() == "env@example.org"
+
+    def test_local_config_supplies_it(self, home):
+        _write_local(home, list_id="x", account="local@example.org")
+        assert st.account() == "local@example.org"
+
+    def test_placeholder_is_not_an_account(self, home, tmp_path, monkeypatch):
+        fake = tmp_path / "placeholder.json"
+        fake.write_text(json.dumps({"sharepoint": {"account": "REPLACE_ME"}}))
+        monkeypatch.setattr(st, "_config_path", lambda: fake)
+        assert st.account() is None
+
+    def test_unset_account_is_none(self, home):
+        assert st.account() is None
+
+    def test_require_unresolved_account_says_what_to_do(self, home):
+        with pytest.raises(SystemExit) as exc:
+            st.require("account")
+        message = str(exc.value)
+        assert message.startswith(
+            "ERROR: No service account configured. "
+            "Run /comp-setup or set CP_ACCOUNT.")
+        assert "config.local.json" in message
+
+    def test_unresolved_account_points_at_local_config_not_committed(
+            self, home):
+        """The committed config.json is not where an account belongs, so the
+        error must not send anyone there."""
+        with pytest.raises(SystemExit) as exc:
+            st.require("account")
+        message = str(exc.value)
+        assert "CP_ACCOUNT=" in message
+        assert str(st._data_home() / "config.local.json") in message
+        assert str(st._config_path()) not in message
+        assert "sharepoint.account" not in message
+
+    def test_require_returns_the_configured_account(self, home):
+        _write_local(home, account="svc@example.org")
+        assert st.require("account") == "svc@example.org"
+
+    def test_shell_entry_point_prints_the_account(self, home, monkeypatch,
+                                                  capsys):
+        _write_local(home, account="svc@example.org")
+        monkeypatch.setattr(sys, "argv", ["sharepoint_target.py", "account"])
+        st._main()
+        assert capsys.readouterr().out.strip() == "svc@example.org"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Where the SharePoint target IDs come from.
+"""Where the SharePoint target IDs and the service account come from.
 
 One place, because they were previously duplicated as module constants in every
 script that talks to Graph, which meant sanitizing the public repo would have
@@ -7,10 +7,14 @@ had to find all of them.
 
 Resolution order, first hit wins:
 
-    1. an explicit CLI argument            (--site-id / --list-id)
-    2. environment                         (CP_SITE_ID / CP_LIST_ID)
+    1. an explicit CLI argument            (--site-id / --list-id / --account)
+    2. environment                         (CP_SITE_ID / CP_LIST_ID / CP_ACCOUNT)
     3. a local, uncommitted override       ($COMPETITOR_PAY_HOME/config.local.json)
     4. the committed config.json
+
+`account` is the Microsoft 365 service account the ms365 wrapper must act as
+when it talks to the list. It is a real mailbox, so like the IDs it lives in
+the local override (written by /comp-setup), never in the committed config.
 
 `sbrm-claude-toolkit` is a public repository whose README promises "no internal
 paths, credentials, or personal infrastructure references". A tenant site ID is
@@ -26,7 +30,7 @@ import json
 import os
 from pathlib import Path
 
-PLACEHOLDERS = {"", None, "REPLACE_ME", "<site_id>", "<list_id>"}
+PLACEHOLDERS = {"", None, "REPLACE_ME", "<site_id>", "<list_id>", "<account>"}
 
 
 def _data_home():
@@ -52,7 +56,7 @@ def _from_file(path, key):
 
 
 def resolve(key, cli_value=None):
-    """Resolve one of 'site_id' / 'list_id'. Returns None if nothing is set."""
+    """Resolve 'site_id', 'list_id' or 'account'; None if nothing is set."""
     if cli_value not in PLACEHOLDERS:
         return cli_value
 
@@ -75,19 +79,31 @@ def list_id(cli_value=None):
     return resolve("list_id", cli_value)
 
 
+def account(cli_value=None):
+    return resolve("account", cli_value)
+
+
 def require(key, cli_value=None):
     """Resolve or explain how to fix it. Callers that cannot proceed use this."""
     value = resolve(key, cli_value)
     if value:
         return value
-    raise SystemExit(
-        f"ERROR: no {key} configured.\n"
-        f"Set it one of these ways:\n"
-        f"  --{key.replace('_', '-')} <value>\n"
-        f"  CP_{key.upper()}=<value>\n"
-        f"  {_data_home() / 'config.local.json'} -> {{\"sharepoint\": {{\"{key}\": \"...\"}}}}\n"
-        f"  {_config_path()} -> sharepoint.{key}"
-    )
+    local = _data_home() / "config.local.json"
+    ways = [
+        f"  --{key.replace('_', '-')} <value>",
+        f"  CP_{key.upper()}=<value>",
+        f"  {local} -> {{\"sharepoint\": {{\"{key}\": \"...\"}}}}",
+    ]
+    if key == "account":
+        # The account is a real mailbox; it belongs in the local file, never
+        # in the committed config.json.
+        headline = ("No service account configured. "
+                    "Run /comp-setup or set CP_ACCOUNT.")
+    else:
+        headline = f"no {key} configured."
+        ways.append(f"  {_config_path()} -> sharepoint.{key}")
+    raise SystemExit(f"ERROR: {headline}\nSet it one of these ways:\n"
+                     + "\n".join(ways))
 
 
 def _main():
@@ -98,8 +114,9 @@ def _main():
         SITE=$(python3 scripts/sharepoint_target.py site_id)
     """
     import sys as _sys
-    if len(_sys.argv) != 2 or _sys.argv[1] not in ("site_id", "list_id"):
-        raise SystemExit("usage: sharepoint_target.py site_id|list_id")
+    if len(_sys.argv) != 2 or _sys.argv[1] not in ("site_id", "list_id",
+                                                     "account"):
+        raise SystemExit("usage: sharepoint_target.py site_id|list_id|account")
     print(require(_sys.argv[1]))
 
 

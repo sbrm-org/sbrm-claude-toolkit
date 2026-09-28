@@ -103,10 +103,14 @@ echo '{"siteId": "...", "listId": "...", "listItemId": "42", "body": {"fields": 
 Flag-based calls are a trap. Spellings differ per subcommand (`--list-item-id` on items, `--column-definition-id` on columns) and several subcommands reject `--account` outright, which makes argparse fail the whole call. That failure looks like a crash, not a bad write, so it is safe but it will stop a run dead. **Do not pass `--account` to the column or item subcommands.** Confirm the default account instead:
 
 ```bash
-ms365 list-accounts    # admin@example.org must be isDefault
+CP_DIR="${CLAUDE_PLUGIN_ROOT:-}/skills/competitor-pay"
+[ -d "$CP_DIR" ] || CP_DIR=$(ls -d "$HOME"/.claude/plugins/cache/*/*/*/skills/competitor-pay 2>/dev/null | sort -V | tail -1)
+[ -d "$CP_DIR" ] || CP_DIR="$HOME/.claude/skills/competitor-pay"
+python3 "$CP_DIR/scripts/sharepoint_target.py" account   # the service account /comp-setup recorded
+ms365 list-accounts    # that same account must be isDefault
 ```
 
-**Always resolve the IDs through `scripts/sharepoint_target.py`, never by reading `config.json` directly.** This repository is public, so the committed `config.json` carries `REPLACE_ME` placeholders. The real values live in `$COMPETITOR_PAY_HOME/config.local.json` (default `~/.competitor-pay/`), which sits outside the skill directory and is therefore never committed and never lost to a plugin update. Resolution order is CLI flag, then `CP_SITE_ID` / `CP_LIST_ID`, then that local file, then `config.json`. A missing ID fails with instructions rather than sending `REPLACE_ME` to Graph.
+**Always resolve the IDs through `scripts/sharepoint_target.py`, never by reading `config.json` directly.** This repository is public, so the committed `config.json` carries `REPLACE_ME` placeholders. The real values live in `$COMPETITOR_PAY_HOME/config.local.json` (default `~/.competitor-pay/`), which sits outside the skill directory and is therefore never committed and never lost to a plugin update. The Microsoft 365 service account the wrapper acts as resolves the same way (`--account`, `CP_ACCOUNT`, `sharepoint.account` in that file), because it is a real mailbox and does not belong in a public repo either; `/comp-setup` asks for it and saves it. Resolution order is CLI flag, then `CP_SITE_ID` / `CP_LIST_ID` / `CP_ACCOUNT`, then that local file, then `config.json`. A missing ID fails with instructions rather than sending `REPLACE_ME` to Graph, and a missing account stops the wrapper-fetching scripts before they call `ms365` (`--from-file` does not need one).
 
 **The wrapper exits 0 on auth failure and puts the error in the payload.** `{"error": "Failed to acquire token..."}` comes back with a zero exit status. Any code reading this output must check for an `error` key, not just the exit code. Treating an auth failure as data is how "the list is empty" becomes a mass duplicate push.
 

@@ -54,7 +54,6 @@ from typing import NamedTuple
 from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
 
 import sharepoint_target
-DEFAULT_ACCOUNT = "admin@example.org"
 
 # Query params that identify a posting; everything else is tracking noise.
 MEANINGFUL_QUERY_KEYS = {"jk", "vjk", "currentjobid", "jobid", "id", "postingid"}
@@ -344,7 +343,10 @@ def main():
                     help="read a saved list payload instead of fetching")
     ap.add_argument("--site-id", default=None)
     ap.add_argument("--list-id", default=None)
-    ap.add_argument("--account", default=DEFAULT_ACCOUNT)
+    ap.add_argument("--account", default=None,
+                    help="Microsoft 365 service account; defaults to the one "
+                         "configured by /comp-setup (CP_ACCOUNT or "
+                         "config.local.json). Not needed with --from-file.")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--allow-empty", action="store_true",
                     help="do not fail when the list returns zero items")
@@ -354,7 +356,13 @@ def main():
         with open(args.from_file) as fh:
             payload = json.load(fh)
     else:
-        payload = fetch_items(args.site_id, args.list_id, args.account)
+        # Resolved only on this path: --from-file never touches ms365, and the
+        # MCP-only machines that use it have no wrapper account to name.
+        payload = fetch_items(
+            sharepoint_target.require("site_id", args.site_id),
+            sharepoint_target.require("list_id", args.list_id),
+            sharepoint_target.require("account", args.account),
+        )
 
     items = payload.get("value") if isinstance(payload, dict) else payload
     if not isinstance(items, list):
