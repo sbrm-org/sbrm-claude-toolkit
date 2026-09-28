@@ -7,9 +7,9 @@ description: >
   to the platform, the install checklist, and verification. Platform facts and
   the full rule set live on the SBRM Wiki (Platform Ops book); this skill tells you what to read and
   in what order. Triggers on "cloudron", "sbrmapps", "my.sbrmapps.com", "the apps box",
-  "install an app on cloudron", "add an app to the box", "self-host this for SBRM",
-  "evaluate a self-hosted app", "which app should we use", "restart the cloudron app",
-  "is the wiki down", "cloudron api token", "platform ops".
+  "install an app on cloudron", "add an app to the box", "restart the cloudron app",
+  "is the wiki down", "cloudron api token", "platform ops". Not for staff proposals to
+  self-host something or pick an app; those use the sbrmapps-platform skill.
 ---
 
 # SBRM app platform (Cloudron) for operators
