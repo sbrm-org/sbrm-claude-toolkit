@@ -23,8 +23,9 @@ can read, and write access is a separate grant from Dylan.
 
 - This runs in **Claude Code in the terminal**. The guard that makes writes safe is a Claude Code hook
   and does not run in the Claude desktop chat or on claude.ai.
-- Find this plugin's folder: `~/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/<version>/`
-  (the newest version folder). Call it `<toolkit>` below. The health check is
+- Find this plugin's folder: two levels up from this skill's own base directory (`<base>/../..`), never
+  a guessed cache path (a machine can hold several versions, or run the toolkit from a local folder).
+  Call it `<toolkit>` below. The health check is
   `node "<toolkit>/dataverse/engine/dataverse-write.js" doctor`.
 - Tell the person what this will do, in a few lines: install one command-line tool, have them sign in
   to the donor app (and any other SBRM app they use) with their own Microsoft account, and tidy up any

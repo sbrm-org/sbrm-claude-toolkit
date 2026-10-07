@@ -18,7 +18,8 @@ skill is only for CHANGES.
 ## The engine
 
 `node "<toolkit>/dataverse/engine/dataverse-write.js" <command>`, where `<toolkit>` is this plugin's
-folder (on a Mac, under `~/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/<version>/`).
+folder: two levels up from this skill's own base directory (`<base>/../..`). Go by the base directory, not
+a guessed cache path: a machine can hold several toolkit versions, or run one from a local folder.
 Verify the path on first use and say it in full whenever you hand the person a command.
 
 ## Making a change
@@ -87,7 +88,8 @@ cleans up with their OK.
 
 ## Never
 
-- Run `apply`, or approve a pop-up, or try to answer it for the person.
+- Run `apply` before the person has said yes in chat, or approve, click or answer the pop-up for them.
+- Ask the person to run or paste a command.
 - Write to Dataverse any other way (the read connections, the CLI's own write commands, a script).
 - Edit anything in `~/.sbrm-dataverse/` or in this plugin's folder.
 - Resolve or close a reported item (only Dylan does).
