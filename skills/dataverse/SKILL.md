@@ -48,7 +48,9 @@ ask Dylan.
 
 ## Undoing a change
 
-`revert <plan-id>` plans the undo of an applied plan; it is approved like any other write. A record
+`revert <plan-id>` plans the undo of an applied plan; it is approved like any other write. "Undo that" is
+the request, not the yes: tell the person what the undo will restore (and anything left out), ask "go
+ahead?", and only then run `apply`. A record
 someone has edited since is left out on purpose (undoing would wipe their edit). If they really want
 the old value back, that is an ordinary new job.
 
