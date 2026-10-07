@@ -150,15 +150,15 @@ function doctor(deps) {
     }
   } else add('Dataverse connections', 'ok', "only the toolkit's");
 
-  // 7. the guard (DESIGN.md F15): it ships beside the engine, it really blocks a session's apply when fed
+  // 7. the guard (DESIGN.md F15): it ships beside the engine, it really blocks a session reaching the write side (skipping the pop-up) when fed
   // one the way Claude Code feeds it, and no settings file switches hooks off. Whether Claude Code has
   // the plugin enabled is not visible from here; the drift check and setup cover that side.
   if (deps.guard) {
     const g = deps.guard();
     if (!g.present) add('Guard', 'fail', 'the toolkit guard is missing from this install', 'ask Dylan: the SBRM toolkit plugin needs reinstalling or updating');
-    else if (!g.blocksApply) add('Guard', 'fail', `the toolkit guard did not block a test apply (${g.detail || 'no detail'})`, 'ask Dylan: the guard is broken in this install; do not write to Dataverse until it is fixed');
+    else if (!g.blocksBypass) add('Guard', 'fail', `the toolkit guard did not block a test bypass of the pop-up (${g.detail || 'no detail'})`, 'ask Dylan: the guard is broken in this install; do not write to Dataverse until it is fixed');
     else if (g.hooksOff) add('Guard', 'fail', `hooks are switched off in ${g.hooksOff}, so the guard never runs`, `with the person's OK: set "disableAllHooks" to false (or remove it) in ${g.hooksOff}`);
-    else add('Guard', 'ok', 'blocks a test apply; hooks are on');
+    else add('Guard', 'ok', 'blocks a test bypass of the pop-up; hooks are on');
   } else add('Guard', 'info', 'not checked');
 
   const failed = checks.filter((c) => c.status === 'fail');

@@ -14,9 +14,10 @@ const V = ['ap', 'ply'].join('');
 const call = (input, env = {}) => spawnSync(BASH, [RUN], { input: JSON.stringify(input), encoding: 'utf8', env: { ...process.env, ...env } });
 const bash = (command) => ({ tool_name: 'Bash', tool_input: { command } });
 
-test('with node: the real guard decides (apply blocked, plan allowed)', (t) => {
+test('with node: the real guard decides (a raw write blocked; plan and apply allowed)', (t) => {
   if (!fs.existsSync(BASH)) { t.skip('no bash at ' + BASH); return; }
-  assert.equal(call(bash(`node C:/x/dataverse-write.js ${V} 1`)).status, 2);
+  assert.equal(call(bash('curl -X PATCH https://sbrmdonorapp.crm.dynamics.com/api/data/v9.2/contacts(1)')).status, 2);
+  assert.equal(call(bash(`node C:/x/dataverse-write.js ${V} 1`)).status, 0, 'the session runs apply; the pop-up is the gate');
   assert.equal(call(bash('node C:/x/dataverse-write.js plan j.json')).status, 0);
   assert.equal(call(bash('ls')).status, 0);
 });

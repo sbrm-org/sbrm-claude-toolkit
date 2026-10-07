@@ -16,7 +16,7 @@ const path = require('path');
 const { spawnSync, spawn } = require('child_process');
 const store = require('./store');
 
-const MAX_TIMEOUT = 600; // seconds
+const MAX_TIMEOUT = 540; // seconds: under the 600 s ceiling on a Claude command, so the pop-up cancels itself first
 
 function timeoutSeconds(env = process.env) {
   const t = Number(env.SBRM_DV_DIALOG_TIMEOUT);

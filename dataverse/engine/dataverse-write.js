@@ -58,13 +58,15 @@ function realGuard() {
   const { spawnSync } = require('child_process');
   const file = path.join(__dirname, '..', 'guard', 'guard.js');
   if (!fs.existsSync(file)) return { present: false };
-  const probe = JSON.stringify({ tool_name: 'Bash', tool_input: { command: `node "${path.resolve(__filename)}" ${['ap', 'ply'].join('')} 20000101-000000-00000000` } });
+  // A session reaching the write side without the CLI (which would skip the pop-up) must be blocked.
+  const lib = path.join(__dirname, 'lib', 'write').replace(/\\/g, '/');
+  const probe = JSON.stringify({ tool_name: 'Bash', tool_input: { command: `node -e "const { ${['write', 'Connection'].join('')} } = require('${lib}')"` } });
   const r = spawnSync(process.execPath, [file], { input: probe, encoding: 'utf8', windowsHide: true });
   let hooksOff = null;
   for (const f of [path.join(os.homedir(), '.claude', 'settings.json'), path.join(os.homedir(), '.claude', 'settings.local.json')]) {
     try { if (JSON.parse(fs.readFileSync(f, 'utf8')).disableAllHooks === true) hooksOff = f; } catch { /* absent or unreadable */ }
   }
-  return { present: true, blocksApply: r.status === 2, detail: `exit ${r.status}`, hooksOff };
+  return { present: true, blocksBypass: r.status === 2, detail: `exit ${r.status}`, hooksOff };
 }
 
 // doctor's CLI check STARTS the binary (finding it is not enough: ThreatLocker can block a found file).

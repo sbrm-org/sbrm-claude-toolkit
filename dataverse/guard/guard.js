@@ -1,21 +1,22 @@
 #!/usr/bin/env node
 'use strict';
 // SBRM toolkit: the Dataverse guard (Claude Code PreToolUse hook). Ships WITH the engine, never after
-// (design note F15): the approval pop-up only means something while a session
-// cannot start an apply itself, cannot write around the engine, and cannot click the pop-up.
+// (design note F15): the approval pop-up only means something while a session cannot write around
+// the engine and cannot click the pop-up. The session itself RUNS plan and apply once the person has
+// agreed in chat (ruled 10/7: nobody pastes an apply line); the pop-up is the person's one step.
 //
 // What a Claude session may NOT do (the person's own `!` lines are not tool calls and never reach it):
-//   1. start a write through the engine: `apply` or `resolve`, inline code that loads the engine's
-//      write module or apply functions, or a script it writes that does (the bypass that skips the
-//      pop-up altogether, same hole as the QBO guard's rule C);
+//   1. reach the engine's write side without the CLI: inline code or a script that loads the write
+//      module or the apply functions (the bypass that skips the pop-up altogether, same hole as the
+//      QBO guard's rule C). Running the CLI's `apply` / `resolve` is allowed: it always shows the pop-up;
 //   2. write through the Dataverse CLI's own write verbs, or a Dataverse MCP tool that is not a known
 //      read (ALLOW-LIST, both the old `mcp__dataverse-*__` and the plugin-namespaced names);
 //   3. send a raw writing HTTP call (POST/PATCH/PUT/DELETE) at *.crm.dynamics.com;
 //   4. inject keystrokes or clicks (so it cannot press Approve), ported from the QBO guard's rule D;
 //   5. tamper: change the engine's store (plans, log, events, pending, tmp; `jobs` is where Claude
 //      saves job files, so it stays writable), change this plugin's folder, or switch hooks off.
-// Everything else passes: reads, `check`, `plan`, `show`, `revert` (it only plans), `doctor`,
-// `report`, `review`, `whoami`, the read connections.
+// Everything else passes: reads, `check`, `plan`, `show`, `apply`, `resolve`, `revert` (it only plans),
+// `doctor`, `report`, `review`, `whoami`, the read connections.
 //
 // Fails CLOSED: an unreadable tool call is blocked. Self-test: node guard.js --selftest
 // Trigger strings below are spelled with character classes so this file does not trip other guards.
@@ -58,8 +59,6 @@ function cliVerdict(command) {
 
 // ---------- 1. the engine's own writes ----------
 
-// `node ".../dataverse-write.js" apply <id>` or `resolve ...`, however the path is quoted.
-const ENGINE_WRITE = /dataverse-write(?:\.js)?["'`]?\s+(?:--?[\w-]+\s+)*(apply|resolve)\b/i;
 // Code that reaches the write side directly: the write connection, the apply functions, or the engine
 // entry point loaded as a module (to call runCli with a write verb).
 const ENGINE_INTERNALS = /\b(?:writeConnection|applyPlan|applyMerge|applyUnmerge)\b|lib[\\/]+(?:write|apply)(?:\.js)?['"`]|require\(\s*['"`][^'"`]*dataverse-write/;
@@ -128,8 +127,6 @@ function inDevDir(p, dirs) {
 function shellVerdict(text) {
   const cli = cliVerdict(text);
   if (cli) return `${cli}, which writes to Dataverse`;
-  const ew = ENGINE_WRITE.exec(text);
-  if (ew) return `running the engine's "${ew[1].toLowerCase()}" (only the person starts a write, from their own ! line)`;
   if (ENGINE_INTERNALS.test(text)) return "code that reaches the engine's write side directly (it would skip the approval pop-up)";
   if (DV_HOST.test(text) && MUTATING_HTTP.test(text)) return 'a raw writing HTTP call at Dataverse';
   if (INJECT.test(text)) return 'keystroke or click injection (the approval pop-up is the person\'s alone)';
@@ -156,7 +153,6 @@ function writeVerdict(tool, ti, dirs) {
   if (INJECT.test(text)) return 'writing keystroke or click injection (the approval pop-up is the person\'s alone)';
   if (!inDevDir(file, dirs)) {
     if (ENGINE_INTERNALS.test(text)) return "writing code that reaches the engine's write side directly (it would skip the approval pop-up)";
-    if (ENGINE_WRITE.test(text) && /\.(?:js|mjs|cjs|ts|py|ps1|sh|bat|cmd)$/i.test(file)) return "writing a script that runs the engine's apply or resolve";
     if (DV_HOST.test(text) && MUTATING_HTTP.test(text)) return 'writing a raw writing HTTP call at Dataverse';
   }
   return null;
@@ -175,8 +171,8 @@ function verdict(input, dirs = devDirs()) {
 function block(what) {
   process.stderr.write(
     `BLOCKED by the SBRM toolkit Dataverse guard: ${what}. `
-    + 'A change to Dataverse goes through the shared write path: Claude plans it, the person runs '
-    + '`apply` from their own ! line and approves it in the pop-up. Tell the person what you were trying '
+    + 'A change to Dataverse goes through the shared write path: Claude plans it, runs `apply` once the '
+    + 'person has agreed, and the person approves it in the pop-up. Tell the person what you were trying '
     + 'to do. Do not look for another way, and do not edit or remove this hook.\n',
   );
   process.exit(2);
@@ -196,10 +192,10 @@ function selftest() {
     // [label, input, expectBlocked]
     ['engine plan', B(`node ${ENG} plan ~/.sbrm-dataverse/jobs/x.json`), false],
     ['engine show / revert / doctor / report / review / whoami', B(`node ${ENG} show 1 && node ${ENG} revert 2 && node ${ENG} doctor && node ${ENG} report "it froze" && node ${ENG} review --brief && node ${ENG} whoami donorapp`), false],
-    ['engine apply', B(`node ${ENG} ${J('ap', 'ply')} 20261007-122502-eec9f60a`), true],
-    ['engine apply via PowerShell', B(`node ${ENG} ${J('ap', 'ply')} 1`, 'PowerShell'), true],
-    ['engine resolve', B(`node ${ENG} ${J('reso', 'lve')} D-1001 fixed "x"`), true],
-    ['engine apply, unquoted relative path', B(`cd engine && node dataverse-write.js ${J('ap', 'ply')} 1`), true],
+    ['engine apply (shows the pop-up)', B(`node ${ENG} ${J('ap', 'ply')} 20261007-122502-eec9f60a`), false],
+    ['engine apply via PowerShell', B(`node ${ENG} ${J('ap', 'ply')} 1`, 'PowerShell'), false],
+    ['engine resolve (shows the pop-up)', B(`node ${ENG} ${J('reso', 'lve')} D-1001 fixed "x"`), false],
+    ['inline code loading the write connection', B(`node -e "const { write${'Connection'} } = require('./lib/write')"`), true],
     ['inline code loading the write module', B(`node -e "const { ${J('write', 'Connection')} } = require('./lib/write')"`), true],
     ['inline code driving the entry point', B(`node -e "require('./${J('dataverse-', 'write')}').runCli(['x'])"`), true],
     ['running the tests is fine', B('cd engine && node --test test/*.test.js'), false],
@@ -223,7 +219,7 @@ function selftest() {
     ['Write into events/', W(`${H}/.sbrm-dataverse/events/pending/x.json`, '{}'), true],
     ['Write toolkit.json in the plugin', W(`${H}/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.9.0/dataverse/toolkit.json`, '{}'), true],
     ['Write a script that uses the write connection', W('C:/temp/fix.js', J('const { write', 'Connection } = require("C:/x/lib/write");')), true],
-    ['Write a script that runs apply', W('C:/temp/go.ps1', `node ${ENG} ${J('ap', 'ply')} 1`), true],
+    ['Write a script that runs the CLI apply (pop-up still shows)', W('C:/temp/go.ps1', `node ${ENG} ${J('ap', 'ply')} 1`), false],
     ['Write prose that mentions apply in a .md', W('C:/temp/notes.md', `run node ${ENG} ${J('ap', 'ply')} <id> yourself`), false],
     ['Write a raw PATCH script', W('C:/temp/p.py', J('requests.patch("https://sbrmrec.crm.dynamics.com/api/data/v9.2/x", headers=h, method="P', 'ATCH")')), true],
     ['Edit settings to switch hooks off', E(`${H}/.claude/settings.json`, J('"disableAll', 'Hooks": true')), true],

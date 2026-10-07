@@ -142,18 +142,21 @@ test('waiting items: sent first, then only what is still stuck counts', () => {
 
 test('the guard check: missing, not blocking, or hooks switched off all fail; a working guard passes', () => {
   const g = (x) => doctor(base({ guard: () => x }));
-  assert.equal(g({ present: true, blocksApply: true, hooksOff: null }).code, 'health_passed');
+  assert.equal(g({ present: true, blocksBypass: true, hooksOff: null }).code, 'health_passed');
   assert.match(g({ present: false }).failed[0].detail, /missing from this install/);
-  assert.match(g({ present: true, blocksApply: false, detail: 'exit 0' }).failed[0].detail, /did not block a test apply \(exit 0\)/);
-  assert.match(g({ present: true, blocksApply: true, hooksOff: '/h/.claude/settings.json' }).failed[0].detail, /hooks are switched off in/);
+  assert.match(g({ present: true, blocksBypass: false, detail: 'exit 0' }).failed[0].detail, /did not block a test bypass of the pop-up \(exit 0\)/);
+  assert.match(g({ present: true, blocksBypass: true, hooksOff: '/h/.claude/settings.json' }).failed[0].detail, /hooks are switched off in/);
 });
 
-test('the real guard beside the engine blocks a test apply (the check doctor runs)', () => {
+test('the real guard beside the engine blocks a bypass of the pop-up and lets apply through (the check doctor runs)', () => {
   const { spawnSync } = require('child_process');
   const file = path.join(__dirname, '..', '..', 'guard', 'guard.js');
   const v = ['ap', 'ply'].join('');
   const r = spawnSync(process.execPath, [file], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: `node C:/x/dataverse-write.js ${v} 1` } }), encoding: 'utf8' });
-  assert.equal(r.status, 2);
+  assert.equal(r.status, 0, 'apply always shows the pop-up, so the session may run it');
+  const w = ['write', 'Connection'].join('');
+  const bypass = spawnSync(process.execPath, [file], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: `node -e "const { ${w} } = require('C:/x/lib/write')"` } }), encoding: 'utf8' });
+  assert.equal(bypass.status, 2);
   const ok = spawnSync(process.execPath, [file], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'node C:/x/dataverse-write.js plan j.json' } }), encoding: 'utf8' });
   assert.equal(ok.status, 0);
 });
@@ -171,7 +174,7 @@ test('every failing check names its fix (setup = run doctor, do the fixes, run i
   const conn = drift.failed.find((c) => c.label === 'Extra Dataverse connection');
   assert.equal(conn.fix, `with the person's OK: claude mcp remove dataverse-donorapp --scope local   (run from ${HOME})`);
   assert.match(drift.failed.find((c) => c.label === 'Extra Dataverse hook').fix, /remove that PreToolUse hook entry from .*settings\.json \(keep everything else in the file\)/);
-  const off = doctor(base({ guard: () => ({ present: true, blocksApply: true, hooksOff: '/h/.claude/settings.json' }) }));
+  const off = doctor(base({ guard: () => ({ present: true, blocksBypass: true, hooksOff: '/h/.claude/settings.json' }) }));
   assert.match(off.failed[0].fix, /set "disableAllHooks" to false/);
   assert.ok(doctor(base()).checks.every((c) => c.status !== 'fail'), 'a healthy machine has nothing to fix');
 });

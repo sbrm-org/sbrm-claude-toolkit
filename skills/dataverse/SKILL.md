@@ -29,13 +29,15 @@ Verify the path on first use and say it in full whenever you hand the person a c
    env, table, create or update, one row per record by its real name and id, the body, a one-sentence
    `reason` in plain words, and an `intent` that states exactly what you are changing. Save it in
    `~/.sbrm-dataverse/jobs/`, never in a git folder (Recovery job files there are refused).
-3. **Tell the person in one sentence what you will change**, with the count and the field ("I'll fix
-   the mailing address on 4 contacts"). The engine checks your `intent` against the rows and refuses
-   the plan if they disagree, so the sentence you say must match the file.
-4. **Run `plan <job.json>`** and show the person its summary as printed. If rows were left out, say
-   which and why.
-5. **Hand the person the apply line** to run themselves, in full: `! node "<full path>" apply <plan-id>`.
-   You never run apply. A pop-up opens on their screen; only their Approve writes.
+3. **Tell the person in one sentence what you will change and ask them to confirm**, with the count
+   and the field ("I'll fix the mailing address on 4 contacts. Go ahead?"). The engine checks your
+   `intent` against the rows and refuses the plan if they disagree, so the sentence must match the file.
+4. **When they agree, run `plan <job.json>`.** If it refuses, or rows were left out, tell them which and
+   why and stop there. Never ask the person to run or paste a command.
+5. **Run `apply <plan-id>` yourself**, with the longest command timeout (10 minutes). Tell them first:
+   "A window will pop up on your screen listing the change. Click Approve to write it, or Cancel."
+   Only their click writes. The window closes itself as Cancel after 9 minutes. Never try to click it,
+   answer it, or write some other way if they cancel.
 6. **After the apply, read the output back to them**: what was written, anything that was not, and
    that it is in the Write Log.
 

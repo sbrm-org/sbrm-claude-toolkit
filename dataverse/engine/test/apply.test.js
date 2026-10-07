@@ -213,7 +213,7 @@ test('dialog: only an exact APPROVE approves; Show every change opens the detail
 
 test('the timeout knob can only shorten the wait (and a timeout is always Cancel)', () => {
   assert.equal(timeoutSeconds({ SBRM_DV_DIALOG_TIMEOUT: '5' }), 5);
-  assert.equal(timeoutSeconds({ SBRM_DV_DIALOG_TIMEOUT: '999999' }), 600);
-  assert.equal(timeoutSeconds({ SBRM_DV_DIALOG_TIMEOUT: '-1' }), 600);
-  assert.equal(timeoutSeconds({}), 600);
+  assert.equal(timeoutSeconds({ SBRM_DV_DIALOG_TIMEOUT: '999999' }), 540);
+  assert.equal(timeoutSeconds({ SBRM_DV_DIALOG_TIMEOUT: '-1' }), 540);
+  assert.equal(timeoutSeconds({}), 540, 'under the 600 s ceiling on a Claude command, so the pop-up cancels first');
 });
