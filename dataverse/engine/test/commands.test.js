@@ -195,3 +195,25 @@ test('resolve: bad arguments are a usage refusal', () => {
   }
   assert.equal(go(['resolve', 'D-1003', 'duplicate of D-1001', 'same as the first'], deps(fakeDv())).run.events[0].reason_code, 'not_found');
 });
+
+test("resolve: a health check closes the same person's earlier open checks on that machine, and nothing else", () => {
+  const dv = fakeDv();
+  const mk = (machine, minutesAgo, over = {}) => {
+    const before = new Set(eventRows(dv).map((x) => x.sbrm_dataverseeventid));
+    dv.create(EVENTS, { sbrm_eventid: `hc-${machine}-${minutesAgo}`, sbrm_kind: 'health check', sbrm_reasoncode: 'drift', sbrm_signal: true, sbrm_status: 'open', sbrm_name: 'Health check: 6 problem(s)', sbrm_machine: machine, ...over });
+    const row = eventRows(dv).find((x) => !before.has(x.sbrm_dataverseeventid));
+    row.createdon = new Date(Date.now() - minutesAgo * 60000).toISOString();
+    return row;
+  };
+  const a = mk('LAPTOP', 30); const b = mk('LAPTOP', 20); const other = mk('DESKTOP', 15); const head = mk('LAPTOP', 10);
+  const later = mk('LAPTOP', 5); const notHealth = mk('LAPTOP', 25, { sbrm_kind: 'refused', sbrm_reasoncode: 'not_permitted' });
+  const report = openReport(dv);
+  let shown = null;
+  const { code, out } = go(['resolve', head.sbrm_number, 'fixed', 'old connections removed'], deps(dv, { confirm: (x) => { shown = x; return { approved: true }; } }));
+  assert.equal(code, 0);
+  assert.match(shown.summaryText, new RegExp(`Also closes the same machine's earlier health checks: ${a.sbrm_number}, ${b.sbrm_number}`));
+  assert.deepEqual([head, a, b].map((r) => r.sbrm_status), ['resolved', 'resolved', 'resolved']);
+  assert.match(a.sbrm_resolutionnote, new RegExp(`closed with ${head.sbrm_number}`));
+  assert.deepEqual([other.sbrm_status, report.sbrm_status, later.sbrm_status, notHealth.sbrm_status], ['open', 'open', 'open', 'open'], 'another machine, a report, a LATER run and a non-health item on the machine stay open');
+  assert.match(out, new RegExp(`Also closed: ${a.sbrm_number}, ${b.sbrm_number}\.`));
+});

@@ -3,7 +3,8 @@
 // CLI read from every environment's Write Log and event table and returns text. The CLI does the reads.
 //
 // Sections: People (last seen, writes, cancels, open, versions, not set up), Open (every open event, any
-// age, oldest first, with the plan it names), Writes with problems (this period), Routine refusals (counts
+// age, oldest first, with the plan it names; a person's repeated health checks on one machine fold into the
+// latest, which lists the earlier open runs and notes a later pass), Writes with problems (this period), Routine refusals (counts
 // by reason, this period), Health checks (latest per person), and the silence rule: someone with write
 // access who was active before and not seen for 14 days is flagged with the one action that settles it.
 // The brief() line is what the Monday /good-morning shows during the launch review period.
@@ -30,7 +31,7 @@ function first(name) {
 
 // input: { now, days, access, people: { email -> fullname },
 //          logs:   [{ env, email, name, time, planid, headline, outcome, written, notwritten, leftout }],
-//          events: [{ env, email, name, time, number, kind, code, signal, status, headline, words, planid, versions }] }
+//          events: [{ env, email, name, time, number, kind, code, signal, status, headline, words, planid, versions, machine }] }
 function summarize({ now = new Date(), days = 7, access, logs, events, people = {} }) {
   const from = new Date(now - days * DAY);
   const inWindow = (t) => new Date(t) >= from;
@@ -38,6 +39,8 @@ function summarize({ now = new Date(), days = 7, access, logs, events, people = 
     .filter(([, p]) => Object.values(p.envs || {}).some((l) => l === 'write' || l === 'schema'))
     .map(([email]) => email);
   const emails = [...new Set([...expected, ...logs.map((l) => l.email), ...events.map((e) => e.email)])].filter(Boolean);
+
+  const open = foldHealth(events).map((e) => ({ ...e, plan: e.planid ? logs.find((l) => l.planid === e.planid) || null : null }));
 
   const ppl = emails.map((email) => {
     const mine = logs.filter((l) => l.email === email);
@@ -47,7 +50,8 @@ function summarize({ now = new Date(), days = 7, access, logs, events, people = 
     const applied = mine.filter((l) => inWindow(l.time) && l.outcome !== 'cancelled');
     const health = evs.filter((e) => e.kind === 'health check').sort((a, b) => new Date(b.time) - new Date(a.time))[0] || null;
     const latestEv = evs.slice().sort((a, b) => new Date(b.time) - new Date(a.time))[0];
-    const name = people[email] || (mine[0] && mine[0].name) || (evs[0] && evs[0].name) || email;
+    const granted = (access && access.people && access.people[email]) || {};
+    const name = people[email] || (mine[0] && mine[0].name) || (evs[0] && evs[0].name) || granted.name || email;
     const canWrite = expected.includes(email);
     const silent = canWrite && lastSeen && now - lastSeen > SILENT_DAYS * DAY;
     return {
@@ -55,20 +59,41 @@ function summarize({ now = new Date(), days = 7, access, logs, events, people = 
       writes: applied.length,
       rows: applied.reduce((s, l) => s + (l.written || 0), 0),
       cancels: mine.filter((l) => inWindow(l.time) && l.outcome === 'cancelled').length,
-      open: evs.filter((e) => e.status === 'open').length,
+      open: open.filter((e) => e.email === email).length,
       versions: latestEv ? latestEv.versions : null,
       health,
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
 
-  const open = events.filter((e) => e.status === 'open').sort((a, b) => new Date(a.time) - new Date(b.time))
-    .map((e) => ({ ...e, plan: e.planid ? logs.find((l) => l.planid === e.planid) || null : null }));
   const problems = logs.filter((l) => inWindow(l.time) && l.outcome === 'applied with problems');
   const routine = {};
   for (const e of events.filter((x) => inWindow(x.time) && !x.signal && x.kind !== 'health check')) {
     routine[e.code || 'unclassified'] = (routine[e.code || 'unclassified'] || 0) + 1;
   }
   return { from, to: now, days, people: ppl, open, problems, routine };
+}
+
+// Open events, oldest first, with each person's open health checks on one machine folded into ONE item:
+// the newest open run, carrying the earlier open runs' numbers (`repeats`) and, when a LATER check on that
+// machine did not reopen anything (it passed), when that was (`clearedAt`).
+function foldHealth(events) {
+  const key = (e) => `${e.env}|${e.email}|${e.machine || ''}`;
+  const byTime = (a, b) => new Date(a.time) - new Date(b.time);
+  const health = events.filter((e) => e.kind === 'health check').sort(byTime);
+  const latest = {};
+  for (const e of health) latest[key(e)] = e;
+  const out = [];
+  const groups = {};
+  for (const e of events.filter((x) => x.status === 'open').sort(byTime)) {
+    if (e.kind !== 'health check') { out.push(e); continue; }
+    (groups[key(e)] = groups[key(e)] || []).push(e);
+  }
+  for (const [k, g] of Object.entries(groups)) {
+    const head = g[g.length - 1];
+    const last = latest[k];
+    out.push({ ...head, repeats: g.slice(0, -1).map((e) => e.number), clearedAt: last && last !== head && last.status !== 'open' ? last.time : null });
+  }
+  return out.sort(byTime);
 }
 
 function versionShort(v) {
@@ -94,6 +119,8 @@ function render(s, { generatedBy = null } = {}) {
     out.push(`  ${String(e.number || '?').padEnd(7)} ${when(e.time).padEnd(15)} ${first(e.name).padEnd(9)} ${e.kind.toUpperCase()}`);
     if (e.words) out.push(`          "${e.words}"`);
     out.push(`          ${e.headline}`);
+    if (e.clearedAt) out.push(`          Cleared since: a later health check on this machine passed (${when(e.clearedAt)}).`);
+    if (e.repeats && e.repeats.length) out.push(`          Same check, earlier runs still open: ${e.repeats.join(', ')} (resolving ${e.number} closes them too).`);
     if (e.plan) out.push(`          Plan ${e.plan.planid}: ${e.plan.headline}, ${e.plan.outcome}.`);
     else if (e.planid) out.push(`          Plan ${e.planid} (no Write Log row: never applied).`);
   }
@@ -129,4 +156,4 @@ function brief(s) {
   return `Dataverse toolkit, ${md(s.from)} to ${md(s.to)}: ${parts.join(', ')}. "dataverse review" for detail.`;
 }
 
-module.exports = { summarize, render, brief, SILENT_DAYS };
+module.exports = { summarize, render, brief, foldHealth, SILENT_DAYS };

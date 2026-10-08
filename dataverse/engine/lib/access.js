@@ -20,7 +20,7 @@ const LEVELS = new Set(['read', 'write', 'schema']);
 function readAccess(dv, env, { default_max_rows = 25 } = {}) {
   let rows;
   try {
-    rows = dv.get(`${ACCESS_SET}?$select=sbrm_email,sbrm_level,sbrm_maxrows,sbrm_merge&$filter=${encodeURIComponent('statecode eq 0')}`).value || [];
+    rows = dv.get(`${ACCESS_SET}?$select=sbrm_name,sbrm_email,sbrm_level,sbrm_maxrows,sbrm_merge&$filter=${encodeURIComponent('statecode eq 0')}`).value || [];
   } catch (e) {
     throw Object.assign(new Error(`could not read the Dataverse Write Access list in this app (${String(e.message).slice(0, 160)}), so writes here are refused until it can be read. Ask Dylan.`), { code: 'access_unreadable' });
   }
@@ -31,6 +31,7 @@ function readAccess(dv, env, { default_max_rows = 25 } = {}) {
     const raw = String(r.sbrm_level || '').trim().toLowerCase();
     const p = { envs: { [env]: LEVELS.has(raw) ? raw : 'read' }, merge: { [env]: r.sbrm_merge === true } };
     if (Number.isInteger(r.sbrm_maxrows) && r.sbrm_maxrows > 0) p.max_rows = r.sbrm_maxrows;
+    if (r.sbrm_name) p.name = String(r.sbrm_name);
     people[email] = p;
   }
   return { default_max_rows, people };
@@ -51,6 +52,7 @@ function mergeAccessLists(lists) {
       Object.assign(o.envs, p.envs);
       Object.assign(o.merge, p.merge);
       if (p.max_rows !== undefined) o.max_rows = p.max_rows;
+      if (p.name) o.name = p.name;
     }
   }
   return out;

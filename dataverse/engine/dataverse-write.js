@@ -501,8 +501,8 @@ function readEnvRows(dv, env, since) {
   const logs = (dv.get(`sbrm_dataversewritelogs?$select=sbrm_planid,sbrm_name,sbrm_outcome,sbrm_written,sbrm_notwritten,sbrm_leftout,_createdby_value,createdon&$filter=${win}`).value || [])
     .map((r) => ({ env, ...who(r._createdby_value), time: r.createdon, planid: r.sbrm_planid, headline: r.sbrm_name, outcome: r.sbrm_outcome, written: r.sbrm_written, notwritten: r.sbrm_notwritten, leftout: r.sbrm_leftout }));
   const evFilter = encodeURIComponent(`createdon ge ${since} or sbrm_status eq 'open'`);
-  const evs = (dv.get(`sbrm_dataverseevents?$select=sbrm_number,sbrm_name,sbrm_kind,sbrm_reasoncode,sbrm_signal,sbrm_status,sbrm_words,sbrm_planid,sbrm_versions,_createdby_value,createdon&$filter=${evFilter}`).value || [])
-    .map((r) => ({ env, ...who(r._createdby_value), time: r.createdon, number: r.sbrm_number, kind: r.sbrm_kind, code: r.sbrm_reasoncode, signal: !!r.sbrm_signal, status: r.sbrm_status, headline: r.sbrm_name, words: r.sbrm_words, planid: r.sbrm_planid, versions: r.sbrm_versions }));
+  const evs = (dv.get(`sbrm_dataverseevents?$select=sbrm_number,sbrm_name,sbrm_kind,sbrm_reasoncode,sbrm_signal,sbrm_status,sbrm_words,sbrm_planid,sbrm_versions,sbrm_machine,_createdby_value,createdon&$filter=${evFilter}`).value || [])
+    .map((r) => ({ env, ...who(r._createdby_value), time: r.createdon, number: r.sbrm_number, kind: r.sbrm_kind, code: r.sbrm_reasoncode, signal: !!r.sbrm_signal, status: r.sbrm_status, headline: r.sbrm_name, words: r.sbrm_words, planid: r.sbrm_planid, versions: r.sbrm_versions, machine: r.sbrm_machine }));
   return { logs, events: evs };
 }
 
@@ -567,18 +567,32 @@ function cmdResolve(run, deps, args) {
   const hits = dv.get(`${events.EVENT_SET}?$select=sbrm_dataverseeventid,sbrm_name,sbrm_status&$filter=${encodeURIComponent(`sbrm_number eq '${want}'`)}`).value || [];
   if (hits.length !== 1) throw new Refusal('not_found', 'resolve', [`${want}: ${hits.length ? 'more than one row has that number' : 'no such item'} in the ${envs[env].name}`], { nothing: 'changed' });
   const id = hits[0].sbrm_dataverseeventid;
-  const now = dv.get(`${events.EVENT_SET}(${id})?$select=sbrm_status,sbrm_name`);
+  const now = dv.get(`${events.EVENT_SET}(${id})?$select=sbrm_status,sbrm_name,sbrm_kind,sbrm_machine,_createdby_value,createdon`);
   if (now.sbrm_status !== 'open') throw new Refusal('not_open', 'resolve', [`${want} is not open (status: ${now.sbrm_status || 'none'})`], { nothing: 'changed' });
+  // A health check describes the machine NOW: resolving one also closes the same person's earlier open
+  // checks on the same machine (the review folds them under it; the pop-up lists every number).
+  const repeats = now.sbrm_kind !== 'health check' ? [] : (dv.get(`${events.EVENT_SET}?$select=sbrm_dataverseeventid,sbrm_number,sbrm_kind,sbrm_machine,_createdby_value,createdon&$filter=${encodeURIComponent("sbrm_status eq 'open'")}`).value || [])
+    .filter((r) => r.sbrm_dataverseeventid !== id && r.sbrm_kind === 'health check' && r._createdby_value === now._createdby_value
+      && (r.sbrm_machine || '') === (now.sbrm_machine || '') && new Date(r.createdon) < new Date(now.createdon))
+    .sort((a, b) => new Date(a.createdon) - new Date(b.createdon));
   const body = { sbrm_status: 'resolved', sbrm_resolution: resolution.toLowerCase(), sbrm_resolutionnote: note };
   if (opt['fixed-in'] && opt['fixed-in'] !== true) body.sbrm_fixedinversion = String(opt['fixed-in']);
   const text = [`Resolve ${want} in the ${envs[env].name}`, '', `  ${now.sbrm_name}`, '', `Resolution: ${body.sbrm_resolution}`, `Note: ${note}`,
-    ...(body.sbrm_fixedinversion ? [`Fixed in: ${body.sbrm_fixedinversion}`] : [])].join('\n');
+    ...(body.sbrm_fixedinversion ? [`Fixed in: ${body.sbrm_fixedinversion}`] : []),
+    ...(repeats.length ? ['', `Also closes the same machine's earlier health checks: ${repeats.map((r) => r.sbrm_number).join(', ')}`] : [])].join('\n');
   const answer = deps.confirm({ summaryText: text, detailText: text, title: `SBRM: resolve ${want}?` });
   if (!answer.approved) { console.log(`\nCancelled. ${want} is still open.\n`); return 1; }
   dv.update(events.EVENT_SET, id, body, now['@odata.etag']);
   const back = dv.get(`${events.EVENT_SET}(${id})?$select=sbrm_status,sbrm_resolution`);
   if (back.sbrm_status !== 'resolved') throw new Error(`${want} did not read back as resolved (status ${back.sbrm_status})`);
-  console.log(`\n${want} resolved: ${back.sbrm_resolution}. Recorded on the item (resolved by ${me.fullname}).\n`);
+  const also = [];
+  for (const r of repeats) {
+    const cur = dv.get(`${events.EVENT_SET}(${r.sbrm_dataverseeventid})?$select=sbrm_status`);
+    if (cur.sbrm_status !== 'open') continue;
+    dv.update(events.EVENT_SET, r.sbrm_dataverseeventid, { ...body, sbrm_resolutionnote: `${note} (closed with ${want}: same machine, earlier run)` }, cur['@odata.etag']);
+    if (dv.get(`${events.EVENT_SET}(${r.sbrm_dataverseeventid})?$select=sbrm_status`).sbrm_status === 'resolved') also.push(r.sbrm_number);
+  }
+  console.log(`\n${want} resolved: ${back.sbrm_resolution}. Recorded on the item (resolved by ${me.fullname}).${also.length ? ` Also closed: ${also.join(', ')}.` : ''}\n`);
   return 0;
 }
 

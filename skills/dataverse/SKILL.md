@@ -66,7 +66,8 @@ Dylan sees it? Anything to add in your own words?"* Then run:
 
 `report "<their words, exactly as they said them>" --plan <plan-id if there is one>`
 
-Their words go in VERBATIM: never your summary or a cleaned-up version (your restatement is the thing
+If the person asked for the report themselves and said what is wrong in the same message, that IS
+their words: file it without asking again. Their words go in VERBATIM: never your summary or a cleaned-up version (your restatement is the thing
 that can be wrong). The engine attaches the recent runs, the plan and the versions itself. Read back
 what it prints: the number (like D-1003) they can quote to Dylan, or that it was saved on the machine.
 Nothing here can notify Dylan. If it's urgent, tell them to message him and mention the number.

@@ -23,7 +23,7 @@ const dvWith = (rows) => ({ get: () => ({ value: rows }) });
 
 test('rows become per-person grants; absent = read; an unknown level never grants more than read', () => {
   const a = readAccess(dvWith([
-    { sbrm_email: ' Alex@Example.org ', sbrm_level: 'write', sbrm_maxrows: 40, sbrm_merge: true },
+    { sbrm_name: 'Alex Rivera', sbrm_email: ' Alex@Example.org ', sbrm_level: 'write', sbrm_maxrows: 40, sbrm_merge: true },
     { sbrm_email: 'kv@example.org', sbrm_level: 'admin', sbrm_maxrows: null, sbrm_merge: false },
     { sbrm_email: '', sbrm_level: 'schema' },
   ]), 'donorapp');
@@ -33,6 +33,7 @@ test('rows become per-person grants; absent = read; an unknown level never grant
   assert.deepEqual(accessFor(a, 'kv@example.org', 'donorapp'), { level: 'read', maxRows: 25 }, 'unknown level -> read, blank rows -> default');
   assert.deepEqual(accessFor(a, 'nobody@example.org', 'donorapp'), { level: 'read', maxRows: 25 });
   assert.equal(Object.keys(a.people).length, 2, 'a row with no email is ignored');
+  assert.equal(a.people['alex@example.org'].name, 'Alex Rivera', 'the row name rides along (the review shows it for someone with no activity yet)');
 });
 
 test('only active rows count: a deactivated grant is no grant', () => {
