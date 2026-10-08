@@ -117,18 +117,16 @@ const DEFAULT_DEPS = {
   cli: realCli, io: realIo, guard: realGuard,
 };
 
-// The approval for one key (a plan id, or resolve-D-1003): refuses up front when there is no good ticket,
-// then hands the modules a confirm that USES the ticket at the moment they would write (after their
-// re-checks), so a ticket is spent only on a write that is about to happen.
+// The approval for one key (a plan id, or resolve-D-1003): the guard's ticket is USED UP as the command
+// starts (blind review 10/8: checking first and taking at the write let a long merge or schema run, or the
+// earlier plans of a batch, outlive the ticket, and logged that as the person's "cancel"). The ticket's
+// clock therefore covers only the time the person took to answer. A batch takes all its tickets at once
+// (runBatch) and hands them in as `deps.approved`. No good ticket: refused before anything is read.
 function approvalFor(deps, key) {
   if (deps.confirm) return deps.confirm;
-  const t = deps.ticket || ticket;
-  const c = t.check(key);
-  if (!c.ok) throw new ApplyRefused(ticket.refusalText(c.why), 'no_approval');
-  return () => {
-    const r = t.take(key);
-    return r.ok ? { approved: true } : { approved: false, note: ticket.refusalText(r.why) };
-  };
+  const r = deps.approved && deps.approved.has(key) ? deps.approved.get(key) : (deps.ticket || ticket).take(key);
+  if (!r.ok) throw new ApplyRefused(ticket.refusalText(r.why), r.why === 'expired' ? 'approval_expired' : 'no_approval');
+  return () => ({ approved: true });
 }
 
 function configDir() {
@@ -936,6 +934,8 @@ async function runBatch(argv, deps = DEFAULT_DEPS) {
   if (argv[0] !== 'apply' || argv.length <= 2) return runCli(argv, deps);
   let worst = 0;
   const ids = argv.slice(1);
+  // Every plan's ticket is taken NOW, so a long first plan cannot make the last one's expire.
+  if (!deps.confirm) deps = { ...deps, approved: new Map(ids.map((id) => [id, (deps.ticket || ticket).take(id)])) };
   for (const [i, id] of ids.entries()) {
     console.log(`\n=== Plan ${i + 1} of ${ids.length}: ${id}`);
     worst = Math.max(worst, await runCli(['apply', id], deps));
@@ -959,7 +959,7 @@ if (require.main === module) {
     .then((code) => { process.exitCode = code; })
     .catch((e) => {
       // Only reachable if recording itself failed (the store cannot be written).
-      console.error(`\nERROR: ${e.message}\nNothing was written. (This could not be recorded either.)\n`);
+      console.error(`\nERROR: ${e.message}\nNothing more was written. (This could not be recorded either.)\n`);
       process.exitCode = 1;
     });
 }

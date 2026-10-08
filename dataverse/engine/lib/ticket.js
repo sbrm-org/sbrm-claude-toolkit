@@ -19,7 +19,9 @@ const path = require('path');
 const crypto = require('crypto');
 const store = require('./store');
 
-const TTL_MS = 10 * 60 * 1000;
+// Three minutes (blind review 10/8, down from ten): long enough to read the prompt; a declined prompt's
+// ticket is gone soon after. An approval that comes later is refused, and the apply is simply run again.
+const TTL_MS = 3 * 60 * 1000;
 const KEY = /^(?:\d{8}-\d{6}-[0-9a-f]{8}|resolve-[DHRSF]-\d{4,})$/;
 
 function folder(env) {
@@ -84,9 +86,11 @@ function take(key, opts = {}) {
 
 // An approval is waiting on this machine (a fresh ticket exists): the guard keeps screen-driving tools off
 // Claude Code's prompt while one is open.
+// Judged by each ticket's own signed check (blind review 10/8: the file time could drift from `created`).
 function pending({ env, now = Date.now() } = {}) {
   try {
-    return fs.readdirSync(folder(env)).some((n) => n.endsWith('.json') && now - fs.statSync(path.join(folder(env), n)).mtimeMs <= TTL_MS);
+    return fs.readdirSync(folder(env)).filter((n) => n.endsWith('.json'))
+      .some((n) => check(n.slice(0, -'.json'.length), { env, now }).ok);
   } catch {
     return false;
   }
@@ -94,9 +98,9 @@ function pending({ env, now = Date.now() } = {}) {
 
 // What the person and the log are told when an apply has no approval.
 function refusalText(why) {
-  if (why === 'expired') return 'the approval for this plan expired before it was used. Run the apply again and approve it when Claude Code asks.';
-  if (why === 'already used') return 'the approval for this plan was already used. Run the apply again and approve it when Claude Code asks.';
-  return `this apply was not approved in Claude Code's permission prompt (${why}). Run it as its own command so Claude Code asks, and approve it there.`;
+  if (why === 'expired') return 'the approval expired before the change started (it lasts three minutes). Run the command again and approve it when Claude Code asks.';
+  if (why === 'already used') return 'the approval for this change was already used. Run the command again and approve it when Claude Code asks.';
+  return `this change was not approved in Claude Code's permission prompt (${why}). Run it as its own command so Claude Code asks, and approve it there.`;
 }
 
 module.exports = { mint, check, take, sweep, pending, refusalText, TTL_MS, KEY };

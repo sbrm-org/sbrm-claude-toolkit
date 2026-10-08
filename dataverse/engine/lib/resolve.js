@@ -270,7 +270,11 @@ function planJob(dv, job, { envs, access, warnRows }) {
         if (!(e instanceof DataverseError)) throw e;
         why = `record ${r.id} was not found in ${table.entity.plural.toLowerCase()}`;
       }
-      if (before && hasState && before.statecode !== 0) why = 'the record is inactive';
+      // An inactive record is changed only to make it active again (blind review 10/8: records are made
+      // inactive instead of deleted, so the undo of a deactivation, or a hand-made reactivation, must plan).
+      // Nothing else rides along: reactivate first, then change it.
+      const reactivates = r.body.statecode === 0 && Object.keys(r.body).every((k) => k === 'statecode' || k === 'statuscode');
+      if (before && hasState && before.statecode !== 0 && !reactivates) why = 'the record is inactive (to make it active again, a job sets only statecode 0 and an active statuscode)';
       // A closed-year gift is never modified, and an open one is never moved INTO a closed year.
       if (!why && before && guard && !closedYear.isOpen(before[guard])) why = `this record ${closedYear.why(before[guard])}`;
       if (!why && before && guard && guard in r.body && !closedYear.isOpen(r.body[guard])) why = `the new book date ${closedYear.why(r.body[guard])}`;

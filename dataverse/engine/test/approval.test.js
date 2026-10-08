@@ -87,3 +87,28 @@ test('a batch: each plan runs on its own ticket, in order; one without a ticket 
   assert.equal(code, 1, 'the worst exit code');
   assert.equal(writes(dv).length, 2, 'a and c written, b refused');
 });
+
+test('an approval answered after the ticket ran out is refused as routine approval_expired, not a bypass', async () => {
+  const dv = fakeDv({ email: 'dgross@example.org' });
+  const id = await planId(dv);
+  ticket.mint(id, { now: Date.now() - ticket.TTL_MS - 1000 });
+  assert.equal(await quiet(() => cli.runCli(['apply', id], deps(dv))), 1);
+  assert.deepEqual(writes(dv), []);
+  const e = cli.lastRun.events.find((x) => x.reason_code === 'approval_expired');
+  assert.ok(e, 'recorded as approval_expired');
+  assert.equal(e.signal, false);
+});
+
+test('a batch takes every ticket as it starts, so a slow early plan cannot make a later one expire', async () => {
+  const dv = fakeDv({ email: 'dgross@example.org' });
+  const a = await planId(dv);
+  const b = await planId(dv, IDS.bob, 'Bob Sample');
+  ticket.mint(a);
+  ticket.mint(b);
+  let firstTake = null;
+  const spy = { take: (k) => { if (!firstTake) firstTake = k; return ticket.take(k); }, check: ticket.check };
+  assert.equal(await quiet(() => cli.runBatch(['apply', a, b], { ...deps(dv), ticket: spy })), 0);
+  assert.equal(ticket.check(a).ok || ticket.check(b).ok, false, 'both used');
+  assert.equal(firstTake, a);
+  assert.equal(writes(dv).length, 2);
+});

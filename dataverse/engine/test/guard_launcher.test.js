@@ -30,7 +30,8 @@ test('an apply of the plugin engine: the hook says "ask" and mints a ticket the 
   const store = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-hook-'));
   const env = { SBRM_DV_HOME: store };
   const ID = '20261008-093056-a114729a';
-  const ENG = 'C:/Users/x/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.11.0/dataverse/engine/dataverse-write.js';
+  // The real engine beside the guard: an approval must name it (a look-alike path is refused).
+  const ENG = path.join(__dirname, '..', 'dataverse-write.js').replace(/\\/g, '/');
   const input = (mode) => ({ tool_name: 'Bash', tool_input: { command: `node "${ENG}" ${V} ${ID}` }, permission_mode: mode });
   const r = call(input('auto'), env);
   assert.equal(r.status, 0, r.stderr);
@@ -48,6 +49,10 @@ test('an apply of the plugin engine: the hook says "ask" and mints a ticket the 
   assert.equal(b.status, 2);
   assert.match(b.stderr, /does not ask the person/);
   assert.equal(ticket.check(ID).ok, false, 'a refused apply mints nothing');
+  // From a subagent: refused, nothing minted (its prompt could be refused unseen).
+  const sub = call({ ...input('default'), agent_id: 'a1', agent_type: 'general-purpose' }, env);
+  assert.equal(sub.status, 2);
+  assert.equal(ticket.check(ID).ok, false);
 });
 
 test('WITHOUT node: anything touching Dataverse is blocked (fail closed); unrelated calls pass', (t) => {

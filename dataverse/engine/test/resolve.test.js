@@ -126,8 +126,16 @@ test('update: missing and inactive targets are refused row by row', () => {
     { name: 'Ina Active', id: IDS.inactive, body: { address1_city: 'X' } },
     { name: 'Bob Sample', id: IDS.bob, body: { address1_city: 'X' } },
   ] }));
-  assert.deepEqual(plan.refused.map((x) => x.why), [`record ${IDS.gone} was not found in contacts`, 'the record is inactive']);
+  assert.deepEqual(plan.refused.map((x) => x.why), [`record ${IDS.gone} was not found in contacts`, 'the record is inactive (to make it active again, a job sets only statecode 0 and an active statuscode)']);
   assert.equal(plan.rows.length, 1);
+});
+
+test('an inactive record may be made active again (state + status only); anything riding along is refused', () => {
+  const ok = run(job({ mode: 'update', rows: [{ name: 'Ina Active', id: IDS.inactive, body: { statecode: 0, statuscode: 1 } }] })).plan;
+  assert.equal(ok.rows.length, 1);
+  assert.deepEqual(ok.refused, []);
+  const mixed = run(job({ mode: 'update', rows: [{ name: 'Ina Active', id: IDS.inactive, body: { statecode: 0, statuscode: 1, address1_city: 'X' } }, { name: 'Bob Sample', id: IDS.bob, body: { address1_city: 'X' } }] })).plan;
+  assert.match(mixed.refused[0].why, /^the record is inactive/);
 });
 
 test('update: the row name is checked against the real record name (wrong-GUID guard)', () => {

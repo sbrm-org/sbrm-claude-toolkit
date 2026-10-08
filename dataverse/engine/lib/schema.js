@@ -1382,7 +1382,7 @@ function renderSteps(dv, steps, { publisher }) {
         const fields = Object.fromEntries(SHOWN_FIELDS.filter((f) => now[f] !== sent[f]).map((f) => [f, sent[f]]));
         const type = live['@odata.type'] || 'Microsoft.Dynamics.CRM.EntityMetadata';
         // The body must be the live definition with exactly the shown fields changed, nothing else.
-        const bad = canonical(applyFields(putBody(live, type), fields)) !== canonical(b) ? 'its request changes more than the pop-up would show' : null;
+        const bad = canonical(applyFields(putBody(live, type), fields)) !== canonical(b) ? 'its request changes more than the plan would show' : null;
         const changes = diffFields(live, fields);
         const up = changes.find((x) => x.field === 'RequiredLevel' && x.new === 'ApplicationRequired');
         if (up) {
@@ -1866,7 +1866,7 @@ async function planSchema(dv, job, { envs, access, warnRows, readEnv, now = new 
       if (!info) why = x.target.global ? `there is no global choice ${x.target.global}` : `there is no column ${x.target.column} on ${x.target.table}`;
       else if (info.not_choice) why = `${x.target.table}.${x.target.column} is ${info.type}, not a choice; options are changed on choice columns only`;
       else if (info.managed) forbidden.push(`the choice ${tkey} is managed (shipped by someone else); its options are not changed here`);
-      else if (!x.target.global && info.global) why = `${x.target.table}.${x.target.column} uses the global choice ${info.name}; name it as {"global": "${info.name}"} so the pop-up says every column sharing it changes`;
+      else if (!x.target.global && info.global) why = `${x.target.table}.${x.target.column} uses the global choice ${info.name}; name it as {"global": "${info.name}"} so the plan says every column sharing it changes`;
       if (why) invalid.push(why);
       working.set(tkey, info && !why && !info.managed ? { info, options: info.options.map((v) => ({ ...v })), first: true } : null);
     }
@@ -2182,7 +2182,7 @@ async function runStep(dv, plan, s, sleep) {
       return { note: 'the create timed out on this computer, but the table landed' };
     }
     if (!(await waitForTable(dv, s.logical.table, sleep))) {
-      throw new Error('the table was created but was not ready for columns after 5 minutes. Approve the same job again in a few minutes (a new plan lists only what is missing).');
+      throw new Error('the table was created but was not ready for columns after 5 minutes. Plan and approve the same job again in a few minutes (a new plan lists only what is missing).');
     }
     return { note };
   }

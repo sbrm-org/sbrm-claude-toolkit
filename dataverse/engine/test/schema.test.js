@@ -984,7 +984,7 @@ test('re-verify 1: a PUT body that changes more than the plan shows is refused (
   assert.deepEqual(writes(dv), []);
   // A body changing a field the pop-up never lists (outside the shown fields) is refused too.
   const hidden = { ...p, steps: [{ ...s, body: { ...s.body, IsSecured: true } }] };
-  assert.match((await refused(apply(hidden, dv, { confirm: noPopup }), ApplyRefused)).message, /its request changes more than the pop-up would show/);
+  assert.match((await refused(apply(hidden, dv, { confirm: noPopup }), ApplyRefused)).message, /its request changes more than the plan would show/);
 });
 
 test('re-verify 1: stored lines and "old -> new" must match what the requests do; the pop-up shows the rendered ones', async () => {

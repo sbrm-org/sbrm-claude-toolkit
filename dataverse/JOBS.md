@@ -13,7 +13,7 @@ reads everything live, and refuses (never repairs) anything not exactly right. S
   difference, so the sentence you tell the person and the file always agree
 
 Who may run which kind is the person's level in that app (`whoami <env>`): write for `rows` (and `merge`
-with a merge grant), develop for `schema` and `component`, admin for every delete.
+with a merge grant), develop for `schema` and `component`, admin for deleting an app part (records are never deleted).
 
 ## Records: `kind: "rows"`
 
@@ -27,7 +27,7 @@ with a merge grant), develop for `schema` and `component`, admin for every delet
 ```
 
 - `table` is the entity SET name (plural, lowercase). `mode`: `create` or `update`.
-- Each row: `name` (the record's human name), `id` (update and delete), `body` (create and update): plain
+- Each row: `name` (the record's human name), `id` (update), `body` (create and update): plain
   columns by logical name, lookups as `"<NavigationProperty>@odata.bind": "/<set>(<guid>)"` (null clears).
 - Optional: `verify` (columns to read back; every written column is read back anyway), `amount_field`
   (+ `intent.amount_total`), per create row `dup_filter` (one OData filter; a match leaves the row out).

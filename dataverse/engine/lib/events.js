@@ -40,6 +40,7 @@ const SIGNAL = {
   // app development (DESIGN.md §10): a definition that moved since the person's read; a change that grew
   // between plan and apply; nothing left to change (a re-plan of an applied schema job)
   snapshot_moved: false, severity_grew: false, nothing_to_change: false,
+  approval_expired: false, // the person answered Claude Code's prompt after the ticket's three minutes (1.11.0)
 };
 
 function isSignal(code) {

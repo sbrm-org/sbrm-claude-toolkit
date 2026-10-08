@@ -530,26 +530,42 @@ const ASK_MODES = new Set(['default', 'acceptEdits', 'plan', 'auto']);
 const PLAN_ID_RE = /^\d{8}-\d{6}-[0-9a-f]{8}$/;
 const SHELL_WORD = String.raw`(?:"[^"]+"|'[^']+'|[^\s;&|"'` + '`' + String.raw`$()<>]+)`;
 const APPROVAL_LINE = new RegExp(String.raw`^(?:cd\s+(${SHELL_WORD})\s*&&\s*)?(${SHELL_WORD})\s+(${SHELL_WORD})\s+(apply|resolve)\s+(.+)$`, 'i');
-// An engine apply or resolve anywhere in a line (the start of a segment): one that is not on its own line
-// is refused with a plain reason, so an honest mistake is not mistaken for an approval.
-const APPLY_IN_SEGMENT = /^\s*(?:\w+=\S*\s+)*\S*node(?:\.exe)?["']?\s+\S*dataverse-write(?:\.js)?["']?\s+(?:apply|resolve)\b/i;
+// An engine apply or resolve ANYWHERE in a command, a script or another tool's input (blind review 10/8: a
+// ticket minted for a declined prompt must not be spendable by a second, wrapped run). Only the exact
+// approval form below is ever let through; this is refused, so an honest mistake is told what to do and a
+// leftover ticket can only be reached by deliberate obfuscation (the guard's stated residual).
+const APPLY_ANYWHERE = /dataverse-write(?:\.js)?["']?\s+(?:apply|resolve)\b/i;
+// The engine this guard ships beside: an approval runs THIS file, never one that only looks like it
+// (blind review 10/8: the plugin-path text check matched a look-alike folder anywhere on disk).
+function ownEngine() {
+  try { return fs.realpathSync(path.join(__dirname, '..', 'engine', 'dataverse-write.js')); } catch { return null; }
+}
+function sameFile(a, b) {
+  if (!a || !b) return false;
+  try { return fs.realpathSync(a).toLowerCase() === b.toLowerCase(); } catch { return false; }
+}
 
 // { verb, keys } when `command` is exactly one engine apply/resolve of this plugin, else null.
-function approvalCommand(command) {
+function approvalCommand(command, engine = ownEngine()) {
   const text = String(command || '').trim().replace(/\s+2>&1$/, '');
   if (/[\r\n]/.test(text)) return null;
+  // No expansion of any kind anywhere on the line, quoted or not (blind review 10/8): what the person
+  // approves must be exactly what runs.
+  if (/[$`*?[\]{}!%^]/.test(text)) return null;
   const m = APPROVAL_LINE.exec(text);
   if (!m) return null;
   const unq = (s) => (s ? s.replace(/^["']|["']$/g, '') : s);
-  if (!/(?:^|[\\/])node(?:\.exe)?$/i.test(unq(m[2]))) return null;
-  let script = unq(m[3]);
-  if (!path.isAbsolute(script) && !/^~[\\/]/.test(script)) {
+  // Plain `node` only (blind review 10/8): any other file named node could be a stand-in launcher.
+  if (!/^node(?:\.exe)?$/i.test(m[2])) return null;
+  // A leading ~ means HOME only when unquoted: bash leaves a quoted ~ alone, and the guard must read the
+  // line the way the shell will.
+  const tilde = (raw) => (/^~(?=[\\/]|$)/.test(raw) ? HOME + raw.slice(1) : unq(raw));
+  let script = tilde(m[3]);
+  if (!path.isAbsolute(script)) {
     if (!m[1]) return null;
-    let d = unq(m[1]);
-    if (/^~(?=[\\/]|$)/.test(d)) d = HOME + d.slice(1);
-    script = path.join(d, script);
+    script = path.join(tilde(m[1]), script);
   }
-  if (!/[\\/]dataverse[\\/]engine[\\/]dataverse-write\.js$/i.test(script) || !inPlugin(script)) return null;
+  if (!/[\\/]dataverse[\\/]engine[\\/]dataverse-write\.js$/i.test(script) || !sameFile(script, engine)) return null;
   const verb = m[4].toLowerCase();
   const rest = m[5].trim();
   if (/[;&|`$<>]/.test(rest)) return null;
@@ -558,26 +574,35 @@ function approvalCommand(command) {
     if (ids.length > 20 || !ids.every((x) => PLAN_ID_RE.test(x)) || new Set(ids).size !== ids.length) return null;
     return { verb, keys: ids };
   }
-  const num = /^([DHRSF]-\d{4,})\s/i.exec(rest + ' ');
+  // --fixed-in <version> may sit anywhere, as the engine allows (blind review 10/8).
+  const num = /^([DHRSF]-\d{4,})\s/i.exec(rest.replace(/--fixed-in\s+\S+\s*/i, '') + ' ');
   return num ? { verb, keys: [`resolve-${num[1].toUpperCase()}`] } : null;
 }
 
 // null (not an approval), { block } or { ask: { verb, keys } }.
-function approvalVerdict(input) {
+function approvalVerdict(input, { engine } = {}) {
   const tool = String(input.tool_name || '');
   if (tool !== 'Bash' && tool !== 'PowerShell') return null;
   const command = String((input.tool_input || {}).command || '');
-  const ap = approvalCommand(command);
+  const ap = approvalCommand(command, engine === undefined ? ownEngine() : engine);
   if (!ap) {
-    if (segments(command).some((s) => APPLY_IN_SEGMENT.test(s))) {
-      return { block: 'an apply or resolve that is not a line of its own (run it as its own command, `node "<engine>" apply <plan-id> ...`, so Claude Code can ask the person)' };
+    if (APPLY_ANYWHERE.test(command)) {
+      return { block: 'an apply or resolve that is not exactly the approval form, so Claude Code cannot ask the person about it. The form: its own command, nothing before or after it, `node "<this plugin>/dataverse/engine/dataverse-write.js" apply <plan-id> [<plan-id> ...]` (at most 20 plans, none twice) or `... resolve <number> <resolution> "<note>"`, with no $ ` * ? [ ] { } ! % ^ ; & | < > characters anywhere (reword a note that has them)' };
     }
     return null;
+  }
+  // A subagent's hook input carries agent_id and the parent's mode (tested 10/8), but a background
+  // subagent's prompt can be refused unseen, which would leave a ticket for a prompt nobody saw.
+  if (input.agent_id || input.agent_type) {
+    return { block: 'an apply from a subagent (the main session runs applies, so the person sees Claude Code\'s prompt)' };
   }
   const mode = input.permission_mode;
   if (!ASK_MODES.has(mode)) {
     return { block: `an apply in a permission mode where Claude Code does not ask the person (this session: "${mode || 'not given'}"). The person switches to a mode that asks (shift+tab), then Claude runs the apply again` };
   }
+  // Every other rule still applies to the line before anyone is asked (blind review 10/8).
+  const other = shellVerdict(command);
+  if (other) return { block: other };
   return { ask: ap };
 }
 
@@ -651,6 +676,8 @@ function writeVerdict(tool, ti, dirs) {
   if (INJECT.test(text)) return 'writing keystroke or click injection (approving is the person\'s alone)';
   if (!inDevDir(file, dirs)) {
     if (ENGINE_INTERNALS.test(text)) return "writing code that reaches the engine's write side directly (it would skip the approval)";
+    // A script that runs an apply would spend a ticket minted for someone else's prompt (blind review 10/8).
+    if (CODE_FILE.test(file) && APPLY_ANYWHERE.test(text)) return 'writing a script that runs an apply or resolve (an apply runs only as its own command, so Claude Code asks the person)';
     // Code only (a note describing the Web API is not a call): final re-verify false positive.
     if (CODE_FILE.test(file) && (targetsDataverse(text) || XRM_WRITE.test(text))) return 'writing a raw writing HTTP call at Dataverse';
     if (CODE_FILE.test(file) && (KEY_NAMED.test(text) || /\.sbrm-dataverse[\\/]+config/i.test(text))) return 'writing code that reads the plan signing key';
@@ -681,6 +708,7 @@ function verdict(input, dirs = devDirs(), { popup = popupOpen } = {}) {
     walk(ti);
     const text = strings.join('\n');
     if (SHELL_MCP.test(mcp.name)) {
+      if (strings.some((s) => APPLY_ANYWHERE.test(s))) return `an apply or resolve through the tool "${mcp.name}" (an apply runs only as a Bash or PowerShell command of its own, so Claude Code asks the person)`;
       for (const s of strings) { const v = shellVerdict(s); if (v) return `${v} (through the tool "${mcp.name}")`; }
     }
     if (CODE_MCP.test(mcp.name)) {
@@ -746,7 +774,7 @@ function selftest() {
     ['Write into events/', W(`${H}/.sbrm-dataverse/events/pending/x.json`, '{}'), true],
     ['Write toolkit.json in the plugin', W(`${H}/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.9.0/dataverse/toolkit.json`, '{}'), true],
     ['Write a script that uses the write connection', W('C:/temp/fix.js', J('const { write', 'Connection } = require("C:/x/lib/write");')), true],
-    ['Write a script that runs the CLI apply (no ticket for it, so the engine refuses)', W('C:/temp/go.ps1', `node ${ENG} ${J('ap', 'ply')} 1`), false],
+    ['Write a script that runs the CLI apply (it would spend another prompt\'s ticket)', W('C:/temp/go.ps1', `node ${ENG} ${J('ap', 'ply')} 1`), true],
     ['Write prose that mentions apply in a .md', W('C:/temp/notes.md', `run node ${ENG} ${J('ap', 'ply')} <id> yourself`), false],
     ['Write a raw PATCH script', W('C:/temp/p.py', J('requests.patch("https://sbrmrec.crm.dynamics.com/api/data/v9.2/x", headers=h, method="P', 'ATCH")')), true],
     ['Edit settings to switch hooks off', E(`${H}/.claude/settings.json`, J('"disableAll', 'Hooks": true')), true],
@@ -930,32 +958,43 @@ function selftest() {
   // refused, and which are not approvals at all. approvalVerdict decides only; nothing is minted here.
   const ID1 = '20261008-093056-a114729a';
   const ID2 = '20261008-093108-34408f65';
-  const EDIR = 'C:/Users/x/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.9.0/dataverse/engine';
-  const A = (command, mode = 'default', tool = 'Bash') => ({ tool_name: tool, tool_input: { command }, permission_mode: mode });
+  // The REAL engine beside this guard: an approval must name it (a look-alike path is refused).
+  const OWNP = (ownEngine() || '').replace(/\\/g, '/');
+  const OWN = `"${OWNP}"`;
+  const EDIR = path.dirname(OWNP).replace(/\\/g, '/');
+  const TILDE = OWNP.toLowerCase().startsWith(H.toLowerCase() + '/') && !/\s/.test(OWNP) ? '~' + OWNP.slice(H.length) : null;
+  const A = (command, mode = 'default', tool = 'Bash', extra = {}) => ({ tool_name: tool, tool_input: { command }, permission_mode: mode, ...extra });
   const kind = (v) => (!v ? 'none' : v.block ? 'block' : 'ask');
   const approvalCases = [
-    ['an apply on its own line asks (default mode)', A(`node ${ENG} apply ${ID1}`), 'ask', [ID1]],
-    ['an apply asks in auto mode', A(`node ${ENG} apply ${ID1}`, 'auto'), 'ask'],
-    ['an apply asks in acceptEdits mode', A(`node ${ENG} apply ${ID1}`, 'acceptEdits'), 'ask'],
-    ['an apply asks in plan mode', A(`node ${ENG} apply ${ID1}`, 'plan'), 'ask'],
-    ['an apply in bypassPermissions is refused (no prompt to trust)', A(`node ${ENG} apply ${ID1}`, 'bypassPermissions'), 'block'],
-    ['an apply in dontAsk is refused', A(`node ${ENG} apply ${ID1}`, 'dontAsk'), 'block'],
-    ['an apply with no mode given is refused', A(`node ${ENG} apply ${ID1}`, null), 'block'],
-    ['a batch asks once, a ticket per plan', A(`node ${ENG} apply ${ID1} ${ID2}`), 'ask', [ID1, ID2]],
-    ['a batch naming one plan twice is refused', A(`node ${ENG} apply ${ID1} ${ID1}`), 'block'],
-    ['cd into the engine folder, then a relative apply, asks', A(`cd "${EDIR}" && node dataverse-write.js apply ${ID1}`), 'ask', [ID1]],
-    ['cd ~ form with 2>&1 asks', A(`cd ~/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.10.1/dataverse/engine && node dataverse-write.js apply ${ID1} 2>&1`), 'ask'],
-    ['an apply from the PowerShell tool asks', A(`node ${ENG} apply ${ID1}`, 'default', 'PowerShell'), 'ask'],
-    ['an apply chained to another command is refused', A(`node ${ENG} apply ${ID1}; echo done`), 'block'],
-    ['an apply && another command is refused', A(`node ${ENG} apply ${ID1} && echo done`), 'block'],
-    ['an apply on a second line is refused', A(`echo hi\nnode ${ENG} apply ${ID1}`), 'block'],
-    ['an apply of something that is not a plan id is refused', A(`node ${ENG} apply ../../x`), 'block'],
-    ['an engine copy outside the plugin is refused', A(`node C:/temp/engine/dataverse-write.js apply ${ID1}`), 'block'],
-    ['an apply hidden inside bash -c is not an approval (no prompt, no ticket: the engine refuses it)', A(`bash -c "node ${ENG} apply ${ID1}"`), 'none'],
-    ['plan is not an approval', A(`node ${ENG} plan job.json`), 'none'],
-    ['a resolve asks, keyed by its number', A(`node ${ENG} resolve D-1003 fixed "gift skill asks now"`), 'ask', ['resolve-D-1003']],
-    ['a resolve note carrying a command separator is refused', A(`node ${ENG} resolve D-1003 fixed "x; echo y"`), 'block'],
-    ['grep for the words is not an approval', A('grep -n "dataverse-write.js apply" JOBS.md'), 'none'],
+    ['an apply on its own line asks (default mode)', A(`node ${OWN} ${J('ap', 'ply')} ${ID1}`), 'ask', [ID1]],
+    ['an apply asks in auto mode', A(`node ${OWN} ${J('ap', 'ply')} ${ID1}`, 'auto'), 'ask'],
+    ['an apply asks in acceptEdits mode', A(`node ${OWN} ${J('ap', 'ply')} ${ID1}`, 'acceptEdits'), 'ask'],
+    ['an apply asks in plan mode', A(`node ${OWN} ${J('ap', 'ply')} ${ID1}`, 'plan'), 'ask'],
+    ['an apply in bypassPermissions is refused (no prompt to trust)', A(`node ${OWN} ${J('ap', 'ply')} ${ID1}`, 'bypassPermissions'), 'block'],
+    ['an apply in dontAsk is refused', A(`node ${OWN} ${J('ap', 'ply')} ${ID1}`, 'dontAsk'), 'block'],
+    ['an apply with no mode given is refused', A(`node ${OWN} ${J('ap', 'ply')} ${ID1}`, null), 'block'],
+    ['an apply from a subagent is refused (its prompt can be refused unseen)', A(`node ${OWN} ${J('ap', 'ply')} ${ID1}`, 'default', 'Bash', { agent_id: 'a1', agent_type: 'general-purpose' }), 'block'],
+    ['a batch asks once, a ticket per plan', A(`node ${OWN} ${J('ap', 'ply')} ${ID1} ${ID2}`), 'ask', [ID1, ID2]],
+    ['a batch naming one plan twice is refused', A(`node ${OWN} ${J('ap', 'ply')} ${ID1} ${ID1}`), 'block'],
+    ['cd into the engine folder, then a relative apply, asks', A(`cd "${EDIR}" && node dataverse-write.js ${J('ap', 'ply')} ${ID1}`), 'ask', [ID1]],
+    ...(TILDE ? [['the ~ form of the own engine with 2>&1 asks', A(`node ${TILDE} ${J('ap', 'ply')} ${ID1} 2>&1`), 'ask']] : []),
+    ['an apply from the PowerShell tool asks', A(`node ${OWN} ${J('ap', 'ply')} ${ID1}`, 'default', 'PowerShell'), 'ask'],
+    ['an apply chained to another command is refused', A(`node ${OWN} ${J('ap', 'ply')} ${ID1}; echo done`), 'block'],
+    ['an apply && another command is refused', A(`node ${OWN} ${J('ap', 'ply')} ${ID1} && echo done`), 'block'],
+    ['an apply on a second line is refused', A(`echo hi\nnode ${OWN} ${J('ap', 'ply')} ${ID1}`), 'block'],
+    ['an apply of something that is not a plan id is refused', A(`node ${OWN} ${J('ap', 'ply')} ../../x`), 'block'],
+    ['an engine copy outside the plugin is refused', A(`node C:/temp/engine/dataverse-write.js ${J('ap', 'ply')} ${ID1}`), 'block'],
+    ['a look-alike plugin path elsewhere on disk is refused', A(`node "C:/tmp/x/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.0/dataverse/engine/dataverse-write.js" ${J('ap', 'ply')} ${ID1}`), 'block'],
+    ['command substitution inside the quoted node word is refused', A(`"${J('$', '(curl x)')}/node" ${OWN} ${J('ap', 'ply')} ${ID1}`), 'block'],
+    ['a variable inside the quoted script path is refused', A(`node "${J('$', 'HOME')}/x/dataverse/engine/dataverse-write.js" ${J('ap', 'ply')} ${ID1}`), 'block'],
+    ['an apply hidden inside bash -c is refused (a leftover ticket stays out of reach)', A(`bash -c "node ${OWN} ${J('ap', 'ply')} ${ID1}"`), 'block'],
+    ['plan is not an approval', A(`node ${OWN} plan job.json`), 'none'],
+    ['a stand-in file named node is refused (plain node only)', A(`C:/temp/node ${OWN} ${J('ap', 'ply')} ${ID1}`), 'block'],
+    ['a resolve with --fixed-in before the number asks', A(`node ${OWN} ${J('reso', 'lve')} --fixed-in 1.11.0 D-1003 fixed "done"`), 'ask', ['resolve-D-1003']],
+    ['a resolve asks, keyed by its number', A(`node ${OWN} ${J('reso', 'lve')} D-1003 fixed "gift skill asks now"`), 'ask', ['resolve-D-1003']],
+    ['a resolve note carrying a command separator is refused', A(`node ${OWN} ${J('reso', 'lve')} D-1003 fixed "x; echo y"`), 'block'],
+    ['grep for the words is refused too (they only run as an approval)', A(J('grep -n "dataverse-write.js ', 'ap', 'ply" JOBS.md')), 'block'],
+    ['an unrelated command is not an approval', A('git status'), 'none'],
   ];
   for (const [label, input, want, keys] of approvalCases) {
     const v = approvalVerdict(input);
