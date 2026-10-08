@@ -332,7 +332,20 @@ const SHELL_WRAPPER = /\b(?:bash|sh|zsh|dash|cmd(?:\.exe)?|powershell(?:\.exe)?|
 const STORE_ANY = /\.sbrm-dataverse(?![\\/]+jobs(?:[\\/]|\b))/i;
 // Moving the engine's store or config for a run puts plans in a folder the guard does not protect (review);
 // so does pointing the home folder somewhere else (re-verify: USERPROFILE=/HOME= on a run).
-const STORE_MOVE = /\bSBRM_DV_(?:HOME|CONFIG)\b|\bSBRM_DATAVERSE_CLI\b|(?:^|[\s;&|(])(?:USERPROFILE|HOME|HOMEPATH|HOMEDRIVE)=|\$env:(?:USERPROFILE|HOME|HOMEPATH|HOMEDRIVE)\s*=|\bSet-Item\b[^;|&\n]*\benv:|\[Environment\]::SetEnvironmentVariable/i;
+// A PERSISTENT env var (SetEnvironmentVariable, Set-Item env:, setx) outlives this shell, so it is refused
+// when its name is computed or on the deny list: the home folder, PATH, node/npm, the loader, Claude, the
+// Dataverse CLI, and shell start-up files (a persistent NODE_OPTIONS or BASH_ENV runs code in every later
+// engine or shell run). Any other literal name is fine: refusing them all blocked storing an unrelated
+// app key (false positive 10/8, an sbrm-logs Grist key).
+const ENV_DENY = '(?:USERPROFILE|HOME\\w*|PATH\\w*|PSModulePath|NODE_\\w*|NPM_\\w*|DYLD_\\w*|LD_\\w*|SBRM_DV\\w*|SBRM_DATAVERSE\\w*|DATAVERSE\\w*|CLAUDE\\w*|ANTHROPIC\\w*|BASH_ENV|ENV|XDG_\\w*|COMSPEC|SHELL|APPDATA|LOCALAPPDATA)';
+const ENV_SAFE = `(?!${ENV_DENY}\\b)[A-Za-z_][A-Za-z0-9_]*`;
+const STORE_MOVE = new RegExp([
+  '\\bSBRM_DV_(?:HOME|CONFIG)\\b', '\\bSBRM_DATAVERSE_CLI\\b',
+  '(?:^|[\\s;&|(])(?:USERPROFILE|HOME|HOMEPATH|HOMEDRIVE)=', '\\$env:(?:USERPROFILE|HOME|HOMEPATH|HOMEDRIVE)\\s*=',
+  `\\[(?:System\\.)?Environment\\]::SetEnvironmentVariable\\s*\\((?!\\s*(?<q1>['"])${ENV_SAFE}\\k<q1>\\s*,)`,
+  `\\bSet-Item\\b[^;|&\\n]*?\\benv:(?![\\\\/]?${ENV_SAFE}['"]?(?:\\s|$))`,
+  `\\bsetx(?:\\.exe)?\\b(?!\\s+(?<q2>['"]?)${ENV_SAFE}\\k<q2>\\s)`,
+].join('|'), 'i');
 
 // A command that NAMES the store (or works inside it after a cd) may only be one of these reads; anything
 // else (another language's file API, an archive tool, a link maker, an alias) is refused rather than
@@ -963,6 +976,20 @@ function selftest() {
     ['a script that reads the plan key', W('C:/temp/k.py', J('open(os.path.expanduser("~/.sbrm-dataverse/config/plan.', 'key")).read()')), true],
     ['mkdir the store on a new machine is fine', B('mkdir -p ~/.sbrm-dataverse'), false],
     ['bash -c running the CLI write is still caught', B(J('bash -c "dataverse data del', 'ete contact 1"')), true],
+    // False positive found 10/8 (storing an sbrm-logs Grist key): ANY persistent env var was read as moving the
+    // store. A literal name off the deny list is fine; a home/PATH/node/Claude/startup name, or a computed one, is not.
+    ['persist an unrelated key as a User env var is fine (false positive 10/8)', B("[Environment]::SetEnvironmentVariable('SBRM_LOGS_GRIST_KEY', (Get-Clipboard).Trim(), 'User')", 'PowerShell'), false],
+    ['Set-Item an unrelated env var is fine', B('Set-Item env:GRIST_API_KEY abc', 'PowerShell'), false],
+    ['setx an unrelated env var is fine', B('setx CLOUDRON_API_TOKEN abc'), false],
+    ['persist the home folder elsewhere', B("[Environment]::SetEnvironmentVariable('USERPROFILE', 'C:\\tmp', 'User')", 'PowerShell'), true],
+    ['persist preloaded node code', B(J("[System.Environment]::SetEnvironmentVariable(\"NODE_OPT", "IONS\", '--require C:/x.js', 'User')"), 'PowerShell'), true],
+    ['persist a computed name', B("$n='HO'+'ME'; [Environment]::SetEnvironmentVariable($n, 'C:\\tmp', 'User')", 'PowerShell'), true],
+    ['persist PATH', B("[Environment]::SetEnvironmentVariable('Path', 'C:\\shim;' + $p, 'User')", 'PowerShell'), true],
+    ['persist a shell start-up file', B(J('setx BASH_', 'ENV C:\\x.sh')), true],
+    ['setx a Claude setting', B('setx CLAUDE_CONFIG_DIR C:\\tmp'), true],
+    ['setx with a computed name', B('setx %N% C:\\tmp'), true],
+    ['Set-Item the home folder', B('Set-Item env:HOME C:\\tmp', 'PowerShell'), true],
+    ['Set-Item a computed env name', B('Set-Item "env:$n" C:\\tmp', 'PowerShell'), true],
   ];
   // An approval waiting (a fresh ticket): a screen tool is refused only then (injected, not read).
   const screen = { tool_name: 'mcp__computer-use__left_click', tool_input: { x: 1, y: 2 } };
