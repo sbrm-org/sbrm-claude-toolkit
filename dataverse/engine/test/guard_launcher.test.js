@@ -33,11 +33,15 @@ test('an apply of the plugin engine: the hook says "ask" and mints a ticket the 
   // The real engine beside the guard: an approval must name it (a look-alike path is refused).
   const ENG = path.join(__dirname, '..', 'dataverse-write.js').replace(/\\/g, '/');
   const input = (mode) => ({ tool_name: 'Bash', tool_input: { command: `node "${ENG}" ${V} ${ID}` }, permission_mode: mode });
+  // A plan file in the throwaway store: the prompt carries its headline and warning (ruled 10/8: the
+  // prompt is the only yes).
+  fs.mkdirSync(path.join(store, 'plans'), { recursive: true });
+  fs.writeFileSync(path.join(store, 'plans', `${ID}.json`), JSON.stringify({ kind: 'rows', mode: 'update', app: 'Donor App', labels: { singular: 'Contact', plural: 'Contacts' }, rows: [{ body: { address1_city: 'x' } }, { body: { address1_city: 'y' } }], severity: { lines: ['Large change: 2 contacts.'] } }));
   const r = call(input('auto'), env);
   assert.equal(r.status, 0, r.stderr);
   const out = JSON.parse(r.stdout);
   assert.equal(out.hookSpecificOutput.permissionDecision, 'ask');
-  assert.match(out.hookSpecificOutput.permissionDecisionReason, new RegExp(ID));
+  assert.equal(out.hookSpecificOutput.permissionDecisionReason, 'SBRM Dataverse: Update 2 contacts in the Donor App. Large change: 2 contacts. Yes writes it; No stops it.');
   // The engine's half, against the same store: the ticket is good once.
   process.env.SBRM_DV_HOME = store;
   delete require.cache[require.resolve('../lib/ticket')];

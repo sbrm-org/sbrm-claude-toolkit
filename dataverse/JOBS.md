@@ -136,5 +136,5 @@ It prints the `snapshot_hash` and saves the current definition to `~/.sbrm-datav
 `Before you approve:` lines, when there are any: **Large change** (over 50 rows, pairs or objects),
 **Can't be fully undone** (merges, deletes, a live flow's steps, turning a flow On), **Lasting** (a new
 table, column, view, form or flow stays until an admin deletes it), **Not tried in Donor App Dev first**
-(a change to something live in the Donor App without `proven_in`). Tell the person every line before
-asking. If the change grows between plan and apply, apply refuses.
+(a change to something live in the Donor App without `proven_in`). Mention each in a few words before
+the apply; Claude Code's prompt shows them again. If the change grows between plan and apply, apply refuses.

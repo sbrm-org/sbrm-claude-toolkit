@@ -606,13 +606,36 @@ function approvalVerdict(input, { engine } = {}) {
   return { ask: ap };
 }
 
+// What the prompt says about one plan: its headline and its warning lines, read from the plan file (ruled
+// 10/8: the prompt is the person's only yes, so it carries the facts). Display only: the engine verifies the
+// plan's signature before it writes, so an edited file shows wrong text and then writes nothing.
+function describePlan(id) {
+  try {
+    const store = require('../engine/lib/store');
+    const rec = JSON.parse(fs.readFileSync(path.join(store.dir('plans'), `${id}.json`), 'utf8'));
+    const app = rec.app || 'app';
+    let head;
+    if (rec.kind === 'rows') head = require('../engine/lib/render').headline(rec);
+    else if (rec.kind === 'merge') head = `Merge ${(rec.pairs || []).length} pair(s) of records in the ${app}`;
+    else if (rec.kind === 'unmerge') head = `Undo a merge in the ${app}`;
+    else if (rec.kind === 'component') head = `${rec.mode || 'change'} ${rec.component && rec.component.name ? `'${rec.component.name}'` : 'an app component'} in the ${app}`;
+    else if (rec.kind === 'schema') head = `App change (tables, columns, choices) in the ${app}`;
+    else head = `A change in the ${app}`;
+    const warn = (rec.severity && Array.isArray(rec.severity.lines)) ? rec.severity.lines : [];
+    return `${head}${rec.reverts_plan_id ? ' (an undo)' : ''}${warn.length ? `. ${warn.join(' ')}` : ''}`;
+  } catch {
+    return `plan ${id}`;
+  }
+}
+
 function askPerson({ verb, keys }) {
   const T = require('../engine/lib/ticket');
   for (const k of keys) T.mint(k);
   const what = verb === 'resolve'
-    ? `close ${keys[0].slice('resolve-'.length)}`
-    : keys.length === 1 ? `write plan ${keys[0]}` : `write ${keys.length} plans (${keys.join(', ')})`;
-  const reason = `SBRM toolkit: approve this Dataverse change (${what})? Claude should already have told you what it changes and read you every "Before you approve" line. Yes writes it; No stops it.`;
+    ? `Close ${keys[0].slice('resolve-'.length)}`
+    : keys.map(describePlan).join(' | ');
+  const shown = what.length > 900 ? `${what.slice(0, 900)}...` : what.replace(/\.+$/, '');
+  const reason = `SBRM Dataverse: ${shown}. Yes writes it; No stops it.`;
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } }));
   process.exit(0);
 }
@@ -725,8 +748,8 @@ function verdict(input, dirs = devDirs(), { popup = popupOpen } = {}) {
 function block(what) {
   process.stderr.write(
     `BLOCKED by the SBRM toolkit Dataverse guard: ${what}. `
-    + 'A change to Dataverse goes through the shared write path: Claude plans it, tells the person every '
-    + 'warning, runs `apply` on its own line, and the person approves it when Claude Code asks. Tell the person what you were trying '
+    + 'A change to Dataverse goes through the shared write path: Claude plans it, runs `apply` on its own '
+    + 'line, and the person approves it when Claude Code asks. Tell the person what you were trying '
     + 'to do. Do not look for another way, and do not edit or remove this hook.\n',
   );
   process.exit(2);

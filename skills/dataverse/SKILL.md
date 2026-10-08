@@ -56,22 +56,21 @@ Verify the path on first use and say it in full whenever you hand the person a c
 3. **Run `plan <job.json>`.** Planning only reads; nothing changes. If it refuses, or rows were left
    out, tell the person which and why and stop there. The engine checks your `intent` against the job
    and refuses the plan if they disagree.
-4. **Tell the person what will change and how serious it is, then ask.** One sentence for the change,
-   with the count ("This fixes the mailing address on 4 contacts."). Then, if the plan printed a
-   "Before you approve" block, say EVERY line of it in plain words: a large change ("this touches 340
-   contacts"), something that can't be fully undone and why, something lasting (a new column stays until
-   an admin deletes it), or a change to something live that was not tried in Donor App Dev first. Never
-   soften, summarize away or skip a line; the person approves knowing all of it. Then: "Go ahead?"
-5. **When they say yes, run `apply <plan-id>` yourself, as a command of its own, IN THE BACKGROUND**
+4. **Say in one short line what it will change**, with the count ("This fixes the mailing address on
+   4 contacts."), plus a few words if the plan printed a "Before you approve" warning ("can't be fully
+   undone", "touches 340 contacts", "the new column stays"). No separate "go ahead?" in chat: Claude Code's
+   own prompt is the person's yes (ruled 10/8: "if you're not aware of what you're doing, you should say no
+   and figure it out"), and it shows the plan's headline and warnings itself. Only plan changes the
+   person actually asked for.
+5. **Then run `apply <plan-id>` yourself, straight away, as a command of its own, IN THE BACKGROUND**
    (the shell tool's run in background option), so a long change (a big merge, a new table) is never cut
    off by the command time limit part-way; you are told when it finishes. Exactly
    `node "<toolkit>/dataverse/engine/dataverse-write.js" apply <plan-id>`: nothing before or after it on
-   the line (the guard refuses an apply chained to anything). Tell them first: "Claude Code will ask you
-   to approve this command. Choose Yes to write it, or No to stop." Claude Code's prompt is the approval:
+   the line (the guard refuses an apply chained to anything). Claude Code's prompt is the approval:
    only their Yes writes (the guard hands the engine a one-time approval for that plan when it asks; an
    apply run any other way has none and writes nothing). While the prompt is waiting, use no tool that
    drives the screen, mouse or keyboard (the guard refuses them). Never try to answer it, and never write
-   some other way if they say No. If the guard says the session is in a mode where Claude Code does not
+   some other way if they say No: ask what they want instead. If the guard says the session is in a mode where Claude Code does not
    ask, tell the person to switch modes (shift+tab) and run the apply again. Run applies from the main
    conversation, never from a subagent (the guard refuses those). An approval lasts three minutes: if
    the engine says it expired, run the same apply again and they approve it again. If apply refuses because the
@@ -79,7 +78,7 @@ Verify the path on first use and say it in full whenever you hand the person a c
 6. **After the apply, read the output back to them**: what was written, anything that was not, and
    that it is in the Write Log.
 
-Batch related changes into ONE job where you can. Separate plans the person agreed to together go on ONE
+Batch related changes into ONE job where you can. Separate plans for one request go on ONE
 apply line (`apply <id> <id> ...`): one approval for all of them, each still planned, checked and logged
 on its own. Never ask the person to run or paste a command.
 
@@ -117,14 +116,13 @@ tell the person it goes to Dylan. The engine refuses a record delete outright.
 
 Admins may delete parts of the app (a column, a table, a relationship, a key, a choice option, a view,
 a form, a flow), the one way to remove something "Lasting". It cannot be undone by the toolkit: the plan
-says so and you say so, with every other "Before you approve" line, before asking. Deleting a column or
+says so, and you say so in a few words before the apply. Deleting a column or
 table destroys every value in it. Nobody deletes the Write Log or event rows.
 
 ## Undoing a change
 
-`revert <plan-id>` plans the undo of an applied plan; it is approved like any other write. "Undo that" is
-the request, not the yes: tell the person what the undo will restore (and anything left out), ask "go
-ahead?", and only then run `apply`. A record
+`revert <plan-id>` plans the undo of an applied plan; it is approved like any other write: say in a line
+what the undo restores (and anything left out), then run `apply`, and Claude Code asks them. A record
 someone has edited since is left out on purpose (undoing would wipe their edit). If they really want
 the old value back, that is an ordinary new job. App changes undo the same way (a changed view, form,
 flow or setting goes back to how it was); something NEW stays (only an admin delete removes it), and a
@@ -169,9 +167,9 @@ cleans up with their OK.
 
 ## Never
 
-- Run `apply` before the person has said yes in chat to the change AND its warnings, or answer, click
-  or approve Claude Code's prompt for them. Never chain an apply to another command or hide it inside one.
-- Leave out, soften or reword away a "Before you approve" line.
+- Answer, click or approve Claude Code's prompt for the person, or write anything they did not ask for.
+  Never chain an apply to another command or hide it inside one.
+- Hide a "Before you approve" warning: mention it, in a few words, before the apply.
 - Ask the person to run or paste a command.
 - Write to Dataverse any other way (the read connections, the CLI's own write commands, the maker
   tools of a Dataverse connection, a script).
