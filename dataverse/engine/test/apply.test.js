@@ -80,6 +80,18 @@ test('approve: writes, reads back, logs a Dataverse row AND locally, consumes th
   assert.ok(text.includes(`## ${local} - Update 2 contacts`), 'heading in local time');
 });
 
+test('an address change applies: the unasked address1_composite is not kept as a before-value (live 10/8)', () => {
+  // Live 10/8 (GIK 858, Nicole Scott): Dataverse returned address1_composite unasked at plan, built from the
+  // selected parts only; apply then SELECTED it and got the full text, so every address update was refused
+  // as "changed since the plan" although nothing had changed.
+  const dv = fakeDv();
+  const id = makePlan({ mode: 'update', rows: [{ name: 'Bob Sample', id: IDS.bob, body: { address1_line1: '2028 Monterey St' } }] }, dv);
+  assert.ok(!('address1_composite' in loadPlan(id).record.rows[0].before), 'only the columns the plan asked for are kept');
+  const res = run(id, dv);
+  assert.equal(res.outcome, 'applied');
+  assert.equal(dv.data.contacts[IDS.bob].address1_line1, '2028 Monterey St');
+});
+
 test('cancel: nothing written, plan kept, the cancel is logged', () => {
   const dv = fakeDv();
   const id = makePlan(twoRowUpdate, dv);

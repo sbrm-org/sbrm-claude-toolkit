@@ -111,6 +111,49 @@ test('APPLY re-checks the NEW date too: a move into the year that closed overnig
   assert.equal(dv.data.contacts[IDS.bob].birthdate, nextYearDate, 'nothing written');
 });
 
+// The late-entry exception (Dylan 10/8/26): a gift CREATED after its book date's fiscal year locked was never
+// in that year's closed books, so its book date ALONE may be moved into an open year. Case: GIK batch 2026_858,
+// entered 10/8/26, booked 17 gifts into 2006-2025 by misreading "26".
+const closedFY = Number(closedThru.slice(0, 4));            // CLOSED's fiscal year (it ends 9/30 of this year)
+const LOCKED_AT = `${closedFY}-12-01T08:00:00Z`;           // Dec 1, 00:00 Pacific (PST), when that FY locked
+const BEFORE_LOCK = `${closedFY}-12-01T07:59:59Z`;         // Nov 30, 11:59:59 PM Pacific
+
+test('late entry: a record created after its year locked may have its book date moved into an open year', () => {
+  const dv = fakeDv();
+  dv.touch('contacts', IDS.jane, { birthdate: CLOSED, createdon: LOCKED_AT });
+  const p = plan(dv, { mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { birthdate: OPEN } }] });
+  assert.equal(p.rows.length, 1);
+  assert.match(p.rows[0].warnings.join('\n'), /moves out of closed FY\d\d: entered .*after that year locked/);
+  const { id } = savePlan(p);
+  const res = applyPlan(id, { access: ACCESS, connect: () => dv, confirm: () => ({ approved: true }) });
+  assert.equal(res.outcome, 'applied');
+  assert.equal(dv.data.contacts[IDS.jane].birthdate, OPEN);
+});
+
+test('late entry is NARROW: created before the lock, another column, a closed new date, or no created date are refused', () => {
+  const dv = fakeDv();
+  dv.touch('contacts', IDS.jane, { birthdate: CLOSED, createdon: BEFORE_LOCK });
+  assert.throws(() => plan(dv, { mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { birthdate: OPEN } }] }), /closed fiscal year/);
+  dv.touch('contacts', IDS.jane, { birthdate: CLOSED, createdon: LOCKED_AT });
+  assert.throws(() => plan(dv, { mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { birthdate: OPEN, address1_city: 'X' } }] }), /closed fiscal year/);
+  assert.throws(() => plan(dv, { mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { address1_city: 'X' } }] }), /closed fiscal year/);
+  assert.throws(() => plan(dv, { mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { birthdate: `${closedFY - 1}-06-01T07:00:00Z` } }] }), /closed fiscal year/);
+  assert.throws(() => plan(dv, { mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { statecode: 1, statuscode: 2 } }] }), /closed fiscal year/);
+  dv.touch('contacts', IDS.jane, { birthdate: CLOSED, createdon: null });
+  assert.throws(() => plan(dv, { mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { birthdate: OPEN } }] }), /closed fiscal year/);
+});
+
+test('late entry at APPLY: the recheck honours it, and still refuses a new date that closed overnight', () => {
+  const dv = fakeDv();
+  dv.touch('contacts', IDS.jane, { birthdate: CLOSED, createdon: LOCKED_AT });
+  const p = plan(dv, { mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { birthdate: OPEN } }] });
+  // OPEN's own year locks Dec 1 of openYear+1: a plan made Nov 30 and applied Dec 1 is caught.
+  const { id } = savePlan(p, { now: new Date(openYear + 1, 10, 30, 20, 0) });
+  assert.throws(() => applyPlan(id, { access: ACCESS, connect: () => dv, confirm: () => { throw new Error('no prompt'); }, now: new Date(openYear + 1, 11, 1, 10, 0) }),
+    /closed fiscal year/);
+  assert.equal(dv.data.contacts[IDS.jane].birthdate, CLOSED, 'nothing written');
+});
+
 test('a revert cannot touch a closed-year record either (it is planned through the same guard)', () => {
   const dv = fakeDv();
   dv.touch('contacts', IDS.jane, { birthdate: CLOSED });

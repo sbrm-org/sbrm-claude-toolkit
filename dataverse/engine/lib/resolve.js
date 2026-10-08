@@ -215,7 +215,9 @@ function planJob(dv, job, { envs, access, warnRows }) {
   // The closed-year guard (DESIGN.md §8d): the book-date column of a guarded table, from envs.json.
   const guard = closedYear.guardFor(envInfo, job.table);
   if (guard && !table.attrs.has(guard)) throw new PlanRefused([`the closed-year guard names ${guard}, which ${table.entity.plural} does not have (envs.json)`], 'engine_bug');
-  const readKeys = [...new Set([...verify.map((v) => v.readKey), ...(hasState ? ['statecode'] : []), table.entity.primaryName, guard].filter(Boolean))];
+  // createdon rides along on a guarded table: the late-entry exception needs it (closedyear.lateEntry).
+  const created = guard && table.attrs.has('createdon') ? 'createdon' : null;
+  const readKeys = [...new Set([...verify.map((v) => v.readKey), ...(hasState ? ['statecode'] : []), table.entity.primaryName, guard, created].filter(Boolean))];
   const rows = [];
   const refused = [];
   const targetNames = new Map(); // "/set(guid)" -> display name | null when missing
@@ -275,8 +277,12 @@ function planJob(dv, job, { envs, access, warnRows }) {
       // Nothing else rides along: reactivate first, then change it.
       const reactivates = r.body.statecode === 0 && Object.keys(r.body).every((k) => k === 'statecode' || k === 'statuscode');
       if (before && hasState && before.statecode !== 0 && !reactivates) why = 'the record is inactive (to make it active again, a job sets only statecode 0 and an active statuscode)';
-      // A closed-year gift is never modified, and an open one is never moved INTO a closed year.
-      if (!why && before && guard && !closedYear.isOpen(before[guard])) why = `this record ${closedYear.why(before[guard])}`;
+      // A closed-year gift is never modified, and an open one is never moved INTO a closed year. The one edit
+      // allowed on a closed-year gift: late entry moves its book date alone into an open year.
+      if (!why && before && guard && !closedYear.isOpen(before[guard])) {
+        if (closedYear.lateEntry(before[guard], before.createdon, r.body, guard)) warnings.push(closedYear.lateEntryNote(before[guard], before.createdon));
+        else why = `this record ${closedYear.why(before[guard])}`;
+      }
       if (!why && before && guard && guard in r.body && !closedYear.isOpen(r.body[guard])) why = `the new book date ${closedYear.why(r.body[guard])}`;
       if (before) {
         recordName = before[table.entity.primaryName] || null;
@@ -313,8 +319,12 @@ function planJob(dv, job, { envs, access, warnRows }) {
 
     if (why) refused.push({ name: r.name, id: r.id, why });
     else {
-      // Raw values only (annotations dropped): this is what apply re-checks and revert restores.
-      const beforeKeep = before ? Object.fromEntries(Object.entries(before).filter(([k]) => !k.includes('@'))) : null;
+      // Raw values only (annotations dropped), and only the columns asked for: this is what apply re-checks
+      // and revert restores. Dataverse also returns columns nobody selected (address1_composite comes back
+      // whenever an address part is selected, built from the selected parts only), and keeping one made the
+      // apply re-read see a "change" that never happened (live 10/8, every contact address update refused).
+      const asked = new Set(readKeys);
+      const beforeKeep = before ? Object.fromEntries(Object.entries(before).filter(([k]) => !k.includes('@') && asked.has(k))) : null;
       // dup_filter is kept so apply can run it again (someone may have keyed the record by hand since).
       rows.push({ name: r.name, record_name: recordName, id: r.id, body: r.body, before: beforeKeep, dup_filter: r.dup_filter, changes, warnings });
     }
