@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 'use strict';
 // SBRM toolkit: the Dataverse guard (Claude Code PreToolUse hook). Ships WITH the engine, never after
-// (design note F15): the approval pop-up only means something while a session cannot write around
-// the engine and cannot click the pop-up. The session itself RUNS plan and apply once the person has
-// agreed in chat (ruled 10/7: nobody pastes an apply line); the pop-up is the person's one step.
+// (design note F15): the approval only means something while a session cannot write around the engine
+// and cannot answer the approval itself. The session itself RUNS plan and apply once the person has
+// agreed in chat (ruled 10/7: nobody pastes an apply line); since 1.11.0 (ruled 10/8) the person's one step
+// is Claude Code's own permission prompt, which this guard asks for (see "the approval" below).
 //
 // What a Claude session may NOT do (the person's own `!` lines are not tool calls and never reach it):
 //   1. reach the engine's write side without the CLI: inline code or a script that loads the write
-//      module or the apply functions (the bypass that skips the pop-up altogether, same hole as the
-//      QBO guard's rule C). Running the CLI's `apply` / `resolve` is allowed: it always shows the pop-up;
+//      module or the apply functions (the bypass that skips the approval altogether, same hole as the
+//      QBO guard's rule C). The CLI's `apply` / `resolve` on its own line is ASKED (1.11.0): Claude Code prompts the person;
 //   2. write through the Dataverse CLI's own write verbs, or a Dataverse MCP tool that is not a known
 //      read (ALLOW-LIST, both the old `mcp__dataverse-*__` and the plugin-namespaced names);
 //   3. send a raw writing HTTP call (POST/PATCH/PUT/DELETE) at *.crm.dynamics.com;
@@ -66,7 +67,7 @@ function targetsDataverse(text) {
   // and a write method in the same text, and no write line aimed anywhere else.
   return !elsewhere && DV_HOST.test(text) && MUTATING_HTTP.test(text);
 }
-// While an approval pop-up is open, no tool may drive the screen, mouse or keyboard (it could press Approve).
+// While an approval is waiting, no tool may drive the screen, mouse or keyboard (it could press Yes).
 const SCREEN_TOOL = /computer|mouse|keyboard|left_click|right_click|double_click|key_press|type_text|cua\b|screen_control|click|shortcut|hotkey|keystroke|press_key|type-tool|type_tool|drag|scroll-tool|automation/i;
 
 // The CLI as a shell word (dataverse, dataverse.exe, dataverse.cmd, npx @microsoft/dataverse). Its
@@ -180,7 +181,7 @@ function judgeCli(words) {
     const after = words.slice(i + 1).join(' ');
     let ok;
     if (['org', 'env', 'help'].includes(sub)) ok = true;
-    // A session never needs the raw bearer token: with it any HTTP tool writes around the pop-up.
+    // A session never needs the raw bearer token: with it any HTTP tool writes around the approval.
     else if (sub === 'auth') ok = !['token', 'get-token', 'access-token'].includes(sub2);
     else if (sub === 'data') ok = ['query', 'get', 'count', 'describe', '--help', '-h', ''].includes(sub2); // describe: a read, new in 1.0.81
     else if (sub === 'api' && sub2 === 'request') {
@@ -313,6 +314,7 @@ function inPlugin(p) {
 const SETTINGS_FILE = /\/\.claude\/settings(?:\.local)?\.json$|\/managed-settings\.json$/i;
 // Only switching hooks OFF: setting it back to false is doctor's own fix and must pass (10/7).
 const HOOKS_OFF = /disable[A]llHooks["'`]?\s*[:=]\s*["'`]?(?:true|\$true|1)\b/i;
+const PROMPT_ANSWERER = /Permission[R]equest/;
 // Shell verbs plus the file-writing calls of inline code (node -e, python -c), which a quoted script can
 // carry straight past a redirect rule.
 const SHELL_MUTATE_WORD = /\b(?:rm|del|erase|mv|move|cp|copy|tee|truncate|Remove-Item|Move-Item|Copy-Item|Rename-Item|Set-Content|Add-Content|Out-File|Clear-Content|New-Item|writeFileSync|writeFile|appendFileSync|appendFile|copyFileSync|renameSync|unlinkSync|unlink|rmSync|rmdirSync|cpSync|symlinkSync|linkSync|openSync|writeSync|createWriteStream|write_text|write_bytes|shutil|rmtree|WriteAllText|WriteAllBytes|WriteAllLines|AppendAllText|AppendAllLines|StreamWriter|ri|rd|rmdir|ni|mi|cpi|rni|sc|ac|robocopy|xcopy|tar|unzip|7z|mklink|ln|Expand-Archive|Compress-Archive|install|link)\b|\bos\.(?:remove|unlink|replace|rename|makedirs|symlink|link|system)\b|::(?:Delete|Replace|Move|Copy|Create|CreateText|AppendText)\b|sed\s+-i|\bopen\s*\([^)]*['"`][wax]\+?b?['"`]|\bFile\.(?:write|open|delete|rename)\b|\bDeno\.(?:write|remove|rename|copy)|\bBun\.write\b/i;
@@ -514,6 +516,82 @@ function isEngineRun(seg) {
   return /[\\/]dataverse[\\/]engine[\\/]dataverse-write\.js$/i.test(words[1]) && inPlugin(words[1]);
 }
 
+// ---------- the approval (1.11.0, DESIGN.md §10n, ruled 10/8) ----------
+//
+// The person approves a write in Claude Code's own permission prompt, not an OS pop-up. An `apply` (or a
+// `resolve`) of THIS plugin's engine, on a line of its own, is answered with Claude Code's "ask" decision,
+// which the model cannot answer; at that moment the guard mints a one-time ticket per plan
+// (engine/lib/ticket.js) and the engine refuses any write without one. So an apply the guard does not
+// recognise (wrapped, disguised, run through another tool) gets no prompt AND no ticket, and writes nothing.
+//
+// Only in modes where Claude Code really asks (tested 10/8: headless runs refuse "ask" in every mode; the
+// docs leave interactive bypassPermissions open): any other or missing mode is refused, never asked.
+const ASK_MODES = new Set(['default', 'acceptEdits', 'plan', 'auto']);
+const PLAN_ID_RE = /^\d{8}-\d{6}-[0-9a-f]{8}$/;
+const SHELL_WORD = String.raw`(?:"[^"]+"|'[^']+'|[^\s;&|"'` + '`' + String.raw`$()<>]+)`;
+const APPROVAL_LINE = new RegExp(String.raw`^(?:cd\s+(${SHELL_WORD})\s*&&\s*)?(${SHELL_WORD})\s+(${SHELL_WORD})\s+(apply|resolve)\s+(.+)$`, 'i');
+// An engine apply or resolve anywhere in a line (the start of a segment): one that is not on its own line
+// is refused with a plain reason, so an honest mistake is not mistaken for an approval.
+const APPLY_IN_SEGMENT = /^\s*(?:\w+=\S*\s+)*\S*node(?:\.exe)?["']?\s+\S*dataverse-write(?:\.js)?["']?\s+(?:apply|resolve)\b/i;
+
+// { verb, keys } when `command` is exactly one engine apply/resolve of this plugin, else null.
+function approvalCommand(command) {
+  const text = String(command || '').trim().replace(/\s+2>&1$/, '');
+  if (/[\r\n]/.test(text)) return null;
+  const m = APPROVAL_LINE.exec(text);
+  if (!m) return null;
+  const unq = (s) => (s ? s.replace(/^["']|["']$/g, '') : s);
+  if (!/(?:^|[\\/])node(?:\.exe)?$/i.test(unq(m[2]))) return null;
+  let script = unq(m[3]);
+  if (!path.isAbsolute(script) && !/^~[\\/]/.test(script)) {
+    if (!m[1]) return null;
+    let d = unq(m[1]);
+    if (/^~(?=[\\/]|$)/.test(d)) d = HOME + d.slice(1);
+    script = path.join(d, script);
+  }
+  if (!/[\\/]dataverse[\\/]engine[\\/]dataverse-write\.js$/i.test(script) || !inPlugin(script)) return null;
+  const verb = m[4].toLowerCase();
+  const rest = m[5].trim();
+  if (/[;&|`$<>]/.test(rest)) return null;
+  if (verb === 'apply') {
+    const ids = rest.split(/\s+/);
+    if (ids.length > 20 || !ids.every((x) => PLAN_ID_RE.test(x)) || new Set(ids).size !== ids.length) return null;
+    return { verb, keys: ids };
+  }
+  const num = /^([DHRSF]-\d{4,})\s/i.exec(rest + ' ');
+  return num ? { verb, keys: [`resolve-${num[1].toUpperCase()}`] } : null;
+}
+
+// null (not an approval), { block } or { ask: { verb, keys } }.
+function approvalVerdict(input) {
+  const tool = String(input.tool_name || '');
+  if (tool !== 'Bash' && tool !== 'PowerShell') return null;
+  const command = String((input.tool_input || {}).command || '');
+  const ap = approvalCommand(command);
+  if (!ap) {
+    if (segments(command).some((s) => APPLY_IN_SEGMENT.test(s))) {
+      return { block: 'an apply or resolve that is not a line of its own (run it as its own command, `node "<engine>" apply <plan-id> ...`, so Claude Code can ask the person)' };
+    }
+    return null;
+  }
+  const mode = input.permission_mode;
+  if (!ASK_MODES.has(mode)) {
+    return { block: `an apply in a permission mode where Claude Code does not ask the person (this session: "${mode || 'not given'}"). The person switches to a mode that asks (shift+tab), then Claude runs the apply again` };
+  }
+  return { ask: ap };
+}
+
+function askPerson({ verb, keys }) {
+  const T = require('../engine/lib/ticket');
+  for (const k of keys) T.mint(k);
+  const what = verb === 'resolve'
+    ? `close ${keys[0].slice('resolve-'.length)}`
+    : keys.length === 1 ? `write plan ${keys[0]}` : `write ${keys.length} plans (${keys.join(', ')})`;
+  const reason = `SBRM toolkit: approve this Dataverse change (${what})? Claude should already have told you what it changes and read you every "Before you approve" line. Yes writes it; No stops it.`;
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } }));
+  process.exit(0);
+}
+
 // ---------- the verdict ----------
 
 function shellVerdict(text) {
@@ -528,10 +606,10 @@ function shellVerdict(text) {
   const cli = cliVerdict(text.replace(HARMLESS_REDIRECT, ' ')); // raw: its heredoc bodies are found by line
   if (cli) return `${cli}, which writes to Dataverse`;
   if (CLI_LIST.test(rest) && LIST_WRITE.test(rest)) return "the Dataverse CLI's write side, called with a list of arguments";
-  if (ENGINE_INTERNALS.test(rest)) return "code that reaches the engine's write side directly (it would skip the approval pop-up)";
+  if (ENGINE_INTERNALS.test(rest)) return "code that reaches the engine's write side directly (it would skip the approval)";
   if (targetsDataverse(text.replace(HARMLESS_REDIRECT, ' '))) return 'a raw writing HTTP call at Dataverse';
   if (OTHER_DV_WRITERS.test(rest)) return 'another tool that writes to Dataverse (the Xrm PowerShell cmdlets or the Power Platform CLI)';
-  if (INJECT.test(rest)) return 'keystroke or click injection (the approval pop-up is the person\'s alone)';
+  if (INJECT.test(rest)) return 'keystroke or click injection (approving is the person\'s alone)';
   if (STORE_MOVE.test(text)) return "moving the engine's store or settings for a run (plans must stay where the guard protects them)";
   // An apply or resolve on a line that also changes PATH or node's own options could be handed a substitute
   // CLI or preloaded code (final re-verify). A Claude shell keeps no settings between commands, so the same
@@ -545,6 +623,7 @@ function shellVerdict(text) {
   if ((STORE_IN_TEXT.test(text) || STORE_ANY.test(text)) && mutates(rest)) return "changing the engine's own store (plans, log, events)";
   if (PLUGIN_IN_TEXT.test(text) && mutates(rest)) return "changing the toolkit plugin's files";
   if (HOOKS_OFF.test(rest)) return 'switching hooks off';
+  if (PROMPT_ANSWERER.test(text) && /settings(?:\.local)?\.json/i.test(text) && mutates(rest)) return 'adding a hook that answers approval prompts (only the person may add one)';
   return null;
 }
 
@@ -565,10 +644,13 @@ function writeVerdict(tool, ti, dirs) {
   const text = contentOf(tool, ti);
   if (SETTINGS_FILE.test(norm(file)) && HOOKS_OFF.test(text)) return 'switching hooks off';
   if (SETTINGS_FILE.test(norm(file)) && PLUGIN_OFF_SETTINGS.test(text)) return 'switching the toolkit plugin (and its guard) off';
+  // A PermissionRequest hook can answer Claude Code's prompts itself (docs, checked 10/8), which would
+  // approve a write with nobody looking. Only the person adds one, by hand.
+  if (SETTINGS_FILE.test(norm(file)) && PROMPT_ANSWERER.test(text)) return 'adding a hook that answers approval prompts (only the person may add one)';
   if (HIDDEN_CODE.test(text) && !inDevDir(file, dirs)) return 'writing code that runs out of sight (decoded at run time, or preloaded into node)';
-  if (INJECT.test(text)) return 'writing keystroke or click injection (the approval pop-up is the person\'s alone)';
+  if (INJECT.test(text)) return 'writing keystroke or click injection (approving is the person\'s alone)';
   if (!inDevDir(file, dirs)) {
-    if (ENGINE_INTERNALS.test(text)) return "writing code that reaches the engine's write side directly (it would skip the approval pop-up)";
+    if (ENGINE_INTERNALS.test(text)) return "writing code that reaches the engine's write side directly (it would skip the approval)";
     // Code only (a note describing the Web API is not a call): final re-verify false positive.
     if (CODE_FILE.test(file) && (targetsDataverse(text) || XRM_WRITE.test(text))) return 'writing a raw writing HTTP call at Dataverse';
     if (CODE_FILE.test(file) && (KEY_NAMED.test(text) || /\.sbrm-dataverse[\\/]+config/i.test(text))) return 'writing code that reads the plan signing key';
@@ -579,15 +661,10 @@ function writeVerdict(tool, ti, dirs) {
   return null;
 }
 
-// An approval pop-up is open on this machine right now (lib/dialog.js keeps a marker in the store's tmp
-// folder while it waits; one older than 15 minutes is stale and ignored).
+// An approval is waiting on this machine (a fresh ticket exists: Claude Code is asking, or was just asked):
+// screen-driving tools stay off the prompt meanwhile.
 function popupOpen() {
-  try {
-    const d = path.join(HOME, '.sbrm-dataverse', 'tmp');
-    return fs.readdirSync(d).some((f) => f.startsWith('popup-open-') && Date.now() - fs.statSync(path.join(d, f)).mtimeMs < 15 * 60 * 1000);
-  } catch {
-    return false;
-  }
+  try { return require('../engine/lib/ticket').pending(); } catch { return false; }
 }
 
 function verdict(input, dirs = devDirs(), { popup = popupOpen } = {}) {
@@ -596,7 +673,7 @@ function verdict(input, dirs = devDirs(), { popup = popupOpen } = {}) {
   const mcp = mcpParts(tool);
   if (mcp && DV_SERVER.test(mcp.server)) return READ_TOOLS.has(mcp.name) ? null : `the Dataverse tool "${mcp.name}" (only known reads are allowed)`;
   if (mcp && DV_WRITE_TOOLS.test(mcp.name)) return `the tool "${mcp.name}" (a Dataverse write outside the approved path)`;
-  if (SCREEN_TOOL.test(tool) && popup()) return 'driving the screen while an approval pop-up is open (the pop-up is the person\'s alone)';
+  if (SCREEN_TOOL.test(tool) && popup()) return 'driving the screen while an approval is waiting (approving is the person\'s alone)';
   if (mcp) {
     // Every string the tool was handed, as written (JSON would escape the quotes the rules read).
     const strings = [];
@@ -608,7 +685,7 @@ function verdict(input, dirs = devDirs(), { popup = popupOpen } = {}) {
     }
     if (CODE_MCP.test(mcp.name)) {
       if (targetsDataverse(text)) return 'a writing HTTP call at Dataverse from another tool';
-      if (XRM_WRITE.test(text)) return "a write through the app's own page code (Xrm), which skips the approval pop-up";
+      if (XRM_WRITE.test(text)) return "a write through the app's own page code (Xrm), which skips the approval";
     }
   }
   if (tool === 'Read' || tool === 'Grep') return keyPathVerdict(tool, ti, input.cwd);
@@ -620,8 +697,8 @@ function verdict(input, dirs = devDirs(), { popup = popupOpen } = {}) {
 function block(what) {
   process.stderr.write(
     `BLOCKED by the SBRM toolkit Dataverse guard: ${what}. `
-    + 'A change to Dataverse goes through the shared write path: Claude plans it, runs `apply` once the '
-    + 'person has agreed, and the person approves it in the pop-up. Tell the person what you were trying '
+    + 'A change to Dataverse goes through the shared write path: Claude plans it, tells the person every '
+    + 'warning, runs `apply` on its own line, and the person approves it when Claude Code asks. Tell the person what you were trying '
     + 'to do. Do not look for another way, and do not edit or remove this hook.\n',
   );
   process.exit(2);
@@ -642,9 +719,9 @@ function selftest() {
     // [label, input, expectBlocked]
     ['engine plan', B(`node ${ENG} plan ~/.sbrm-dataverse/jobs/x.json`), false],
     ['engine show / revert / doctor / report / review / whoami', B(`node ${ENG} show 1 && node ${ENG} revert 2 && node ${ENG} doctor && node ${ENG} report "it froze" && node ${ENG} review --brief && node ${ENG} whoami donorapp`), false],
-    ['engine apply (shows the pop-up)', B(`node ${ENG} ${J('ap', 'ply')} 20261007-122502-eec9f60a`), false],
+    ['engine apply (verdict allows; approvalVerdict asks first)', B(`node ${ENG} ${J('ap', 'ply')} 20261007-122502-eec9f60a`), false],
     ['engine apply via PowerShell', B(`node ${ENG} ${J('ap', 'ply')} 1`, 'PowerShell'), false],
-    ['engine resolve (shows the pop-up)', B(`node ${ENG} ${J('reso', 'lve')} D-1001 fixed "x"`), false],
+    ['engine resolve (verdict allows; approvalVerdict asks first)', B(`node ${ENG} ${J('reso', 'lve')} D-1001 fixed "x"`), false],
     ['inline code loading the write connection', B(`node -e "const { write${'Connection'} } = require('./lib/write')"`), true],
     ['inline code loading the write module', B(`node -e "const { ${J('write', 'Connection')} } = require('./lib/write')"`), true],
     ['inline code driving the entry point', B(`node -e "require('./${J('dataverse-', 'write')}').runCli(['x'])"`), true],
@@ -669,7 +746,7 @@ function selftest() {
     ['Write into events/', W(`${H}/.sbrm-dataverse/events/pending/x.json`, '{}'), true],
     ['Write toolkit.json in the plugin', W(`${H}/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.9.0/dataverse/toolkit.json`, '{}'), true],
     ['Write a script that uses the write connection', W('C:/temp/fix.js', J('const { write', 'Connection } = require("C:/x/lib/write");')), true],
-    ['Write a script that runs the CLI apply (pop-up still shows)', W('C:/temp/go.ps1', `node ${ENG} ${J('ap', 'ply')} 1`), false],
+    ['Write a script that runs the CLI apply (no ticket for it, so the engine refuses)', W('C:/temp/go.ps1', `node ${ENG} ${J('ap', 'ply')} 1`), false],
     ['Write prose that mentions apply in a .md', W('C:/temp/notes.md', `run node ${ENG} ${J('ap', 'ply')} <id> yourself`), false],
     ['Write a raw PATCH script', W('C:/temp/p.py', J('requests.patch("https://sbrmrec.crm.dynamics.com/api/data/v9.2/x", headers=h, method="P', 'ATCH")')), true],
     ['Edit settings to switch hooks off', E(`${H}/.claude/settings.json`, J('"disableAll', 'Hooks": true')), true],
@@ -766,7 +843,7 @@ function selftest() {
     ['a doc that mentions the store variable is fine', W('C:/temp/notes.md', 'Tests set SBRM_DV_HOME to a temp folder.'), false],
     ['engine show piped to head is fine', B(`node ${ENG} show 3 | head -20`), false],
     // 10/7 third adversarial pass (1.10.1): the plan signing key, the CLI by npx/shim, more HTTP spellings,
-    // other Dataverse writers, other tools, the pop-up marker; and the false positives it found
+    // other Dataverse writers, other tools, the approval-waiting marker; and the false positives it found
     ['Read the plan signing key', { tool_name: 'Read', tool_input: { file_path: `${H}/.sbrm-dataverse/config/plan.key` } }, true],
     ['Read the dev exemptions is fine', { tool_name: 'Read', tool_input: { file_path: `${H}/.sbrm-dataverse/config/dev_dirs.json` } }, false],
     ['Grep the store root', { tool_name: 'Grep', tool_input: { pattern: '.', path: `${H}/.sbrm-dataverse` } }, true],
@@ -826,7 +903,7 @@ function selftest() {
     ['HTTP: HttpClient.PatchAsync', B(J('$c.Patch', 'Async("https://x.crm.dynamics.com/api/data/v9.2/contacts(1)", $body)'), 'PowerShell'), true],
     ['pac application install', B(J('pac application inst', 'all --environment x')), true],
     ['pac auth create is a sign-in, fine', B('pac auth create --environment https://x.crm.dynamics.com'), false],
-    ['a screen tool click while a pop-up is open', { tool_name: 'mcp__windows-mcp__Click-Tool', tool_input: { loc: [1, 2] } }, false],
+    ['a screen tool click while an approval is waiting', { tool_name: 'mcp__windows-mcp__Click-Tool', tool_input: { loc: [1, 2] } }, false],
     ['an apply with PATH changed on the line', B(J('PATH=/tmp/shim:$PATH node ', ENG, ' ap', 'ply 1')), true],
     ['an apply with the CLI override', B(J('SBRM_DATAVERSE_CLI=/tmp/x node ', ENG, ' ap', 'ply 1')), true],
     ['BookStack update whose body mentions the app URL is fine', B('curl -X PUT https://wiki.sbrmapps.com/api/pages/12 -H "Authorization: Token x" -d \'{"html": "The donor app lives at https://sbrmdonorapp.crm.dynamics.com"}\''), false],
@@ -836,9 +913,9 @@ function selftest() {
     ['mkdir the store on a new machine is fine', B('mkdir -p ~/.sbrm-dataverse'), false],
     ['bash -c running the CLI write is still caught', B(J('bash -c "dataverse data del', 'ete contact 1"')), true],
   ];
-  // The pop-up marker: a screen tool is refused only while a pop-up is open (popup injected, not read).
+  // An approval waiting (a fresh ticket): a screen tool is refused only then (injected, not read).
   const screen = { tool_name: 'mcp__computer-use__left_click', tool_input: { x: 1, y: 2 } };
-  const popupCases = [['screen tool while a pop-up is open', true, true], ['screen tool with no pop-up is fine', false, false]];
+  const popupCases = [['screen tool while an approval is waiting', true, true], ['screen tool with none waiting is fine', false, false]];
   const dirs = [norm(DEV)];
   let fails = 0;
   const report = (label, v, expectBlocked) => {
@@ -848,7 +925,52 @@ function selftest() {
   };
   for (const [label, input, expectBlocked] of cases) report(label, verdict(input, dirs, { popup: () => false }), expectBlocked);
   for (const [label, open, expectBlocked] of popupCases) report(label, verdict(screen, dirs, { popup: () => open }), expectBlocked);
-  const total = cases.length + popupCases.length;
+
+  // The approval (1.11.0): which lines Claude Code is told to ASK about (and mint tickets for), which are
+  // refused, and which are not approvals at all. approvalVerdict decides only; nothing is minted here.
+  const ID1 = '20261008-093056-a114729a';
+  const ID2 = '20261008-093108-34408f65';
+  const EDIR = 'C:/Users/x/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.9.0/dataverse/engine';
+  const A = (command, mode = 'default', tool = 'Bash') => ({ tool_name: tool, tool_input: { command }, permission_mode: mode });
+  const kind = (v) => (!v ? 'none' : v.block ? 'block' : 'ask');
+  const approvalCases = [
+    ['an apply on its own line asks (default mode)', A(`node ${ENG} apply ${ID1}`), 'ask', [ID1]],
+    ['an apply asks in auto mode', A(`node ${ENG} apply ${ID1}`, 'auto'), 'ask'],
+    ['an apply asks in acceptEdits mode', A(`node ${ENG} apply ${ID1}`, 'acceptEdits'), 'ask'],
+    ['an apply asks in plan mode', A(`node ${ENG} apply ${ID1}`, 'plan'), 'ask'],
+    ['an apply in bypassPermissions is refused (no prompt to trust)', A(`node ${ENG} apply ${ID1}`, 'bypassPermissions'), 'block'],
+    ['an apply in dontAsk is refused', A(`node ${ENG} apply ${ID1}`, 'dontAsk'), 'block'],
+    ['an apply with no mode given is refused', A(`node ${ENG} apply ${ID1}`, null), 'block'],
+    ['a batch asks once, a ticket per plan', A(`node ${ENG} apply ${ID1} ${ID2}`), 'ask', [ID1, ID2]],
+    ['a batch naming one plan twice is refused', A(`node ${ENG} apply ${ID1} ${ID1}`), 'block'],
+    ['cd into the engine folder, then a relative apply, asks', A(`cd "${EDIR}" && node dataverse-write.js apply ${ID1}`), 'ask', [ID1]],
+    ['cd ~ form with 2>&1 asks', A(`cd ~/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.10.1/dataverse/engine && node dataverse-write.js apply ${ID1} 2>&1`), 'ask'],
+    ['an apply from the PowerShell tool asks', A(`node ${ENG} apply ${ID1}`, 'default', 'PowerShell'), 'ask'],
+    ['an apply chained to another command is refused', A(`node ${ENG} apply ${ID1}; echo done`), 'block'],
+    ['an apply && another command is refused', A(`node ${ENG} apply ${ID1} && echo done`), 'block'],
+    ['an apply on a second line is refused', A(`echo hi\nnode ${ENG} apply ${ID1}`), 'block'],
+    ['an apply of something that is not a plan id is refused', A(`node ${ENG} apply ../../x`), 'block'],
+    ['an engine copy outside the plugin is refused', A(`node C:/temp/engine/dataverse-write.js apply ${ID1}`), 'block'],
+    ['an apply hidden inside bash -c is not an approval (no prompt, no ticket: the engine refuses it)', A(`bash -c "node ${ENG} apply ${ID1}"`), 'none'],
+    ['plan is not an approval', A(`node ${ENG} plan job.json`), 'none'],
+    ['a resolve asks, keyed by its number', A(`node ${ENG} resolve D-1003 fixed "gift skill asks now"`), 'ask', ['resolve-D-1003']],
+    ['a resolve note carrying a command separator is refused', A(`node ${ENG} resolve D-1003 fixed "x; echo y"`), 'block'],
+    ['grep for the words is not an approval', A('grep -n "dataverse-write.js apply" JOBS.md'), 'none'],
+  ];
+  for (const [label, input, want, keys] of approvalCases) {
+    const v = approvalVerdict(input);
+    const ok = kind(v) === want && (!keys || JSON.stringify(v.ask.keys) === JSON.stringify(keys));
+    if (!ok) fails += 1;
+    console.log(`${ok ? 'PASS' : 'FAIL'}  ${want.padEnd(5)}  ${label}${!ok ? `   (got: ${kind(v)}${v && v.block ? `: ${v.block}` : ''}${v && v.ask ? ` ${JSON.stringify(v.ask.keys)}` : ''})` : ''}`);
+  }
+  // A hook that answers prompts by itself would approve with nobody looking: only the person adds one.
+  const answerer = [
+    ['Write a PermissionRequest hook into settings', { tool_name: 'Write', tool_input: { file_path: `${H}/.claude/settings.json`, content: J('{"hooks":{"Permission', 'Request":[{"hooks":[{"type":"command","command":"x"}]}]}}') } }, true],
+    ['echo a PermissionRequest hook into settings', B(J("echo '{\"hooks\":{\"Permission", "Request\":[]}}' > ", H, '/.claude/settings.local.json')), true],
+    ['a settings edit without one is fine', { tool_name: 'Edit', tool_input: { file_path: `${H}/.claude/settings.json`, old_string: '"a": 1', new_string: '"a": 2' } }, false],
+  ];
+  for (const [label, input, expectBlocked] of answerer) report(label, verdict(input, dirs, { popup: () => false }), expectBlocked);
+  const total = cases.length + popupCases.length + approvalCases.length + answerer.length;
   console.log(fails ? `\n${fails} of ${total} checks FAILED.` : `\nAll ${total} checks passed.`);
   process.exit(fails ? 1 : 0);
 }
@@ -862,6 +984,11 @@ if (require.main === module) {
     process.stdin.on('end', () => {
       let input;
       try { input = JSON.parse(raw); } catch { block('an unreadable tool call (the guard could not parse it, so it failed closed)'); }
+      const ap = approvalVerdict(input);
+      if (ap && ap.block) block(ap.block);
+      if (ap && ap.ask) {
+        try { askPerson(ap.ask); } catch (e) { block(`an apply the guard could not prepare an approval for (${e.message})`); }
+      }
       const what = verdict(input);
       if (what) block(what);
       process.exit(0);
@@ -869,4 +996,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { verdict, shellVerdict, writeVerdict, cliVerdict };
+module.exports = { verdict, shellVerdict, writeVerdict, cliVerdict, approvalVerdict, approvalCommand };

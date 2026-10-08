@@ -189,9 +189,9 @@ function doctor(deps) {
   if (deps.guard) {
     const g = deps.guard();
     if (!g.present) add('Guard', 'fail', 'the toolkit guard is missing from this install', 'ask Dylan: the SBRM toolkit plugin needs reinstalling or updating');
-    else if (!g.blocksBypass) add('Guard', 'fail', `the toolkit guard did not block a test bypass of the pop-up (${g.detail || 'no detail'})`, 'ask Dylan: the guard is broken in this install; do not write to Dataverse until it is fixed');
+    else if (!g.blocksBypass) add('Guard', 'fail', `the toolkit guard did not block a test bypass of the approval (${g.detail || 'no detail'})`, 'ask Dylan: the guard is broken in this install; do not write to Dataverse until it is fixed');
     else if (g.hooksOff) add('Guard', 'fail', `hooks are switched off in ${g.hooksOff}, so the guard never runs`, `with the person's OK: set "disableAllHooks" to false (or remove it) in ${g.hooksOff}`);
-    else add('Guard', 'ok', 'blocks a test bypass of the pop-up; hooks are on');
+    else add('Guard', 'ok', 'blocks a test bypass of the approval; hooks are on');
   } else add('Guard', 'info', 'not checked');
 
   const failed = checks.filter((c) => c.status === 'fail');

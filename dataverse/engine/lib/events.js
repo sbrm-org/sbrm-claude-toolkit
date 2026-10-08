@@ -20,7 +20,7 @@ const crypto = require('crypto');
 const store = require('./store');
 const { request, resolveCli, DataverseError } = require('./cli');
 
-const ENGINE_VERSION = '2026.10.08.2'; // 1.10.2: CLI paths without a leading "/" (macOS), flow null keys
+const ENGINE_VERSION = '2026.10.08.3'; // 1.11.0: Claude Code's prompt + ticket replace the pop-up; no record deletes
 const EVENT_SET = 'sbrm_dataverseevents';
 
 // DESIGN.md §7 D2: signal (listed in the review, opens an issue) or routine (counted by reason).
@@ -32,6 +32,7 @@ const SIGNAL = {
   parked: true, report: true, health_failed: true, drift: true, not_permitted: true, cli_blocked: true, access_unreadable: true,
   too_big: true, // a job over what one apply can carry or log in full (not an access cap; there is none since 10/7)
   interrupted: true, // an apply cut off part-way (1.10.1): what landed may have no Write Log entry
+  no_approval: true, // an apply ran without Claude Code's approval prompt (1.11.0): the guard should have asked
   // the gate doing its job (counted, never listed)
   invalid_job: false, intent_mismatch: false, every_row_refused: false, every_row_moved: false,
   stale_plan: false, no_plan: false, nothing_to_undo: false, table_missing: false,

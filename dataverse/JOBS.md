@@ -26,14 +26,14 @@ with a merge grant), develop for `schema` and `component`, admin for every delet
   ] }
 ```
 
-- `table` is the entity SET name (plural, lowercase). `mode`: `create`, `update` or `delete`.
+- `table` is the entity SET name (plural, lowercase). `mode`: `create` or `update`.
 - Each row: `name` (the record's human name), `id` (update and delete), `body` (create and update): plain
   columns by logical name, lookups as `"<NavigationProperty>@odata.bind": "/<set>(<guid>)"` (null clears).
 - Optional: `verify` (columns to read back; every written column is read back anyway), `amount_field`
   (+ `intent.amount_total`), per create row `dup_filter` (one OData filter; a match leaves the row out).
-- **Delete** (admin): rows carry `name` and `id` only, `intent.verb` is `"delete"` and `intent.fields` is
-  `[]`. The plan reads each whole record (kept in the Write Log); the pop-up asks for the record's name
-  (or `delete N`) to be typed. A closed-fiscal-year gift is never deleted. Undo cannot bring it back.
+- **Records are never deleted, only made inactive** (ruled 10/8): an `update` with `"statecode": 1` and the
+  table's inactive `"statuscode"` (read its status options first). The plan headline says "Mark N ...
+  inactive"; undo makes them active again. A `delete` mode is refused at `check`.
 
 ## Merges: `kind: "merge"` (donor app accounts and contacts)
 
@@ -113,7 +113,7 @@ It prints the `snapshot_hash` and saves the current definition to `~/.sbrm-datav
 - `mode`: `update`, `create` (with `solution` = an unmanaged SBRM solution's unique name; a new view needs
   `returnedtypecode`, `fetchxml` and `layoutxml`, a new form `objecttypecode` and `formxml`, a new flow
   `clientdata`), and for flows only `on`, `off` and `own` (with `owner` = the new owner's systemuser id;
-  admin, since a flow acts as its owner); `delete` is admin, typed name, and never a flow that is On.
+  admin, since a flow acts as its owner); `delete` is admin, and never a flow that is On.
   Every mode except `create` needs the `snapshot_hash` from `snapshot`.
 - `definition` holds only what changes: flows `clientdata` (+ `description`), views `fetchxml` /
   `layoutxml`, forms `formxml`, sitemaps `sitemapxml`. Every field a form names must exist on the table.
@@ -137,4 +137,4 @@ It prints the `snapshot_hash` and saves the current definition to `~/.sbrm-datav
 **Can't be fully undone** (merges, deletes, a live flow's steps, turning a flow On), **Lasting** (a new
 table, column, view, form or flow stays until an admin deletes it), **Not tried in Donor App Dev first**
 (a change to something live in the Donor App without `proven_in`). Tell the person every line before
-asking; the pop-up shows the same lines. If the change grows between plan and apply, apply refuses.
+asking. If the change grows between plan and apply, apply refuses.

@@ -14,7 +14,6 @@ const { planJob } = require('../lib/resolve');
 const { savePlan, loadPlan } = require('../lib/store');
 const { applyPlan, ApplyRefused } = require('../lib/apply');
 const { readEntries } = require('../lib/log');
-const { confirm, timeoutSeconds } = require('../lib/dialog');
 const { fakeDv, IDS, ENVS, ACCESS } = require('./fake');
 
 const LOG = 'sbrm_dataversewritelogs';
@@ -197,23 +196,14 @@ test('re-sending a row that already landed is not an error and makes no duplicat
   assert.equal(logRows(dv).filter((r) => r.sbrm_planid === id).length, 1);
 });
 
-test('dialog: only an exact APPROVE approves; Show every change opens the detail and asks again', () => {
-  const answers = ['SHOW', 'APPROVE'];
-  const opened = [];
-  const r = confirm({ summaryText: 's', detailText: 'd', title: 't' }, { ask: () => ({ answer: answers.shift() }), open: (f) => opened.push([f, fs.readFileSync(f, 'utf8')]) });
-  assert.equal(r.approved, true);
-  assert.equal(opened.length, 1);
-  assert.equal(opened[0][1], 'd');
-  assert.ok(opened[0][0].startsWith(process.env.SBRM_DV_HOME), 'detail written inside the store, not a shared temp folder');
-  assert.equal(fs.existsSync(opened[0][0]), false, 'detail deleted once the pop-up closes');
-  for (const a of ['approve', 'Approve', 'OK', '', undefined, 'CANCEL']) {
-    assert.equal(confirm({ summaryText: 's', detailText: 'd', title: 't' }, { ask: () => ({ answer: a }), open: () => {} }).approved, false, `answer ${a}`);
-  }
-});
-
-test('the timeout knob can only shorten the wait (and a timeout is always Cancel)', () => {
-  assert.equal(timeoutSeconds({ SBRM_DV_DIALOG_TIMEOUT: '5' }), 5);
-  assert.equal(timeoutSeconds({ SBRM_DV_DIALOG_TIMEOUT: '999999' }), 540);
-  assert.equal(timeoutSeconds({ SBRM_DV_DIALOG_TIMEOUT: '-1' }), 540);
-  assert.equal(timeoutSeconds({}), 540, 'under the 600 s ceiling on a Claude command, so the pop-up cancels first');
+test('records are never deleted (ruled 10/8): a delete plan from an earlier toolkit is refused at apply, nothing written', () => {
+  const dv = fakeDv();
+  const id = makePlan(twoRowUpdate, dv);
+  // A 1.10.x delete plan still on disk: the same signed shape, mode delete.
+  const { record } = loadPlan(id);
+  const { id: old } = savePlan({ ...record, mode: 'delete', id: undefined, hash: undefined, nonce: undefined, created: undefined });
+  let asked = false;
+  assert.throws(() => run(old, dv, { confirm: () => { asked = true; return { approved: true }; } }), (e) => e instanceof ApplyRefused && /never deleted/.test(e.message) && e.code === 'not_permitted');
+  assert.equal(asked, false, 'refused before any approval is used');
+  assert.deepEqual(writes(dv), []);
 });

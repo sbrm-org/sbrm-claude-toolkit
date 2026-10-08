@@ -14,12 +14,40 @@ const V = ['ap', 'ply'].join('');
 const call = (input, env = {}) => spawnSync(BASH, [RUN], { input: JSON.stringify(input), encoding: 'utf8', env: { ...process.env, ...env } });
 const bash = (command) => ({ tool_name: 'Bash', tool_input: { command } });
 
-test('with node: the real guard decides (a raw write blocked; plan and apply allowed)', (t) => {
+test('with node: the real guard decides (a raw write blocked; plan allowed; an apply outside the plugin refused)', (t) => {
   if (!fs.existsSync(BASH)) { t.skip('no bash at ' + BASH); return; }
   assert.equal(call(bash('curl -X PATCH https://sbrmdonorapp.crm.dynamics.com/api/data/v9.2/contacts(1)')).status, 2);
-  assert.equal(call(bash(`node C:/x/dataverse-write.js ${V} 1`)).status, 0, 'the session runs apply; the pop-up is the gate');
+  assert.equal(call(bash(`node C:/x/dataverse-write.js ${V} 1`)).status, 2, 'not this plugin, not a plan id: refused');
   assert.equal(call(bash('node C:/x/dataverse-write.js plan j.json')).status, 0);
   assert.equal(call(bash('ls')).status, 0);
+});
+
+// 1.11.0 (DESIGN.md §10n): the hook answers an apply with Claude Code's "ask" and mints the ticket the
+// engine will use up; in a mode that does not ask, it refuses. A throwaway store, never the real one.
+test('an apply of the plugin engine: the hook says "ask" and mints a ticket the engine accepts; bypass mode is refused', (t) => {
+  if (!fs.existsSync(BASH)) { t.skip('no bash at ' + BASH); return; }
+  const os = require('os');
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-hook-'));
+  const env = { SBRM_DV_HOME: store };
+  const ID = '20261008-093056-a114729a';
+  const ENG = 'C:/Users/x/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.11.0/dataverse/engine/dataverse-write.js';
+  const input = (mode) => ({ tool_name: 'Bash', tool_input: { command: `node "${ENG}" ${V} ${ID}` }, permission_mode: mode });
+  const r = call(input('auto'), env);
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.hookSpecificOutput.permissionDecision, 'ask');
+  assert.match(out.hookSpecificOutput.permissionDecisionReason, new RegExp(ID));
+  // The engine's half, against the same store: the ticket is good once.
+  process.env.SBRM_DV_HOME = store;
+  delete require.cache[require.resolve('../lib/ticket')];
+  delete require.cache[require.resolve('../lib/store')];
+  const ticket = require('../lib/ticket');
+  assert.equal(ticket.take(ID).ok, true);
+  assert.equal(ticket.take(ID).ok, false);
+  const b = call(input('bypassPermissions'), env);
+  assert.equal(b.status, 2);
+  assert.match(b.stderr, /does not ask the person/);
+  assert.equal(ticket.check(ID).ok, false, 'a refused apply mints nothing');
 });
 
 test('WITHOUT node: anything touching Dataverse is blocked (fail closed); unrelated calls pass', (t) => {

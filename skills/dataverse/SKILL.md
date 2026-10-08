@@ -2,13 +2,13 @@
 name: dataverse
 description: >
   Change SBRM's Dataverse apps (Donor App, Donor App Dev, HGS apps, Recovery app, Sober Living app)
-  through the shared write path: records (add, update, merge, delete) AND the apps themselves (tables,
-  columns, choices, views, forms, sitemaps, Power Automate flows). Claude prepares the change as a job
-  file, the engine plans it and works out how serious it is, Claude tells the person, and the person
-  approves it in a pop-up before anything is written. Also covers what to do when something goes wrong
+  through the shared write path: records (add, update, make inactive, merge; records are never deleted)
+  AND the apps themselves (tables, columns, choices, views, forms, sitemaps, Power Automate flows). Claude
+  prepares the change as a job file, the engine plans it and works out how serious it is, Claude tells
+  the person, and the person approves it when Claude Code asks, before anything is written. Also covers what to do when something goes wrong
   (report it to Dylan in the person's own words) and checking that the setup works (the health check).
   Triggers on "update the donor app", "change this contact", "fix the record", "add a gift",
-  "write to Dataverse", "mark inactive", "delete these records", "add a column", "new table", "change
+  "write to Dataverse", "mark inactive", "deactivate", "delete these records", "add a column", "new table", "change
   the view", "edit the form", "fix the flow", "turn the flow off", "undo that change", "revert", "the
   Dataverse tools aren't working", "is my Dataverse set up right", "report a problem with the donor app tools".
 ---
@@ -27,7 +27,7 @@ Each person has a level in each app, on that app's Dataverse Write Access list (
 | read | look only (anyone without a row) |
 | write | change records; merge only with a separate "may merge" yes |
 | develop | everything in write, plus change the app: tables, columns, choices, views, forms, sitemaps, flows |
-| admin | everything in develop, plus deletes of any kind, alternate keys, making a column required on a table that has rows, flow steps that reach beyond their connection (HTTP, child flows, a run-time table, someone else's connection, a changed trigger on a live flow), script or web content in views and forms, handing a flow to a new owner, the toolkit's own lists, and closing reported items |
+| admin | everything in develop, plus deleting app parts (a column, table, view, form, flow...), alternate keys, making a column required on a table that has rows, flow steps that reach beyond their connection (HTTP, child flows, a run-time table, someone else's connection, a changed trigger on a live flow), script or web content in views and forms, handing a flow to a new owner, the toolkit's own lists, and closing reported items |
 
 There is no limit on how much one change may touch. Instead the engine flags a big or serious change
 (below), and the person decides knowing it. The level is the toolkit's; the person's own Dataverse role
@@ -45,7 +45,7 @@ Verify the path on first use and say it in full whenever you hand the person a c
 1. **Read first.** Use the read connection to find the exact records (or the live view, form, flow,
    table) and their current values. Never build a change from memory or from what the person thinks it says.
 2. **Write the job file** (`sbrm-dv-job/1`; read `<toolkit>/dataverse/JOBS.md` for every kind's exact
-   shape before writing one). Records: `kind: "rows"`, env, table, create / update / delete, one row per record by its real
+   shape before writing one). Records: `kind: "rows"`, env, table, create or update, one row per record by its real
    name and id, the body, a one-sentence `reason` in plain words, and an `intent` that states exactly what
    you are changing. App changes: `kind: "schema"` (tables, columns, relationships, keys, choices) or
    `kind: "component"` (a view, form, sitemap or flow), see below. Save it in `~/.sbrm-dataverse/jobs/`,
@@ -59,19 +59,24 @@ Verify the path on first use and say it in full whenever you hand the person a c
    contacts"), something that can't be fully undone and why, something lasting (a new column stays until
    an admin deletes it), or a change to something live that was not tried in Donor App Dev first. Never
    soften, summarize away or skip a line; the person approves knowing all of it. Then: "Go ahead?"
-5. **When they say yes, run `apply <plan-id>` yourself, IN THE BACKGROUND** (the shell tool's run in
-   background option), so a long change (a big merge, a new table) is never cut off by the command time
-   limit part-way; you are told when it finishes. Tell them first: "A window will pop up on your screen
-   listing the change. Click Approve to write it, or Cancel." For a delete add: "To approve, type the name
-   it shows into the box." Only their click writes. The window closes itself as Cancel after 9 minutes.
-   While it is open, use no tool that drives the screen, mouse or keyboard (the guard refuses them). Never
-   try to click it, answer it, or write some other way if they cancel. If apply refuses because the change
-   grew or moved since the plan, plan it again and go back to step 4.
+5. **When they say yes, run `apply <plan-id>` yourself, as a command of its own, IN THE BACKGROUND**
+   (the shell tool's run in background option), so a long change (a big merge, a new table) is never cut
+   off by the command time limit part-way; you are told when it finishes. Exactly
+   `node "<toolkit>/dataverse/engine/dataverse-write.js" apply <plan-id>`: nothing before or after it on
+   the line (the guard refuses an apply chained to anything). Tell them first: "Claude Code will ask you
+   to approve this command. Choose Yes to write it, or No to stop." Claude Code's prompt is the approval:
+   only their Yes writes (the guard hands the engine a one-time approval for that plan when it asks; an
+   apply run any other way has none and writes nothing). While the prompt is waiting, use no tool that
+   drives the screen, mouse or keyboard (the guard refuses them). Never try to answer it, and never write
+   some other way if they say No. If the guard says the session is in a mode where Claude Code does not
+   ask, tell the person to switch modes (shift+tab) and run the apply again. If apply refuses because the
+   change grew or moved since the plan, plan it again and go back to step 4.
 6. **After the apply, read the output back to them**: what was written, anything that was not, and
    that it is in the Write Log.
 
-Batch related changes into ONE job, so the person sees one pop-up, not ten. Never ask the person to
-run or paste a command.
+Batch related changes into ONE job where you can. Separate plans the person agreed to together go on ONE
+apply line (`apply <id> <id> ...`): one approval for all of them, each still planned, checked and logged
+on its own. Never ask the person to run or paste a command.
 
 ## Changing the app (develop)
 
@@ -92,12 +97,23 @@ run or paste a command.
 - A column's type cannot be changed (that is delete and recreate). Managed components (Microsoft's own
   `msnfp_` tables, forms and views) are not changed; add your own beside them.
 
-## Deleting (admin)
+## Records are never deleted, only made inactive
 
-Admins may delete records and app objects (a column, a table, a view, a flow). A delete cannot be
-undone by the toolkit: the plan says so, you say so, and the pop-up asks for the record's or object's
-name (or "delete N" for several) to be typed before Approve works. Deleting a column or table destroys
-every value in it. Nobody deletes the Write Log or event rows.
+Ruled by Dylan (10/8): "a regular record should always be getting deactivated, never deleted." When
+someone asks to delete, remove or get rid of a record (a duplicate donor, a test gift, a bad row), make
+it inactive instead: an ordinary update (`kind: "rows"`, `mode: "update"`) setting `statecode` to 1 and
+`statuscode` to the table's inactive reason (read the table's status options first). Say what you are
+doing: "Records aren't deleted here; I'll mark it inactive, which hides it from the active views and can
+be undone." Two records that are the same person or organization are merged instead (the duplicate is
+made inactive by the merge). A table with no Inactive status (notes, attachments) cannot be done this way:
+tell the person it goes to Dylan. The engine refuses a record delete outright.
+
+## Deleting app parts (admin)
+
+Admins may delete parts of the app (a column, a table, a relationship, a key, a choice option, a view,
+a form, a flow), the one way to remove something "Lasting". It cannot be undone by the toolkit: the plan
+says so and you say so, with every other "Before you approve" line, before asking. Deleting a column or
+table destroys every value in it. Nobody deletes the Write Log or event rows.
 
 ## Undoing a change
 
@@ -107,7 +123,7 @@ ahead?", and only then run `apply`. A record
 someone has edited since is left out on purpose (undoing would wipe their edit). If they really want
 the old value back, that is an ordinary new job. App changes undo the same way (a changed view, form,
 flow or setting goes back to how it was); something NEW stays (only an admin delete removes it), and a
-delete cannot be undone.
+deleted app part cannot be brought back. Making a record inactive is undone like any other update.
 
 ## When something goes wrong
 
@@ -148,8 +164,8 @@ cleans up with their OK.
 
 ## Never
 
-- Run `apply` before the person has said yes in chat to the change AND its warnings, or approve, click,
-  type into or answer the pop-up for them.
+- Run `apply` before the person has said yes in chat to the change AND its warnings, or answer, click
+  or approve Claude Code's prompt for them. Never chain an apply to another command or hide it inside one.
 - Leave out, soften or reword away a "Before you approve" line.
 - Ask the person to run or paste a command.
 - Write to Dataverse any other way (the read connections, the CLI's own write commands, the maker

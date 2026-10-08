@@ -7,7 +7,7 @@
 //   show   <plan-id>    every change in a saved plan, row by row
 //   whoami <env>        who Dataverse says you are, and your access in the shared path
 //   snapshot <env> <set> <id>   read a view / form / sitemap / flow and its hash, for a component job (§10e)
-//   apply  <plan-id>    re-check, the pop-up, write, read back, log (CONTRACT.md §5, §9)
+//   apply  <plan-id>... re-check, the approval (Claude Code prompt + ticket), write, read back, log (CONTRACT.md §5, §9)
 //   revert <plan-id> [env]  plan the undo of an applied plan (CONTRACT.md §10); apply it as usual
 //   doctor              the health check for this machine (DESIGN.md §7 D4, D4a)
 //   report "<words>" [--plan <id>] [--env <env>]   the person says something is wrong (§7 D3)
@@ -37,7 +37,7 @@ const { gitExposure } = require('./lib/safety');
 const { summary, detail } = require('./lib/render');
 const { applyPlan, ApplyRefused } = require('./lib/apply');
 const { writeConnection } = require('./lib/write');
-const { confirm } = require('./lib/dialog');
+const ticket = require('./lib/ticket');
 const { planRevert, findEntry } = require('./lib/revert');
 const { readEntries } = require('./lib/log');
 const events = require('./lib/events');
@@ -87,6 +87,12 @@ function realGuard() {
     const h = spawnSync('bash', [launcher], { input: probe, encoding: 'utf8', windowsHide: true, env: { ...process.env, CLAUDE_PLUGIN_ROOT: path.join(__dirname, '..', '..') } });
     if (h.status !== 2) { r = h; via = 'bash run.sh (as the hook runs it)'; }
   }
+  // 1.11.0: an apply in a mode where Claude Code does not ask must be refused (nothing is minted for it).
+  if (r.status === 2) {
+    const apply = JSON.stringify({ tool_name: 'Bash', permission_mode: 'bypassPermissions', tool_input: { command: `node "${path.join(__dirname, 'dataverse-write.js').replace(/\\/g, '/')}" apply 20000101-000000-00000000` } });
+    const m = spawnSync(process.execPath, [file], { input: apply, encoding: 'utf8', windowsHide: true });
+    if (m.status !== 2) { r = m; via = 'node (an apply in bypassPermissions mode)'; }
+  }
   let hooksOff = null;
   for (const f of [path.join(os.homedir(), '.claude', 'settings.json'), path.join(os.homedir(), '.claude', 'settings.local.json')]) {
     try { if (JSON.parse(fs.readFileSync(f, 'utf8')).disableAllHooks === true) hooksOff = f; } catch { /* absent or unreadable */ }
@@ -103,10 +109,27 @@ function realCli() {
   return c;
 }
 
+// No `confirm` here (1.11.0, DESIGN.md §10n): the person approves in Claude Code's permission prompt and
+// the engine checks the guard's one-time ticket (lib/ticket.js) instead. Tests inject `confirm` to stand in
+// for an approval; the ticket path runs only when none is injected.
 const DEFAULT_DEPS = {
-  readConnection, writeConnection, confirm, eventConnection: events.eventConnection,
+  readConnection, writeConnection, eventConnection: events.eventConnection,
   cli: realCli, io: realIo, guard: realGuard,
 };
+
+// The approval for one key (a plan id, or resolve-D-1003): refuses up front when there is no good ticket,
+// then hands the modules a confirm that USES the ticket at the moment they would write (after their
+// re-checks), so a ticket is spent only on a write that is about to happen.
+function approvalFor(deps, key) {
+  if (deps.confirm) return deps.confirm;
+  const t = deps.ticket || ticket;
+  const c = t.check(key);
+  if (!c.ok) throw new ApplyRefused(ticket.refusalText(c.why), 'no_approval');
+  return () => {
+    const r = t.take(key);
+    return r.ok ? { approved: true } : { approved: false, note: ticket.refusalText(r.why) };
+  };
+}
 
 function configDir() {
   return process.env.SBRM_DV_CONFIG || path.join(__dirname, '..');
@@ -232,7 +255,7 @@ function reportPlan(run, plan) {
   console.log(`\nPlan ${id} saved (${planFile}).`);
   console.log(`Every change, row by row: node "${path.resolve(__filename)}" show ${id}`);
   console.log(`To write it: node "${path.resolve(__filename)}" apply ${id}`);
-  console.log('Nothing has been written. Apply shows a pop-up; only Approve writes.\n');
+  console.log('Nothing has been written. Apply asks for approval in Claude Code; only a Yes there writes.\n');
   return 0;
 }
 
@@ -246,7 +269,7 @@ async function planAppCmd(run, dv, job, app, ctx) {
   console.log(`\nPlan ${id} saved (${planFile}).`);
   console.log(`Every change in full: node "${path.resolve(__filename)}" show ${id}`);
   console.log(`To write it: node "${path.resolve(__filename)}" apply ${id}`);
-  console.log('Nothing has been changed. Apply shows a pop-up; only Approve writes.\n');
+  console.log('Nothing has been changed. Apply asks for approval in Claude Code; only a Yes there writes.\n');
   return 0;
 }
 
@@ -260,7 +283,7 @@ async function planMergeCmd(run, dv, job, { envs, access, warnRows }) {
   console.log(`\nPlan ${id} saved (${planFile}).`);
   console.log(`Every pair, record by record: node "${path.resolve(__filename)}" show ${id}`);
   console.log(`To merge: node "${path.resolve(__filename)}" apply ${id}`);
-  console.log('Nothing has been merged. Apply shows a pop-up; only Approve merges.\n');
+  console.log('Nothing has been merged. Apply asks for approval in Claude Code; only a Yes there merges.\n');
   return 0;
 }
 
@@ -274,7 +297,7 @@ async function planUnmergeCmd(run, dv, entry, mergeId, note, { envs, access }) {
   console.log(merge.unmergeSummary(plan));
   console.log(`\nPlan ${id} saved (${planFile}).`);
   console.log(`To write it: node "${path.resolve(__filename)}" apply ${id}`);
-  console.log('Nothing has been written. Apply shows a pop-up; only Approve writes.\n');
+  console.log('Nothing has been written. Apply asks for approval in Claude Code; only a Yes there writes.\n');
   return 0;
 }
 
@@ -355,7 +378,7 @@ async function planAppRevertCmd(run, dv, entry, id, note, app, ctx) {
   console.log(app.summary(plan));
   console.log(`\nPlan ${planId} saved (${planFile}).`);
   console.log(`To write it: node "${path.resolve(__filename)}" apply ${planId}`);
-  console.log('Nothing has been changed. Apply shows a pop-up; only Approve writes.\n');
+  console.log('Nothing has been changed. Apply asks for approval in Claude Code; only a Yes there writes.\n');
   return 0;
 }
 
@@ -395,7 +418,7 @@ function cmdRevert(run, deps, id, envArg) {
   console.log(`\nPlan ${planId} saved (${planFile}). Undo job: ${jobFile}`);
   console.log(`Every change, row by row: node "${path.resolve(__filename)}" show ${planId}`);
   console.log(`To write it: node "${path.resolve(__filename)}" apply ${planId}`);
-  console.log('Nothing has been written. Apply shows a pop-up; only Approve writes.\n');
+  console.log('Nothing has been written. Apply asks for approval in Claude Code; only a Yes there writes.\n');
   return 0;
 }
 
@@ -416,6 +439,9 @@ function cmdShow(run, deps, id) {
 
 function cmdApply(run, deps, id) {
   const { record } = loadPlan(id); // a missing plan refuses here, before anything else
+  run.planId = id;
+  run.env = record.env;
+  deps = { ...deps, confirm: approvalFor(deps, id) };
   const done = inflight(id, record);
   let out;
   try { out = applyAny(run, deps, id); } catch (e) { done(); throw e; }
@@ -767,7 +793,8 @@ function cmdResolve(run, deps, args) {
   const text = [`Resolve ${want} in the ${envs[env].name}`, '', `  ${now.sbrm_name}`, '', `Resolution: ${body.sbrm_resolution}`, `Note: ${note}`,
     ...(body.sbrm_fixedinversion ? [`Fixed in: ${body.sbrm_fixedinversion}`] : []),
     ...(repeats.length ? ['', `Also closes the same machine's earlier health checks: ${repeats.map((r) => r.sbrm_number).join(', ')}`] : [])].join('\n');
-  const answer = deps.confirm({ summaryText: text, detailText: text, title: `SBRM: resolve ${want}?` });
+  console.log(`\n${text}`);
+  const answer = approvalFor(deps, `resolve-${want}`)({ summaryText: text, detailText: text, title: `SBRM: resolve ${want}?` });
   if (!answer.approved) { console.log(`\nCancelled. ${want} is still open.\n`); return 1; }
   dv.update(events.EVENT_SET, id, body, now['@odata.etag']);
   const back = dv.get(`${events.EVENT_SET}(${id})?$select=sbrm_status,sbrm_resolution`);
@@ -783,7 +810,7 @@ function cmdResolve(run, deps, args) {
   return 0;
 }
 
-const USAGE = 'usage: dataverse-write.js check|plan <job.json> | show|apply <plan-id> | revert <plan-id> [env] | whoami <env> | snapshot <env> <set> <id> | doctor [--apps a,b] | report "<words>" | review [--days N] [--brief] | resolve <number> <resolution> "<note>"';
+const USAGE = 'usage: dataverse-write.js check|plan <job.json> | show <plan-id> | apply <plan-id> [<plan-id> ...] | revert <plan-id> [env] | whoami <env> | snapshot <env> <set> <id> | doctor [--apps a,b] | report "<words>" | review [--days N] [--brief] | resolve <number> <resolution> "<note>"';
 
 function dispatch(run, deps, argv) {
   const [cmd, arg, arg2] = argv;
@@ -902,6 +929,20 @@ function runCli(argv, deps = DEFAULT_DEPS) {
   return done(result);
 }
 
+// `apply <id> <id> ...` (1.11.0, ruled 10/8: one approval may cover several plans): Claude Code asks once
+// for the whole line and the guard mints a ticket per plan; each plan then runs as its own apply, in the
+// order given, with its own run, refusals and Write Log entry. Exit code: the worst of them.
+async function runBatch(argv, deps = DEFAULT_DEPS) {
+  if (argv[0] !== 'apply' || argv.length <= 2) return runCli(argv, deps);
+  let worst = 0;
+  const ids = argv.slice(1);
+  for (const [i, id] of ids.entries()) {
+    console.log(`\n=== Plan ${i + 1} of ${ids.length}: ${id}`);
+    worst = Math.max(worst, await runCli(['apply', id], deps));
+  }
+  return worst;
+}
+
 if (require.main === module) {
   // A WRITE from the real command line uses the real store and settings, never a moved one: a plan file
   // in a folder the guard does not protect could have been edited (10/7 review). Tests drive runCli()
@@ -914,7 +955,7 @@ if (require.main === module) {
     process.exit(1);
   }
   Promise.resolve()
-    .then(() => runCli(process.argv.slice(2)))
+    .then(() => runBatch(process.argv.slice(2)))
     .then((code) => { process.exitCode = code; })
     .catch((e) => {
       // Only reachable if recording itself failed (the store cannot be written).
@@ -923,4 +964,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { main: runCli, runCli, Refusal, lastRun: null };
+module.exports = { main: runCli, runCli, runBatch, Refusal, lastRun: null };

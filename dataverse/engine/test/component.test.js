@@ -413,7 +413,7 @@ test('flow notes (Vendor, 9/25): a changed trigger needs a changed note; an adde
   await refused(C.planComponent(dv, valid(flowJob(dv, cd, { changed: ['actions'] })), ctx()), /added step\(s\) with no note: Update_gift/, 'invalid_job');
 });
 
-test('severity: create is lasting, delete is admin-only with the typed name, turning on says who it acts as, off names its callers', async () => {
+test('severity: create is lasting, delete is admin-only (no typed name, ruled 10/8), turning on says who it acts as, off names its callers', async () => {
   const dv = dvAs('dev');
   const create = valid(job({ component: { set: 'savedqueries', name: 'Big Donors' }, mode: 'create', solution: 'SBRMAdHocChanges', definition: { fetchxml: FETCH, layoutxml: LAYOUT, returnedtypecode: 'contact' }, intent: { verb: 'create', component: 'view', name: 'Big Donors' } }));
   const cp = await C.planComponent(dv, create, ctx());
@@ -423,9 +423,9 @@ test('severity: create is lasting, delete is admin-only with the typed name, tur
   await refused(C.planComponent(dv, valid(stateJob(dv, 'delete', { set: 'savedqueries', id: IDS.view, name: 'Active Donors', noun: 'view' })), ctx()), /takes admin access .* because it deletes the view/, 'not_permitted');
   const adm = dvAs('admin');
   const del = await C.planComponent(adm, valid(stateJob(adm, 'delete', { set: 'savedqueries', id: IDS.view, name: 'Active Donors', noun: 'view' })), ctx());
-  assert.equal(del.typed, 'Active Donors');
+  assert.equal(del.typed, undefined, 'no typed name (ruled 10/8)');
   assert.match(del.severity.lines[0], /^Can't be fully undone: deletes the view 'Active Donors' \(its full definition stays in the Write Log\)\.$/);
-  assert.match(C.componentSummary(del), /To approve, type its name exactly: Active Donors/);
+  assert.doesNotMatch(C.componentSummary(del), /type its name/);
   await refused(C.planComponent(adm, valid(stateJob(adm, 'delete')), ctx()), /is on; turn it off first/, 'invalid_job');
 
   const on = await C.planComponent(dv, valid(stateJob(dv, 'on', { id: IDS.offflow, name: 'Sync Letters' })), ctx());
@@ -466,7 +466,7 @@ test('apply a view change: one PATCH with If-Match, publishes only that table, r
   assert.equal(res.outcome, 'applied', JSON.stringify(res.rows));
   assert.ok(fileGone, 'the plan file is consumed');
   assert.match(shown[0].summaryText, /^Before you approve:\n {2}! Not tried in Donor App Dev first\./);
-  assert.equal(shown[0].typed, null);
+  assert.equal(shown[0].typed, undefined, 'no typed name (ruled 10/8)');
   const writes = nonGets(dv);
   assert.deepEqual(writes.map((c) => `${c.method} ${c.path}`), [`PATCH savedqueries(${IDS.view})`, 'POST PublishXml']);
   assert.equal(writes[0].etag, 'W/"1"', 'If-Match carries the version read at apply');
@@ -591,7 +591,7 @@ test('apply re-checks the level: develop lost since the plan refuses; a trigger 
   await assert.rejects(applied(p, f), (e) => e.code === 'access_revoked' && /takes admin access because it changes the trigger of a flow that is on; you have develop/.test(e.message));
 });
 
-test('create a flow: POST into the named solution, Off; a delete needs the typed name and is read back gone', async () => {
+test('create a flow: POST into the named solution, Off; a delete (admin) is read back gone', async () => {
   const dv = dvAs('dev');
   const cd = flowCd({ refs: { shared_commondataserviceforapps: REF('sbrm_dataverse_owner2') } });
   cd.properties.definition.actions.Compose_total.description = 'Totals.';
@@ -615,7 +615,7 @@ test('create a flow: POST into the named solution, Off; a delete needs the typed
   const adm = dvAs('admin');
   const del = await C.planComponent(adm, valid(stateJob(adm, 'delete', { set: 'savedqueries', id: IDS.view, name: 'Active Donors', noun: 'view' })), ctx());
   const { res: dres, shown } = await applied(del, adm);
-  assert.equal(shown[0].typed, 'Active Donors', 'the pop-up asks for the name typed');
+  assert.equal(shown[0].typed, undefined, 'no typed name (ruled 10/8)');
   assert.equal(dres.outcome, 'applied');
   assert.equal(nonGets(adm)[0].method, 'DELETE');
   assert.equal(nonGets(adm)[0].etag, 'W/"1"');
@@ -764,15 +764,15 @@ test('the pop-up says whether the flow is on NOW, not when it was planned', asyn
   assert.doesNotMatch(seen[0].summaryText, /The flow is ON/);
 });
 
-test('the typed delete phrase is the LIVE name, never the plan\'s; a blank name falls back to the id', async () => {
+test('a delete applies on the LIVE component, whatever name the plan carries; no typed name (ruled 10/8)', async () => {
   const adm = dvAs('admin');
   const plan = await C.planComponent(adm, valid(stateJob(adm, 'delete', { set: 'savedqueries', id: IDS.view, name: 'Active Donors', noun: 'view' })), ctx());
   const seen = [];
   await applied({ ...plan, typed: null, component: { ...plan.component, name: 'x' } }, adm, { confirm: seenBy(seen) });
-  assert.equal(seen[0].typed, 'Active Donors');
+  assert.equal(seen[0].typed, undefined, 'no typed name (ruled 10/8)');
   adm.data.savedqueries[IDS.view].name = '';
   await applied(plan, adm, { confirm: seenBy(seen) });
-  assert.equal(seen[1].typed, IDS.view, 'never null for a delete');
+  assert.equal(seen[1].typed, undefined, 'no typed name (ruled 10/8)');
 });
 
 test('a delete whose read-back fails for any other reason is "could not confirm", never written', async () => {
@@ -1126,7 +1126,7 @@ test('drafts are read AGAIN after the pop-up is approved: one saved while it was
   const dv = dvAs('dev');
   const plan = await C.planComponent(dv, valid(viewJob(dv, { layoutxml: SWAPPED_LAYOUT })), ctx());
   await assert.rejects(applied(plan, dv, { confirm: () => { dv.data.drafts.savedqueries[IDS.view] = { layoutxml: LAYOUT.replace('300', '250') }; return { approved: true }; } }),
-    (e) => e.code === 'snapshot_moved' && /saved while the pop-up was open/.test(e.message));
+    (e) => e.code === 'snapshot_moved' && /saved while the approval was waiting/.test(e.message));
   const v = dvAs('dev');
   const p2 = await C.planComponent(v, valid(viewJob(v, { layoutxml: SWAPPED_LAYOUT })), ctx());
   await assert.rejects(applied(p2, v, { confirm: () => { v.data.drafts.systemforms[IDS.form] = { formxml: FORM.replace('Form.onLoad', 'Form.onLoad9') }; return { approved: true }; } }),

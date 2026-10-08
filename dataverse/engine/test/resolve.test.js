@@ -56,36 +56,14 @@ test('no row cap: a big change plans, and over warn_rows it is flagged Large, fi
   assert.match(summary(big), /^Before you approve:\n  ! Large change: 2 contacts\.\n/);
 });
 
-test('deletes are an admin\'s (ruled 10/7): write and develop are refused before anything is read', () => {
-  const del = job({ mode: 'delete', rows: [{ name: 'Jane Example', id: IDS.jane }] });
-  for (const email of ['writer@example.org', 'dev@example.org']) {
-    const dv = fakeDv({ email });
-    refused(() => planJob(dv, del, { envs: ENVS, access: ACCESS }), /deleting records takes admin access/);
-    assert.ok(!dv.calls.some((c) => c.path.startsWith('contacts(')), 'the record is not read for a refused person');
-  }
-});
-
-test('an admin delete plans from the WHOLE record, is "Can\'t be fully undone", and names what to type', async () => {
+test('records are never deleted, only made inactive (ruled 10/8): a writer deactivates with an ordinary update', () => {
   const { summary } = require('../lib/render');
-  const dv = fakeDv({ email: 'dgross@example.org' });
-  const plan = await planJob(dv, job({ mode: 'delete', rows: [{ name: 'Jane Example', id: IDS.jane }, { name: 'Ina Active', id: IDS.inactive }] }), { envs: ENVS, access: ACCESS, warnRows: 50 });
-  assert.equal(plan.mode, 'delete');
-  assert.equal(plan.rows[0].before.address1_line1, '12 Old Rd', 'every column is kept, for the log');
-  assert.equal(plan.typed, 'delete 2');
-  assert.match(plan.severity.lines[0], /^Can't be fully undone: deletes 2 contacts for good/);
-  assert.match(summary(plan), /DELETE 2 contacts from the Donor App/);
-  assert.ok(dv.calls.every((c) => c.method === 'GET'), 'planning a delete only reads');
-  const one = await planJob(dv, job({ mode: 'delete', rows: [{ name: 'Jane Example', id: IDS.jane }] }), { envs: ENVS, access: ACCESS });
-  assert.equal(one.typed, 'Jane Example', 'one record: its name is typed');
-});
-
-test('an admin delete never touches a closed-year gift', async () => {
-  const dv = fakeDv({ email: 'dgross@example.org' });
-  const envs = { donorapp: { ...ENVS.donorapp, closed_year: { msnfp_transactions: 'msnfp_bookdate' } } };
-  const del = job({ mode: 'delete', table: 'msnfp_transactions', rows: [{ name: 'TRN-1', id: IDS.t1 }, { name: 'TRN-2', id: IDS.t2 }] });
-  const plan = await planJob(dv, del, { envs, access: ACCESS });
-  assert.deepEqual(plan.rows.map((r) => r.name), ['TRN-2']);
-  assert.match(plan.refused[0].why, /closed/);
+  const dv = fakeDv({ email: 'writer@example.org' });
+  const plan = planJob(dv, job({ mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { statecode: 1, statuscode: 2 } }] }), { envs: ENVS, access: ACCESS, warnRows: 50 });
+  assert.equal(plan.mode, 'update');
+  assert.deepEqual(plan.severity.lines, [], 'undo makes it active again, so nothing is "Can\'t be fully undone"');
+  assert.match(summary(plan), /^Mark 1 contact inactive in the Donor App/);
+  assert.ok(dv.calls.every((c) => c.method === 'GET'), 'planning only reads');
 });
 
 test('unknown table, unknown column, computed column, read-only column refused', () => {

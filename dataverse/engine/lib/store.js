@@ -109,4 +109,4 @@ function loadPlan(id, { env } = {}) {
   return { file, record, intact: ok && record.id === id && id.endsWith(hash.slice(0, 8)) };
 }
 
-module.exports = { home, dir, canonical, planHash, savePlan, loadPlan, PLAN_ID };
+module.exports = { home, dir, canonical, planHash, planKey, savePlan, loadPlan, PLAN_ID };
