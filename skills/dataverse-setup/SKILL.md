@@ -42,8 +42,13 @@ can read, and write access is a separate grant from Dylan.
 
 ## Step 2. The health check, first pass
 
-Run `doctor --apps <the apps they use>`, for example `doctor --apps donorapp` (keys: donorapp, hgs,
-recovery, soberliving, fedev), so an app they use fails loudly if they are not signed in to it.
+First record the apps they use: `node "<toolkit>/dataverse/engine/dataverse-write.js" apps <keys separated
+by commas>` (keys: donorapp, fedev = Donor App Dev, hgs, recovery, soberliving; most people: `donorapp`,
+plus `fedev` for anyone who builds in Donor App Dev). Every app's connection signs in to it at each start,
+and on a Mac each one without a saved sign-in opened its own browser sign-in (found 10/8: four at
+startup), so the apps they do not use stay switched off. It grants nothing and narrows reads only; `apps
+all` undoes it; running setup again changes it. Then run `doctor`: it checks exactly those apps, and that
+each has a SAVED sign-in on this machine.
 It prints one line per check, `ok` / `FAIL` / `--`, and under every FAIL a `fix:` line
 that says exactly what to do. Read it to the person in plain words, not as a list of codes. Then do the
 fixes, in the order below, and run `doctor` again after each round.
@@ -62,7 +67,8 @@ ThreatLocker tray icon, Rapid Check-in, and if still blocked, request access for
 **Signed in: <app>.** The person signs in; Claude never does. Run the fix line,
 `dataverse auth create --environment <url>`, and tell them a browser window will open asking for their
 SBRM Microsoft account. If no browser opens (common over remote sessions), add `--deviceCode` and read
-them the code and the web address it prints. One sign-in per app they use. An app they do not use is
+them the code and the web address it prints. One sign-in per app they use, each saved once: a "Saved
+sign-in: <app>" FAIL means that app answered but has no saved sign-in, and would ask again at every start. An app they do not use is
 allowed to show `--` ("no answer, fine if you don't use it"); it is a FAIL only where they are meant to
 write. If the sign-in works and the app still does not answer, the fix line says to ask Dylan: they may
 have no security role there.
@@ -110,13 +116,6 @@ and the change, then replace it with one line: "Dataverse goes through the SBRM 
 `mcp__plugin_sbrm-toolkit_dataverse-<app>` connections for reading, its dataverse skill for changes. The
 older hand-built connection and guard were removed (<date>)." Change nothing else in those files.
 
-**Then set which apps this machine connects to**, from the apps they said they use:
-`node "<toolkit>/dataverse/engine/dataverse-write.js" apps <keys separated by commas>` (keys: donorapp,
-fedev = Donor App Dev, hgs, recovery, soberliving; most people: `donorapp`, plus `fedev` for anyone who
-builds in Donor App Dev). Every app's connection signs in to it at each start, and on a Mac each can be its
-own sign-in pop-up (found 10/8: four at startup), so the others stay switched off. It grants nothing and
-narrows reads only; `apps all` undoes it; running setup again changes it.
-
 Then **quit Claude Code completely and reopen it** (hooks and connections load at start) and run
 `doctor` again.
 
@@ -127,9 +126,9 @@ Known starting points on 10/6/26, so you recognise them:
 
 ## Step 4. Done when
 
-1. `doctor --apps <the apps they use>` prints "Everything checked is working." (Without `--apps`, an app
-   that does not answer is only flagged where this machine has written before, so a first-day sign-in
-   gap could read as fine.)
+1. `doctor` prints "Everything checked is working." after the restart (with the apps recorded in Step 2
+   it checks exactly those, each with a saved sign-in), and opening Claude Code again brings up no
+   browser sign-in.
 2. One read in each app the person uses, through the toolkit's connection: for example
    `read_query` for the top 1 row of a table they know (contacts in the Donor App). Show them the row
    so they see it is their data. If an app's connection is up but offers no tools at all, that app has

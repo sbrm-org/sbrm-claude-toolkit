@@ -70,8 +70,29 @@ test('doctor signs in only to the chosen apps (each check is a sign-in; on a Mac
     eventConnection: () => ({ createEvent: (b) => dv.create('sbrm_dataverseevents', b) }),
     cli: () => ({ version: '1.0.81' }), io: () => ({ home: HOME, cwd: HOME, read: () => null }), guard: () => ({ present: true, blocksBypass: true, detail: 'x' }),
   };
-  quiet(() => cli.runCli(['doctor'], deps));
+  quiet(() => cli.runCli(['doctor'], { ...deps, authList: () => ['https://example.invalid/'] }));
   assert.ok(hosts.length > 0);
   assert.ok(!hosts.includes('https://hgs.example.invalid'), 'the switched-off app is never connected to');
+  assert.match(cli.lastRun.output.join('\n'), /ok\s+Saved sign-in: Donor App/);
+  // No saved sign-in for a chosen app: a FAIL with the sign-in command, even though the app answered.
+  apps.write(['donorapp', 'hgs']);
+  quiet(() => cli.runCli(['doctor'], { ...deps, authList: () => ['https://example.invalid/'] }));
+  const out = cli.lastRun.output.join('\n');
+  assert.match(out, /FAIL\s+Saved sign-in: HGS apps/);
+  assert.match(out, /dataverse auth create --environment https:\/\/hgs\.example\.invalid/);
   apps.clear();
+});
+
+test('a machine that never chose its apps is not asked for saved sign-ins (Dylan\'s, unchanged)', () => {
+  apps.clear();
+  const dv = fakeDv({ email: 'dgross@example.org' });
+  let asked = false;
+  const deps = {
+    readConnection: () => dv, writeConnection: () => dv, eventConnection: () => ({ createEvent: (b) => dv.create('sbrm_dataverseevents', b) }),
+    cli: () => ({ version: '1.0.81' }), io: () => ({ home: HOME, cwd: HOME, read: () => null }), guard: () => ({ present: true, blocksBypass: true, detail: 'x' }),
+    authList: () => { asked = true; return []; },
+  };
+  quiet(() => cli.runCli(['doctor'], deps));
+  assert.equal(asked, false);
+  assert.doesNotMatch(cli.lastRun.output.join('\n'), /Saved sign-in/);
 });

@@ -109,6 +109,18 @@ function realCli() {
   return c;
 }
 
+// The environment URLs this machine holds a SAVED sign-in for (`dataverse auth list`), or null if the CLI
+// cannot say. Reads only.
+function realAuthList() {
+  try {
+    const { spawnSync } = require('child_process');
+    const r = spawnSync(resolveCli().binary, ['auth', 'list'], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+    return `${r.stdout || ''}\n${r.stderr || ''}`.match(/https:\/\/[^\s/]+\/?/gi) || [];
+  } catch {
+    return null;
+  }
+}
+
 // No `confirm` here (1.11.0, DESIGN.md §10n): the person approves in Claude Code's permission prompt and
 // the engine checks the guard's one-time ticket (lib/ticket.js) instead. Tests inject `confirm` to stand in
 // for an approval; the ticket path runs only when none is injected.
@@ -607,6 +619,8 @@ function cmdDoctor(run, deps, args = []) {
   const result = health.doctor({
     envs: checkEnvs, access, apps, cli: deps.cli, connect: conn, io: deps.io(), pin: toolkitConfig().cli_version || null, guard: deps.guard,
     used,
+    chosen: chosen ? chosen.filter((a) => envs[a]) : null,
+    profiles: chosen ? (deps.authList || realAuthList)() : null,
     pending: () => ({ events: events.pendingCount(), logs: pendingLogCount() }),
     sendPending: (reached) => {
       for (const env of reached) {
