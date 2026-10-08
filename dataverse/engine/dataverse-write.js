@@ -6,6 +6,7 @@
 //   plan   <job.json>   validate + resolve live (reads only) + save a plan record, print it
 //   show   <plan-id>    every change in a saved plan, row by row
 //   whoami <env>        who Dataverse says you are, and your access in the shared path
+//   snapshot <env> <set> <id>   read a view / form / sitemap / flow and its hash, for a component job (§10e)
 //   apply  <plan-id>    re-check, the pop-up, write, read back, log (CONTRACT.md §5, §9)
 //   revert <plan-id> [env]  plan the undo of an applied plan (CONTRACT.md §10); apply it as usual
 //   doctor              the health check for this machine (DESIGN.md §7 D4, D4a)
@@ -40,6 +41,21 @@ const { confirm } = require('./lib/dialog');
 const { planRevert, findEntry } = require('./lib/revert');
 const { readEntries } = require('./lib/log');
 const events = require('./lib/events');
+const levels = require('./lib/levels');
+
+// App development kinds (DESIGN.md §10): each one module with the same contract as lib/merge.js.
+// Loaded on first use, so a rows or merge run never pays for them.
+const APP_KINDS = {
+  schema: () => {
+    const m = require('./lib/schema');
+    return { label: 'app change (tables, columns, choices)', validate: m.validateSchemaJob, plan: m.planSchema, summary: m.schemaSummary, detail: m.schemaDetail, apply: m.applySchema, revert: m.planSchemaRevert };
+  },
+  component: () => {
+    const m = require('./lib/component');
+    return { label: 'app change (view, form, sitemap, flow)', validate: m.validateComponentJob, plan: m.planComponent, summary: m.componentSummary, detail: m.componentDetail, apply: m.applyComponent, revert: m.planComponentRevert };
+  },
+};
+const appKind = (kind) => (Object.prototype.hasOwnProperty.call(APP_KINDS, kind) ? APP_KINDS[kind]() : null);
 
 // The machine as doctor sees it (D4a drift reads Claude Code's own config files).
 function realIo() {
@@ -93,12 +109,15 @@ function readJson(file) {
 
 // `access` is a READER, not data: who may write lives in each environment's Dataverse Write Access table
 // (10/7, lib/access.js), read through the person's own connection once it exists. There is no access.json.
+// warnRows: no cap on a change's size (ruled 10/7); over this many rows, pairs or objects it is flagged
+// "Large change" at plan and in the pop-up (lib/severity.js).
 function config() {
   const noNotes = (o) => Object.fromEntries(Object.entries(o).filter(([k]) => !k.startsWith('_')));
-  const defaults = { default_max_rows: toolkitConfig().default_max_rows || 25 };
+  const w = Number(toolkitConfig().warn_rows);
   return {
     envs: noNotes(readJson(path.join(configDir(), 'envs.json'))),
-    access: (dv, env) => readAccess(dv, env, defaults),
+    access: (dv, env) => readAccess(dv, env),
+    warnRows: Number.isInteger(w) && w > 0 ? w : 50,
   };
 }
 
@@ -122,8 +141,10 @@ function loadJob(file, envs) {
   } catch (e) {
     return { errors: [`cannot read ${file} as JSON: ${e.message}`] };
   }
-  // Two kinds: rows (CONTRACT.md §2a) and merge (DESIGN.md §8c).
-  return raw && raw.kind === 'merge' ? merge.validateMergeJob(raw, { envs }) : validateJob(raw, { envs });
+  // Four kinds: rows (CONTRACT.md §2a), merge (DESIGN.md §8c), schema and component (§10e).
+  if (raw && raw.kind === 'merge') return merge.validateMergeJob(raw, { envs });
+  const app = raw && appKind(raw.kind);
+  return app ? app.validate(raw, { envs }) : validateJob(raw, { envs });
 }
 
 function jobRefusal(errors) {
@@ -164,22 +185,37 @@ function cmdCheck(run, deps, file) {
   if (errors.length) throw jobRefusal(errors);
   run.env = job.env;
   refuseIfExposed([jobExposure(file, envs[job.env])]);
+  const app = appKind(job.kind);
   console.log(job.kind === 'merge'
     ? `\nThe job file is valid: merge ${job.pairs.length} pair(s) of ${job.table} (${envs[job.env].name}).`
-    : `\nThe job file is valid: ${job.mode} ${job.rows.length} row(s) in ${job.table} (${envs[job.env].name}).`);
+    : app ? `\nThe job file is valid: an ${app.label} in the ${envs[job.env].name}.`
+      : `\nThe job file is valid: ${job.mode} ${job.rows.length} row(s) in ${job.table} (${envs[job.env].name}).`);
   console.log('Live checks (access, columns, targets, duplicates) run at `plan`.\n');
   return 0;
 }
 
+// A read connection to ANOTHER environment, for the "tried in Donor App Dev first?" check (lib/proven.js).
+function readEnvFor(run, deps, envs) {
+  const conns = {};
+  return (env) => conns[env] || (conns[env] = deps.readConnection(envs[env].host));
+}
+
 function cmdPlan(run, deps, file) {
-  const { envs, access } = config();
+  const { envs, access, warnRows } = config();
   const { errors, job } = loadJob(file, envs);
   if (errors.length) throw jobRefusal(errors);
   run.env = job.env;
   refuseIfExposed([storeExposure(), jobExposure(file, envs[job.env])]);
   const dv = connect(run, deps, 'read', envs[job.env].host);
-  if (job.kind === 'merge') return planMergeCmd(run, dv, job, { envs, access });
-  const plan = planJob(dv, job, { envs, access });
+  if (job.kind === 'merge') return planMergeCmd(run, dv, job, { envs, access, warnRows });
+  const app = appKind(job.kind);
+  if (app) return planAppCmd(run, dv, job, app, { envs, access, warnRows, readEnv: readEnvFor(run, deps, envs) });
+  const planned = planJob(dv, job, { envs, access, warnRows });
+  // A delete plan is async (the linked-record inventory reads in parallel).
+  return planned && typeof planned.then === 'function' ? planned.then((p) => reportPlan(run, p)) : reportPlan(run, planned);
+}
+
+function reportPlan(run, plan) {
   run.person = plan.identity;
   const { id, file: planFile } = savePlan(plan);
   run.planId = id;
@@ -191,9 +227,23 @@ function cmdPlan(run, deps, file) {
   return 0;
 }
 
+// An app development plan (DESIGN.md §10): kind schema or component.
+async function planAppCmd(run, dv, job, app, ctx) {
+  const plan = await app.plan(dv, job, ctx);
+  run.person = plan.identity;
+  const { id, file: planFile } = savePlan(plan);
+  run.planId = id;
+  console.log('\n' + app.summary(plan));
+  console.log(`\nPlan ${id} saved (${planFile}).`);
+  console.log(`Every change in full: node "${path.resolve(__filename)}" show ${id}`);
+  console.log(`To write it: node "${path.resolve(__filename)}" apply ${id}`);
+  console.log('Nothing has been changed. Apply shows a pop-up; only Approve writes.\n');
+  return 0;
+}
+
 // A merge plan (async: the inventory reads run in parallel).
-async function planMergeCmd(run, dv, job, { envs, access }) {
-  const plan = await merge.planMerge(dv, job, { envs, access });
+async function planMergeCmd(run, dv, job, { envs, access, warnRows }) {
+  const plan = await merge.planMerge(dv, job, { envs, access, warnRows });
   run.person = plan.identity;
   const { id, file: planFile } = savePlan(plan);
   run.planId = id;
@@ -241,6 +291,28 @@ async function applyMergeCmd(run, deps, id, record, file) {
   return res.outcome === 'applied' ? 0 : 1;
 }
 
+// Apply an app development plan (DESIGN.md §10). Same shape as a merge apply: the module re-checks, shows
+// the pop-up and writes; this writes the log entry it hands back.
+async function applyAppCmd(run, deps, id, record, file, app) {
+  const { access } = config();
+  const res = await app.apply(record, { access, connect: (host) => connect(run, deps, 'write', host), confirm: deps.confirm }, { id, file, fs });
+  run.person = res.person;
+  const logged = log.writeEntry(res.entry, res.dv);
+  run.wroteLog = true;
+  if (res.outcome === 'cancelled') {
+    console.log(`\nCancelled. Nothing was changed.${res.entry.note ? ` (${res.entry.note})` : ''} The plan is kept: apply it again, or make a new one.`);
+  } else {
+    console.log(`\n${res.outcome.toUpperCase()}: ${res.written} done, ${res.rows.length - res.written} not done, ${res.left_out.length} left out.\n`);
+    for (const r of res.rows) console.log(`  ${r.outcome === 'written' ? 'OK ' : '!! '} ${r.name}${r.outcome === 'written' ? '' : `  ${r.outcome}`}`);
+  }
+  console.log(logged.rowOk
+    ? `\nLogged in Dataverse: Dataverse Write Log row "${logged.key}"${record.reverts_plan_id ? ` (undoes plan ${record.reverts_plan_id})` : ''}.`
+    : `\nNOT logged in Dataverse yet (${logged.error || 'unknown error'}). The row is parked on this machine and retried at the next apply here.`);
+  console.log(`Local copy: ${logged.local}\n`);
+  if (!logged.rowOk) events.record(run, { kind: 'parked', code: 'parked', headline: `Write Log row for plan ${id} could not be written: ${logged.error || 'unknown error'}` });
+  return res.outcome === 'applied' ? 0 : 1;
+}
+
 function readLocal(id) {
   const logDir = dir('log');
   for (const f of fs.readdirSync(logDir).filter((x) => x.endsWith('.md'))) {
@@ -264,8 +336,22 @@ function locate(run, deps, id, envs) {
   return null;
 }
 
+// Undo of an app change: the module plans it from the log entry (DESIGN.md §10e).
+async function planAppRevertCmd(run, dv, entry, id, note, app, ctx) {
+  const plan = await app.revert(dv, entry, ctx);
+  run.person = plan.identity;
+  const { id: planId, file: planFile } = savePlan(plan);
+  run.planId = planId;
+  console.log(`\nUndo of plan ${id}${note}:\n`);
+  console.log(app.summary(plan));
+  console.log(`\nPlan ${planId} saved (${planFile}).`);
+  console.log(`To write it: node "${path.resolve(__filename)}" apply ${planId}`);
+  console.log('Nothing has been changed. Apply shows a pop-up; only Approve writes.\n');
+  return 0;
+}
+
 function cmdRevert(run, deps, id, envArg) {
-  const { envs, access } = config();
+  const { envs, access, warnRows } = config();
   if (!PLAN_ID.test(id)) throw new Refusal('usage', 'the undo', [`not a plan id: ${id}`], { exitCode: 2 });
   if (envArg && !envs[envArg]) throw new Refusal('usage', 'the undo', [`unknown env "${envArg}"; one of: ${Object.keys(envs).join(', ')}`], { exitCode: 2 });
   refuseIfExposed([storeExposure()]);
@@ -282,7 +368,9 @@ function cmdRevert(run, deps, id, envArg) {
     if (entry) note = " (read from this machine's local log: its Dataverse row has not landed yet)";
   }
   if (entry && entry.mode === 'merge') return planUnmergeCmd(run, dv, entry, id, note, { envs, access });
-  const res = planRevert(dv, entry, { envs, access });
+  const app = entry && appKind(entry.mode);
+  if (app) return planAppRevertCmd(run, dv, entry, id, note, app, { envs, access, warnRows, readEnv: readEnvFor(run, deps, envs) });
+  const res = planRevert(dv, entry, { envs, access, warnRows });
   run.person = res.plan.identity;
   const jobFile = path.join(dir('jobs'), `revert-${id}.json`);
   fs.writeFileSync(jobFile, JSON.stringify(res.raw, null, 2), 'utf8');
@@ -303,7 +391,8 @@ function cmdShow(run, deps, id) {
   run.env = record.env;
   run.person = record.identity;
   if (!intact) console.log('\n!! This plan file was changed after it was made. It will be refused at apply.\n');
-  console.log('\n' + (record.kind === 'merge' ? merge.mergeDetail(record, { id }) : record.kind === 'unmerge' ? merge.unmergeSummary(record) : detail(record, { id })) + '\n');
+  const app = appKind(record.kind);
+  console.log('\n' + (record.kind === 'merge' ? merge.mergeDetail(record, { id }) : record.kind === 'unmerge' ? merge.unmergeSummary(record) : app ? app.detail(record, { id }) : detail(record, { id })) + '\n');
   if (!intact) {
     events.record(run, { kind: 'refused', code: 'plan_tampered', headline: `Plan ${id} was changed after it was made (seen by show)` });
     return 1;
@@ -323,7 +412,18 @@ function cmdApply(run, deps, id) {
     if (!intact) throw new ApplyRefused('this plan file was changed after it was made. Make a new plan.', 'plan_tampered');
     return applyMergeCmd(run, deps, id, record, file);
   }
+  const app = appKind(record.kind);
+  if (app) {
+    const { intact, file } = loadPlan(id);
+    if (!intact) throw new ApplyRefused('this plan file was changed after it was made. Make a new plan.', 'plan_tampered');
+    return applyAppCmd(run, deps, id, record, file, app);
+  }
   const res = applyPlan(id, { access, connect: (host) => connect(run, deps, 'write', host), confirm: deps.confirm });
+  // A delete apply is async (its linked-record re-check reads in parallel); everything else is not.
+  return res && typeof res.then === 'function' ? res.then((r) => reportApply(run, id, r)) : reportApply(run, id, res);
+}
+
+function reportApply(run, id, res) {
   run.person = res.person || run.person;
   run.wroteLog = true; // the Write Log entry is this outcome's record (applied, with problems, or cancelled)
   if (res.outcome === 'cancelled') {
@@ -350,9 +450,34 @@ function cmdWhoami(run, deps, env) {
   const dvW = connect(run, deps, 'read', envs[env].host);
   const me = whoAmI(dvW);
   run.person = me;
-  const acc = accessFor(resolveAccess(access, dvW, env), me.email, env);
+  const full = resolveAccess(access, dvW, env);
+  const acc = accessFor(full, me.email, env);
+  const mayMerge = levels.atLeast(acc.level, 'admin') || (levels.atLeast(acc.level, 'write') && (((full.people || {})[me.email] || {}).merge || {})[env] === true);
   console.log(`\n${me.fullname} <${me.email}> in the ${envs[env].name}`);
-  console.log(`  shared-path access: ${acc.level}; rows per approval: ${acc.maxRows === null ? 'no limit' : acc.maxRows}\n`);
+  console.log(`  shared-path access: ${acc.level} (${levels.PLAIN[acc.level]})${mayMerge ? '; may merge' : ''}\n`);
+  return 0;
+}
+
+// snapshot <env> <set> <id>: READ a view, form, sitemap or flow as it stands now and save its definition
+// for editing (DESIGN.md §10e). The hash goes into the component job's `snapshot_hash`, so a plan made from
+// this read is refused if anyone changes the component in between. Nothing is written to Dataverse.
+function cmdSnapshot(run, deps, args) {
+  const [env, set, id] = args;
+  const { envs } = config();
+  const component = require('./lib/component');
+  if (!envs[env] || !Object.prototype.hasOwnProperty.call(component.SETS, set) || !/^[0-9a-f-]{36}$/i.test(String(id || ''))) {
+    throw new Refusal('usage', 'snapshot', [`snapshot <env> <set> <id>; env one of ${Object.keys(envs).join(', ')}; set one of ${Object.keys(component.SETS).join(', ')}; id the component's GUID`], { exitCode: 2 });
+  }
+  run.env = env;
+  refuseIfExposed([storeExposure()]);
+  const dv = connect(run, deps, 'read', envs[env].host);
+  const snap = component.readSnapshot(dv, set, id.toLowerCase());
+  const file = path.join(dir('jobs'), `snapshot-${env}-${set}-${snap.id}.json`);
+  fs.writeFileSync(file, JSON.stringify({ env, set, ...snap }, null, 2), 'utf8');
+  console.log(`\n${snap.name || snap.id} (${set}) in the ${envs[env].name}`);
+  console.log(`  snapshot_hash: ${snap.hash}`);
+  console.log(`  definition saved for editing: ${file}`);
+  console.log('Nothing was changed. Put the hash in the component job; a change made since this read refuses the plan.\n');
   return 0;
 }
 
@@ -560,8 +685,8 @@ function cmdResolve(run, deps, args) {
   const dv = connect(run, deps, 'write', envs[env].host);
   const me = whoAmI(dv);
   run.person = me;
-  if (accessFor(resolveAccess(access, dv, env), me.email, env).level !== 'schema') {
-    throw new Refusal('not_permitted', 'resolve', [`only Dylan resolves (ruled 10/7); ${me.fullname} does not hold schema access in the ${envs[env].name}`], { nothing: 'changed' });
+  if (!levels.atLeast(accessFor(resolveAccess(access, dv, env), me.email, env).level, 'admin')) {
+    throw new Refusal('not_permitted', 'resolve', [`only a toolkit admin resolves (ruled 10/7); ${me.fullname} is not an admin in the ${envs[env].name}`], { nothing: 'changed' });
   }
   const want = `${m[1]}-${m[2]}`;
   const hits = dv.get(`${events.EVENT_SET}?$select=sbrm_dataverseeventid,sbrm_name,sbrm_status&$filter=${encodeURIComponent(`sbrm_number eq '${want}'`)}`).value || [];
@@ -596,7 +721,7 @@ function cmdResolve(run, deps, args) {
   return 0;
 }
 
-const USAGE = 'usage: dataverse-write.js check|plan <job.json> | show|apply <plan-id> | revert <plan-id> [env] | whoami <env> | doctor [--apps a,b] | report "<words>" | review [--days N] [--brief] | resolve <number> <resolution> "<note>"';
+const USAGE = 'usage: dataverse-write.js check|plan <job.json> | show|apply <plan-id> | revert <plan-id> [env] | whoami <env> | snapshot <env> <set> <id> | doctor [--apps a,b] | report "<words>" | review [--days N] [--brief] | resolve <number> <resolution> "<note>"';
 
 function dispatch(run, deps, argv) {
   const [cmd, arg, arg2] = argv;
@@ -606,6 +731,7 @@ function dispatch(run, deps, argv) {
     case 'plan': return cmdPlan(run, deps, need(arg));
     case 'show': return cmdShow(run, deps, need(arg));
     case 'whoami': return cmdWhoami(run, deps, need(arg));
+    case 'snapshot': return cmdSnapshot(run, deps, argv.slice(1));
     case 'apply': return cmdApply(run, deps, need(arg));
     case 'revert': return cmdRevert(run, deps, need(arg), arg2);
     case 'doctor': return cmdDoctor(run, deps, argv.slice(1));
@@ -712,6 +838,14 @@ function runCli(argv, deps = DEFAULT_DEPS) {
 }
 
 if (require.main === module) {
+  // A WRITE from the real command line uses the real store and settings, never a moved one: a plan file
+  // in a folder the guard does not protect could have been edited (10/7 review). Tests drive runCli()
+  // in-process with their own temp store; that path is not this one.
+  const verb = process.argv[2];
+  if (['apply', 'resolve'].includes(verb) && (process.env.SBRM_DV_HOME || process.env.SBRM_DV_CONFIG)) {
+    console.log(`\nREFUSED: ${verb} runs only with the engine's own store and settings (SBRM_DV_HOME / SBRM_DV_CONFIG are set). Nothing was written.\n`);
+    process.exit(1);
+  }
   Promise.resolve()
     .then(() => runCli(process.argv.slice(2)))
     .then((code) => { process.exitCode = code; })

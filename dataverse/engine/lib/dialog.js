@@ -38,11 +38,22 @@ $tb.Multiline = $true; $tb.ReadOnly = $true; $tb.ScrollBars = 'Vertical'; $tb.Wo
 $tb.BackColor = [System.Drawing.SystemColors]::Window
 $tb.Font = New-Object System.Drawing.Font('Segoe UI', 10)
 $tb.Text = ($text -replace "\`r?\`n", "\`r\`n")
-$tb.SetBounds(12, 12, 616, 350)
+$typed = $env:SBRM_DV_DIALOG_TYPED
 $show = New-Object System.Windows.Forms.Button; $show.Text = 'Show every change'; $show.SetBounds(12, 376, 170, 32); $show.DialogResult = 'Retry'
 $cancel = New-Object System.Windows.Forms.Button; $cancel.Text = 'Cancel'; $cancel.SetBounds(408, 376, 104, 32); $cancel.DialogResult = 'Cancel'
 $ok = New-Object System.Windows.Forms.Button; $ok.Text = 'Approve'; $ok.SetBounds(524, 376, 104, 32); $ok.DialogResult = 'OK'
-$f.Controls.AddRange(@($tb, $show, $cancel, $ok))
+if ($typed) {
+  $tb.SetBounds(12, 12, 616, 290)
+  $lbl = New-Object System.Windows.Forms.Label; $lbl.SetBounds(12, 310, 616, 22); $lbl.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+  $lbl.Text = 'To approve this delete, type: ' + $typed
+  $in = New-Object System.Windows.Forms.TextBox; $in.SetBounds(12, 336, 616, 26); $in.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+  $ok.Enabled = $false
+  $in.Add_TextChanged({ $ok.Enabled = ($in.Text.Trim().ToLower() -eq $typed.Trim().ToLower()) })
+  $f.Controls.AddRange(@($tb, $lbl, $in, $show, $cancel, $ok))
+} else {
+  $tb.SetBounds(12, 12, 616, 350)
+  $f.Controls.AddRange(@($tb, $show, $cancel, $ok))
+}
 $f.AcceptButton = $cancel; $f.CancelButton = $cancel
 $f.Add_Shown({ $f.Activate(); $cancel.Focus() })
 $t = New-Object System.Windows.Forms.Timer
@@ -50,6 +61,7 @@ $t.Interval = [int]$env:SBRM_DV_DIALOG_TIMEOUT * 1000
 $t.Add_Tick({ $t.Stop(); $f.DialogResult = 'Cancel'; $f.Close() })
 $t.Start()
 $r = $f.ShowDialog()
+if ($r -eq 'OK' -and $typed) { 'TYPED:' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($in.Text)) }
 if ($r -eq 'OK') { 'APPROVE' } elseif ($r -eq 'Retry') { 'SHOW' } else { 'CANCEL' }
 `;
 
@@ -63,7 +75,23 @@ const OSA = [
   'end run',
 ];
 
-function askOnce(text, title, env = process.env) {
+// A delete (ruled 10/7: admin deletes, with the object's name typed): the same dialog with a text field.
+// The typed text comes back on its own line; Node compares it (the Mac dialog cannot hold Approve shut).
+const OSA_TYPED = [
+  'on run argv',
+  'set r to display dialog ((item 1 of argv) & return & return & "To approve this delete, type: " & (item 4 of argv)) default answer "" with title (item 2 of argv) buttons {"Show every change", "Cancel", "Approve"} default button "Cancel" cancel button "Cancel" with icon caution giving up after ((item 3 of argv) as integer)',
+  'if gave up of r then return "CANCEL"',
+  'if button returned of r is "Approve" then return "TYPED:" & (text returned of r) & linefeed & "APPROVE"',
+  'if button returned of r is "Show every change" then return "SHOW"',
+  'return "CANCEL"',
+  'end run',
+];
+
+function sameTyped(a, b) {
+  return String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+}
+
+function askOnce(text, title, env = process.env, typed = null) {
   const secs = timeoutSeconds(env);
   let r;
   if (process.platform === 'win32') {
@@ -72,18 +100,27 @@ function askOnce(text, title, env = process.env) {
     try {
       r = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-EncodedCommand', Buffer.from(PS, 'utf16le').toString('base64')], {
         encoding: 'utf8', timeout: (secs + 30) * 1000, windowsHide: false,
-        env: { ...env, SBRM_DV_DIALOG_TEXT: tmp, SBRM_DV_DIALOG_TITLE: title, SBRM_DV_DIALOG_TIMEOUT: String(secs) },
+        env: { ...env, SBRM_DV_DIALOG_TEXT: tmp, SBRM_DV_DIALOG_TITLE: title, SBRM_DV_DIALOG_TIMEOUT: String(secs), SBRM_DV_DIALOG_TYPED: typed || '' },
       });
     } finally {
       fs.rmSync(tmp, { force: true });
     }
   } else if (process.platform === 'darwin') {
-    const args = OSA.flatMap((l) => ['-e', l]).concat([text, title, String(secs)]);
+    const args = (typed ? OSA_TYPED : OSA).flatMap((l) => ['-e', l]).concat([text, title, String(secs), ...(typed ? [typed] : [])]);
     r = spawnSync('osascript', args, { encoding: 'utf8', timeout: (secs + 30) * 1000 });
   } else {
     return { answer: 'CANCEL', note: 'no supported pop-up on this system (Windows or Mac only)' };
   }
-  const out = (r.stdout || '').trim().split(/\r?\n/).pop() || '';
+  const lines = (r.stdout || '').trim().split(/\r?\n/);
+  const out = lines.pop() || '';
+  if (out === 'APPROVE' && typed) {
+    // Approve on a delete counts only with the exact name typed (Windows holds the button shut until it
+    // matches; the Mac dialog cannot, so this check is the one that counts on both).
+    const t = lines.reverse().find((l) => l.startsWith('TYPED:'));
+    const got = !t ? null : process.platform === 'win32' ? Buffer.from(t.slice(6), 'base64').toString('utf8') : t.slice(6);
+    if (!sameTyped(got, typed)) return { answer: 'CANCEL', raw: out, note: `approve needs "${typed}" typed exactly; ${got ? `"${got}" was typed` : 'nothing was typed'}, so nothing was deleted` };
+    return { answer: 'APPROVE', raw: out };
+  }
   if (out === 'APPROVE' || out === 'SHOW') return { answer: out, raw: out };
   // A clean Cancel prints CANCEL. Anything else means the window failed; still a cancel, but say why.
   // (osascript's own Cancel button exits 1 with "User canceled", which is a clean cancel too.)
@@ -102,11 +139,11 @@ function openFile(file) {
 // Loop until Approve or Cancel. "Show every change" opens the full detail, then asks again.
 // The detail holds client records, so it is written inside the engine's store (never a shared
 // temp folder) and deleted when the pop-up closes; the viewer has already loaded it.
-function confirm({ summaryText, detailText, title }, { ask = askOnce, open = openFile, env = process.env } = {}) {
+function confirm({ summaryText, detailText, title, typed = null }, { ask = askOnce, open = openFile, env = process.env } = {}) {
   const file = path.join(store.dir('tmp', env), `changes-${process.pid}.txt`);
   try {
     for (let i = 0; i < 20; i += 1) {
-      const { answer, note } = ask(summaryText, title, env);
+      const { answer, note } = ask(summaryText, title, env, typed);
       if (answer === 'APPROVE') return { approved: true };
       if (answer !== 'SHOW') return { approved: false, note: note || null };
       fs.writeFileSync(file, detailText.replace(/\r?\n/g, os.EOL), 'utf8');
@@ -118,4 +155,4 @@ function confirm({ summaryText, detailText, title }, { ask = askOnce, open = ope
   }
 }
 
-module.exports = { confirm, askOnce, timeoutSeconds, MAX_TIMEOUT };
+module.exports = { confirm, askOnce, timeoutSeconds, sameTyped, MAX_TIMEOUT };

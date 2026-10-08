@@ -3,6 +3,7 @@
 // Every call is recorded so a test can assert the plan step never asked for a write.
 
 const { DataverseError } = require('../lib/cli');
+const { DEVELOP_PRIVILEGES, ADMIN_PRIVILEGES } = require('../lib/health');
 
 const L = (s) => ({ UserLocalizedLabel: { Label: s } });
 
@@ -10,12 +11,15 @@ const ENTITIES = {
   contact: { LogicalName: 'contact', EntitySetName: 'contacts', PrimaryIdAttribute: 'contactid', PrimaryNameAttribute: 'fullname', DisplayName: L('Contact'), DisplayCollectionName: L('Contacts') },
   account: { LogicalName: 'account', EntitySetName: 'accounts', PrimaryIdAttribute: 'accountid', PrimaryNameAttribute: 'name', DisplayName: L('Account'), DisplayCollectionName: L('Accounts') },
   msnfp_transaction: { LogicalName: 'msnfp_transaction', EntitySetName: 'msnfp_transactions', PrimaryIdAttribute: 'msnfp_transactionid', PrimaryNameAttribute: 'msnfp_name', DisplayName: L('Transaction'), DisplayCollectionName: L('Transactions') },
+  task: { LogicalName: 'task', EntitySetName: 'tasks', PrimaryIdAttribute: 'activityid', PrimaryNameAttribute: 'subject', DisplayName: L('Task'), DisplayCollectionName: L('Tasks') },
+  sbrm_contact_tag: { LogicalName: 'sbrm_contact_tag', EntitySetName: 'sbrm_contact_tags', PrimaryIdAttribute: 'sbrm_contact_tagid' },
 };
 
 // One-to-many relationships for the merge inventory: two cascade-on-merge donor tables, one system table
 // (cascades, but is not inventoried) and one that does not cascade.
-const REL = (SchemaName, ReferencingEntity, ReferencingAttribute, nav, merge = 'Cascade') => ({
-  SchemaName, ReferencingEntity, ReferencingAttribute, ReferencingEntityNavigationPropertyName: nav, CascadeConfiguration: { Merge: merge },
+// `del`: what deleting the parent does (lib/cascade.js): Cascade, RemoveLink, Restrict, or NoCascade.
+const REL = (SchemaName, ReferencingEntity, ReferencingAttribute, nav, merge = 'Cascade', del = 'NoCascade') => ({
+  SchemaName, ReferencingEntity, ReferencingAttribute, ReferencingEntityNavigationPropertyName: nav, CascadeConfiguration: { Merge: merge, Delete: del },
 });
 const ONE_TO_MANY = {
   account: [
@@ -24,7 +28,17 @@ const ONE_TO_MANY = {
     REL('Account_AsyncOperations', 'asyncoperation', 'regardingobjectid', 'regardingobjectid_account'),
     REL('sbrm_account_nocascade', 'sbrm_thing', 'sbrm_accountid', 'sbrm_accountid', 'NoCascade'),
   ],
-  contact: [REL('msnfp_contact_msnfp_transaction_customerid', 'msnfp_transaction', 'msnfp_customerid', 'msnfp_customerid_contact')],
+  contact: [
+    REL('msnfp_contact_msnfp_transaction_customerid', 'msnfp_transaction', 'msnfp_customerid', 'msnfp_customerid_contact', 'Cascade', 'RemoveLink'),
+    // Not merge children (NoCascade on merge), so the merge tests are unchanged; they are what a delete reaches.
+    REL('Contact_Tasks', 'task', 'regardingobjectid', 'regardingobjectid_contact_task', 'NoCascade', 'Cascade'),
+    REL('sbrm_contact_task_blocker', 'task', 'sbrm_blockerid', 'sbrm_blockerid_contact', 'NoCascade', 'Restrict'),
+  ],
+};
+
+// A contact can be tagged (many-to-many): deleting the contact drops its tag links (lib/cascade.js).
+const MANY_TO_MANY = {
+  contact: [{ SchemaName: 'sbrm_contact_tag', Entity1LogicalName: 'contact', Entity2LogicalName: 'sbrm_tag', IntersectEntityName: 'sbrm_contact_tag', Entity1IntersectAttribute: 'contactid', Entity2IntersectAttribute: 'sbrm_tagid' }],
 };
 
 const A = (LogicalName, AttributeType, label, extra = {}) => ({
@@ -109,6 +123,16 @@ function records() {
       [IDS.acme2]: { accountid: IDS.acme2, name: 'Acme Foundation, Inc.', statecode: 0, merged: false, _masterid_value: null, telephone1: '805-555-0100', description: null, createdon: '2026-08-26T17:00:00Z' },
       [IDS.zeta]: { accountid: IDS.zeta, name: 'Zeta Corp', statecode: 0, merged: false, _masterid_value: null, telephone1: null, description: null, createdon: '2024-01-01T17:00:00Z' },
     },
+    // What a delete reaches: k1 cascades with Jane (deleted with her); k2 blocks deleting Bob (Restrict).
+    tasks: {
+      'dddddddd-0000-0000-0000-000000000001': { activityid: 'dddddddd-0000-0000-0000-000000000001', subject: 'Call Jane', _regardingobjectid_value: IDS.jane, _sbrm_blockerid_value: null },
+      'dddddddd-0000-0000-0000-000000000002': { activityid: 'dddddddd-0000-0000-0000-000000000002', subject: 'Bob hold', _regardingobjectid_value: null, _sbrm_blockerid_value: IDS.bob },
+    },
+    // Jane carries two tag links (many-to-many).
+    sbrm_contact_tags: {
+      'eeee0000-0000-0000-0000-000000000001': { sbrm_contact_tagid: 'eeee0000-0000-0000-0000-000000000001', contactid: IDS.jane, sbrm_tagid: 'ffff0000-0000-0000-0000-000000000001' },
+      'eeee0000-0000-0000-0000-000000000002': { sbrm_contact_tagid: 'eeee0000-0000-0000-0000-000000000002', contactid: IDS.jane, sbrm_tagid: 'ffff0000-0000-0000-0000-000000000002' },
+    },
     // t1 is in a long-closed fiscal year, t2 far in the future (open), t3 already on the kept record.
     msnfp_transactions: {
       [IDS.t1]: { msnfp_transactionid: IDS.t1, msnfp_name: 'TRN-1', msnfp_bookdate: '2024-05-01T07:00:00Z', _msnfp_customerid_value: IDS.acme2 },
@@ -118,7 +142,7 @@ function records() {
   };
 }
 
-// The Write Access table's rows, built from an access fixture ({ people: { email: { envs, max_rows, merge } } }),
+// The Write Access table's rows, built from an access fixture ({ people: { email: { envs, merge } } }),
 // for one environment (the fake is one environment, the donor app).
 function accessRows(access, env = 'donorapp') {
   const out = {};
@@ -127,7 +151,7 @@ function accessRows(access, env = 'donorapp') {
     if (!(p.envs || {})[env]) continue;
     n += 1;
     const id = `ffffffff-ffff-ffff-ffff-${String(n).padStart(12, '0')}`;
-    out[id] = { sbrm_dataversewriteaccessid: id, sbrm_email: email, sbrm_level: p.envs[env], sbrm_maxrows: p.max_rows || null, sbrm_merge: !!(p.merge || {})[env], statecode: 0 };
+    out[id] = { sbrm_dataversewriteaccessid: id, sbrm_email: email, sbrm_level: p.envs[env], sbrm_merge: !!(p.merge || {})[env], statecode: 0 };
   }
   return out;
 }
@@ -197,10 +221,24 @@ function fakeDv({ email = 'dgross@example.org', dupHits = [], userId = IDS.me, i
       bump(set, id);
       return {};
     },
+    // The admin delete (ruled 10/7), version-tagged like an update.
+    remove(set, id, etag) {
+      calls.push({ method: 'DELETE', path: `${set}(${id})`, etag });
+      if (beforeWrite) beforeWrite(dv, set, id);
+      if (!data[set] || !data[set][id]) throw notFound();
+      if (etag !== tag(set, id)) throw new DataverseError('version mismatch', { code: '0x80060882' });
+      if (!dv.removeIgnored) delete data[set][id];
+      return {};
+    },
     get(p, opts = {}) {
       calls.push({ method: 'GET', path: p, formatted: !!opts.formatted });
       let m;
       if (p === 'WhoAmI') return { UserId: userId };
+      // The person's role privileges (doctor's app-development line, DESIGN.md §10g). Default: a customizer.
+      if (/^systemusers\([^)]+\)\/Microsoft\.Dynamics\.CRM\.RetrieveUserPrivileges\(\)$/.test(p)) {
+        const names = dv.privileges || [...DEVELOP_PRIVILEGES, ...ADMIN_PRIVILEGES];
+        return { RolePrivileges: names.map((PrivilegeName) => ({ PrivilegeName, Depth: 'Global' })) };
+      }
       if ((m = /^systemusers\(([^)]+)\)/.exec(p))) return { fullname: 'Test Person', internalemailaddress: email, domainname: email };
       if ((m = /^EntityDefinitions\?\$filter=EntitySetName eq '([^']+)'/.exec(p))) {
         return { value: Object.values(ENTITIES).filter((e) => e.EntitySetName === m[1]) };
@@ -217,6 +255,7 @@ function fakeDv({ email = 'dgross@example.org', dupHits = [], userId = IDS.me, i
       if ((m = /^EntityDefinitions\(LogicalName='([^']+)'\)\/Attributes/.exec(p))) return { value: ATTRS[m[1]] };
       if ((m = /^EntityDefinitions\(LogicalName='([^']+)'\)\/ManyToOneRelationships/.exec(p))) return { value: NAVS[m[1]] || [] };
       if ((m = /^EntityDefinitions\(LogicalName='([^']+)'\)\/OneToManyRelationships/.exec(p))) return { value: ONE_TO_MANY[m[1]] || [] };
+      if ((m = /^EntityDefinitions\(LogicalName='([^']+)'\)\/ManyToManyRelationships/.exec(p))) return { value: MANY_TO_MANY[m[1]] || [] };
       if ((m = /^EntityDefinitions\(LogicalName='([^']+)'\)/.exec(p))) return ENTITIES[m[1]];
       // The Write Access table (lib/access.js): every active row, or unreadable on request.
       if ((m = /^sbrm_dataversewriteaccesses\?\$select=[^&]+&\$filter=(.*)$/.exec(p))) {
@@ -308,11 +347,12 @@ function fakeDv({ email = 'dgross@example.org', dupHits = [], userId = IDS.me, i
 }
 
 const ENVS = { donorapp: { host: 'https://example.invalid', name: 'Donor App' } };
+// Levels (DESIGN.md §10a): admin, develop, write; merging is its own flag. No row limits (ruled 10/7).
 const ACCESS = {
-  default_max_rows: 25,
   people: {
-    'dgross@example.org': { envs: { donorapp: 'schema' } },
-    'writer@example.org': { envs: { donorapp: 'write' }, max_rows: 2 },
+    'dgross@example.org': { envs: { donorapp: 'admin' } },
+    'dev@example.org': { envs: { donorapp: 'develop' } },
+    'writer@example.org': { envs: { donorapp: 'write' } },
     'merger@example.org': { envs: { donorapp: 'write' }, merge: { donorapp: true } },
   },
 };

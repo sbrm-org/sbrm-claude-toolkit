@@ -24,15 +24,20 @@ const dvWith = (rows) => ({ get: () => ({ value: rows }) });
 test('rows become per-person grants; absent = read; an unknown level never grants more than read', () => {
   const a = readAccess(dvWith([
     { sbrm_name: 'Alex Rivera', sbrm_email: ' Alex@Example.org ', sbrm_level: 'write', sbrm_maxrows: 40, sbrm_merge: true },
-    { sbrm_email: 'kv@example.org', sbrm_level: 'admin', sbrm_maxrows: null, sbrm_merge: false },
-    { sbrm_email: '', sbrm_level: 'schema' },
+    { sbrm_email: 'kv@example.org', sbrm_level: 'superuser', sbrm_maxrows: null, sbrm_merge: false },
+    { sbrm_email: 'dev@example.org', sbrm_level: ' Develop ' },
+    { sbrm_email: 'old@example.org', sbrm_level: 'schema' },
+    { sbrm_email: '', sbrm_level: 'admin' },
   ]), 'donorapp');
-  assert.deepEqual(accessFor(a, 'alex@example.org', 'donorapp'), { level: 'write', maxRows: 40 });
+  // No row limit any more (ruled 10/7): the Rows Per Approval column is not read, so 40 changes nothing.
+  assert.deepEqual(accessFor(a, 'alex@example.org', 'donorapp'), { level: 'write' });
   assert.equal(a.people['alex@example.org'].merge.donorapp, true);
   assert.equal(a.people['kv@example.org'].merge.donorapp, false, 'merge only where the row says yes');
-  assert.deepEqual(accessFor(a, 'kv@example.org', 'donorapp'), { level: 'read', maxRows: 25 }, 'unknown level -> read, blank rows -> default');
-  assert.deepEqual(accessFor(a, 'nobody@example.org', 'donorapp'), { level: 'read', maxRows: 25 });
-  assert.equal(Object.keys(a.people).length, 2, 'a row with no email is ignored');
+  assert.deepEqual(accessFor(a, 'kv@example.org', 'donorapp'), { level: 'read' }, 'unknown level -> read');
+  assert.deepEqual(accessFor(a, 'dev@example.org', 'donorapp'), { level: 'develop' }, 'case and spaces do not matter');
+  assert.deepEqual(accessFor(a, 'old@example.org', 'donorapp'), { level: 'admin' }, 'the old name schema reads as admin (one release)');
+  assert.deepEqual(accessFor(a, 'nobody@example.org', 'donorapp'), { level: 'read' });
+  assert.equal(Object.keys(a.people).length, 4, 'a row with no email is ignored');
   assert.equal(a.people['alex@example.org'].name, 'Alex Rivera', 'the row name rides along (the review shows it for someone with no activity yet)');
 });
 
@@ -52,7 +57,7 @@ test('several environments merge into one list (the review)', () => {
     readAccess(dvWith([{ sbrm_email: 'a@example.org', sbrm_level: 'write' }]), 'donorapp'),
     readAccess(dvWith([{ sbrm_email: 'a@example.org', sbrm_level: 'schema' }]), 'hgs'),
   ]);
-  assert.deepEqual(m.people['a@example.org'].envs, { donorapp: 'write', hgs: 'schema' });
+  assert.deepEqual(m.people['a@example.org'].envs, { donorapp: 'write', hgs: 'admin' });
 });
 
 // ---- through the real CLI ----
@@ -98,17 +103,30 @@ test('a grant removed between plan and apply refuses the apply (read again at ap
   assert.match(r.out, /your access to the Donor App is now read, not write/);
 });
 
-test("the toolkit's own tables need schema: a writer cannot touch the access list", () => {
+test("the toolkit's own tables need admin: a writer (or a developer) cannot touch the access list", () => {
   const dv = fakeDv({ email: 'writer@example.org' });
   const f = job({ table: 'sbrm_dataversewriteaccesses', intent: { verb: 'update', count: 1, table: 'sbrm_dataversewriteaccesses', fields: ['sbrm_level'] },
     rows: [{ name: 'writer', id: IDS.jane, body: { sbrm_level: 'schema' } }] });
   const r = go(['plan', f], deps(dv));
   assert.equal(r.code, 1);
   assert.deepEqual([r.run.events[0].reason_code, r.run.events[0].signal], ['not_permitted', true]);
-  assert.match(r.out, /changed only by someone with schema access/);
+  assert.match(r.out, /changed only by an admin of the toolkit/);
+  const dev = fakeDv({ email: 'dev@example.org', access: { people: { 'dev@example.org': { envs: { donorapp: 'develop' } } } } });
+  assert.equal(go(['plan', f], deps(dev)).code, 1, 'develop is not admin');
+});
+
+test('the Write Log and the event table are append-only, even for an admin', () => {
+  const dv = fakeDv({ email: 'dgross@example.org' });
+  const f = job({ table: 'sbrm_dataversewritelogs', intent: { verb: 'update', count: 1, table: 'sbrm_dataversewritelogs', fields: ['sbrm_outcome'] },
+    rows: [{ name: 'x', id: IDS.jane, body: { sbrm_outcome: 'applied' } }] });
+  const r = go(['plan', f], deps(dv));
+  assert.equal(r.code, 1);
+  assert.match(r.out, /append-only/);
 });
 
 test('whoami shows the level from the table', () => {
   const r = go(['whoami', 'donorapp'], deps(fakeDv({ email: 'writer@example.org' })));
-  assert.match(r.out, /shared-path access: write; rows per approval: 2/);
+  assert.match(r.out, /shared-path access: write \(can change records\)$/m);
+  assert.match(go(['whoami', 'donorapp'], deps(fakeDv({ email: 'merger@example.org' }))).out, /write \(can change records\); may merge/);
+  assert.match(go(['whoami', 'donorapp'], deps(fakeDv({ email: 'dgross@example.org' }))).out, /admin \(.*runs the toolkit\); may merge/);
 });

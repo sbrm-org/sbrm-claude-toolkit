@@ -15,12 +15,16 @@
 //          and the fill-ins: what a worst-case rebuild needs. A merge cannot be fully undone (Dylan
 //          accepted 10/7): `merged`/`masterid` are read-only in Dataverse.
 //
-// Rulings carried: pairs count against max_rows, children always shown, 500 children per approval as a
-// ceiling; merging needs a separate `merge` grant per person per environment (schema access implies it);
-// a merge may re-point closed-fiscal-year gifts (Dylan 10/7: attribution, not finances) and nothing else.
+// Rulings carried: children always shown, 500 children per approval as a ceiling (what one apply can
+// carry, not an access rule; the per-person row cap is GONE, ruled 10/7 evening, and a merge always
+// carries the "Can't be fully undone" severity line, §10j); merging needs a separate `merge` grant per
+// person per environment (admin implies it); a merge may re-point closed-fiscal-year gifts (Dylan 10/7:
+// attribution, not finances) and nothing else.
 
 const { whoAmI, accessFor, same, PlanRefused } = require('./resolve');
 const { resolveAccess } = require('./access');
+const { atLeast } = require('./levels');
+const severity = require('./severity');
 const { loadTable, label } = require('./meta');
 const { GUID } = require('./contract');
 const { ApplyRefused } = require('./apply');
@@ -235,21 +239,34 @@ function fillIns(T, keep, dup, fillBlank, who, when) {
 
 // ---------- plan ----------
 
+// Merging is its own grant (May Merge, ruled 10/7, §8f): an admin always may; a writer or developer only
+// with the flag on their row in that environment (develop does NOT imply it: building the app is not a
+// data decision about donors, DESIGN.md §10a).
 function mergeAccess(access, email, env, dv = null) {
   access = resolveAccess(access, dv, env);
   const acc = accessFor(access, email, env);
   const person = (access.people || {})[email] || {};
-  const granted = acc.level === 'schema' || (acc.level === 'write' && ((person.merge || {})[env] === true));
+  const granted = atLeast(acc.level, 'admin') || (atLeast(acc.level, 'write') && ((person.merge || {})[env] === true));
   return { ...acc, merge: granted };
 }
 
-async function planMerge(dv, job, { envs, access, now = new Date() }) {
+// A merge always carries the "Can't be fully undone" line (§8e, §10j): undo brings the duplicate back and
+// moves the listed records back, but records in system tables stay on the kept record.
+function mergeSeverity(n, warnRows) {
+  return severity.assess({
+    count: n, noun: 'merges',
+    irreversible: [`${n === 1 ? 'this merge moves' : 'these merges move'} linked records onto the kept record; undo moves the listed ones back, but records in system tables stay`],
+  }, { warnRows });
+}
+
+async function planMerge(dv, job, { envs, access, warnRows, now = new Date() }) {
   const envInfo = envs[job.env];
   const T = MERGE_TABLES[job.table];
   const identity = whoAmI(dv);
   const acc = mergeAccess(access, identity.email, job.env, dv);
   if (!acc.merge) throw new PlanRefused([`${identity.fullname} has no merge grant in the ${envInfo.name}. Merging is granted separately from write access (ruled 10/7); ask Dylan.`], 'not_permitted');
-  if (acc.maxRows !== null && job.pairs.length > acc.maxRows) throw new PlanRefused([`${job.pairs.length} pairs is over your limit of ${acc.maxRows} per approval. Split the job, or ask Dylan.`], 'over_cap');
+  // No cap on pairs (ruled 10/7); severity below. CHILD_CEILING and the log-size ceiling stay: they are
+  // what one apply can carry and log in full, not access rules.
 
   const table = loadTable(dv, job.table);
   const bad = [];
@@ -301,7 +318,7 @@ async function planMerge(dv, job, { envs, access, now = new Date() }) {
   }
   if (!pairs.length) throw new PlanRefused(['every pair was refused:', ...refused.map((x) => `  ${x.name}: ${x.why}`)], 'every_row_refused');
   const total = pairs.reduce((n, p) => n + p.children, 0);
-  if (total > CHILD_CEILING) throw new PlanRefused([`these merges move ${total} records, over the ceiling of ${CHILD_CEILING} per approval. Split the job.`], 'over_cap');
+  if (total > CHILD_CEILING) throw new PlanRefused([`these merges move ${total} records, over the ceiling of ${CHILD_CEILING} per approval. Split the job.`], 'too_big');
 
   const plan = {
     contract: job.contract, kind: 'merge', env: job.env, host: envInfo.host, app: envInfo.name, table: job.table,
@@ -309,10 +326,11 @@ async function planMerge(dv, job, { envs, access, now = new Date() }) {
     cli_version: dv.cliVersion || null,
     labels: { singular: table.entity.singular, plural: table.entity.plural, primary_id: T.id, primary_name: T.name, odata_type: T.type },
     relationships_inventoried: rels.length, relationships_skipped: skipped,
+    severity: mergeSeverity(pairs.length, warnRows),
     pairs, refused,
   };
   if (JSON.stringify(plan).length > MAX_ENTRY) {
-    throw new PlanRefused([`this merge's full record of both records and their children is too big to log in one entry. Split the job (the log never keeps less, ruled 10/7).`], 'over_cap');
+    throw new PlanRefused([`this merge's full record of both records and their children is too big to log in one entry. Split the job (the log never keeps less, ruled 10/7).`], 'too_big');
   }
   return plan;
 }
@@ -344,7 +362,7 @@ function movesLine(pairs) {
 }
 
 function mergeSummary(plan) {
-  const out = [mergeHeadline(plan), ''];
+  const out = [...severity.block(plan.severity), mergeHeadline(plan), ''];
   const groups = new Map();
   for (const p of plan.pairs) {
     if (!groups.has(p.keep_id)) groups.set(p.keep_id, []);
@@ -451,7 +469,6 @@ async function applyMerge(plan, deps, { id, file, fs }) {
   if (me.systemuserid !== plan.identity.systemuserid) throw new ApplyRefused(`this plan was made by ${plan.identity.fullname}; you are signed in as ${me.fullname}. Nothing was written.`, 'different_person');
   const acc = mergeAccess(access, me.email, plan.env, dv);
   if (!acc.merge) throw new ApplyRefused(`your merge grant in the ${plan.app} has been removed.`, 'access_revoked');
-  if (acc.maxRows !== null && plan.pairs.length > acc.maxRows) throw new ApplyRefused(`${plan.pairs.length} pairs is over your limit of ${acc.maxRows}.`, 'over_cap');
 
   const { rels } = childRelationships(dv, MERGE_TABLES[plan.table].logical);
   const standing = [];
@@ -467,6 +484,10 @@ async function applyMerge(plan, deps, { id, file, fs }) {
   if (!standing.length) {
     fs.rmSync(file, { force: true });
     throw new ApplyRefused(['every pair changed since the plan, nothing to merge:', ...moved.map((m) => `  ${m.name}: ${m.why}`)].join('\n'), 'every_row_moved');
+  }
+  if (plan.severity) {
+    view.severity = mergeSeverity(standing.length, plan.severity.warn_rows);
+    if (severity.grew(plan.severity, view.severity)) throw new ApplyRefused('these merges are bigger now than when they were planned. Make a new plan.', 'severity_grew');
   }
   const answer = confirm({ summaryText: mergeSummary(view), detailText: mergeDetail(view, { id }), title: `SBRM: approve these merges in the ${plan.app}?` });
   const base = {
@@ -573,7 +594,7 @@ async function planUnmerge(dv, entry, { envs, access }) {
   }
   if (!pairs.length) throw new PlanRefused(['nothing to undo:', ...refused.map((x) => `  ${x.name}: ${x.why}`)], 'nothing_to_undo');
   const total = pairs.reduce((n, p) => n + p.children.length, 0);
-  if (total > CHILD_CEILING) throw new PlanRefused([`this undo moves ${total} records back, over the ceiling of ${CHILD_CEILING} per approval`], 'over_cap');
+  if (total > CHILD_CEILING) throw new PlanRefused([`this undo moves ${total} records back, over the ceiling of ${CHILD_CEILING} per approval`], 'too_big');
   return {
     contract: CONTRACT, kind: 'unmerge', env: entry.env, host: envInfo.host, app: envInfo.name, table: entry.table, mode: 'unmerge',
     source: `revert ${entry.plan_id}`, reason: `Undo merge plan ${entry.plan_id} ("${entry.headline}", by ${entry.person ? entry.person.fullname : 'unknown'}).`.slice(0, 500),

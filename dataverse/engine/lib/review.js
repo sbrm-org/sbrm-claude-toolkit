@@ -9,6 +9,8 @@
 // access who was active before and not seen for 14 days is flagged with the one action that settles it.
 // The brief() line is what the Monday /good-morning shows during the launch review period.
 
+const { atLeast, normalize } = require('./levels');
+
 const DAY = 24 * 3600 * 1000;
 const SILENT_DAYS = 14;
 
@@ -36,7 +38,7 @@ function summarize({ now = new Date(), days = 7, access, logs, events, people = 
   const from = new Date(now - days * DAY);
   const inWindow = (t) => new Date(t) >= from;
   const expected = Object.entries((access && access.people) || {})
-    .filter(([, p]) => Object.values(p.envs || {}).some((l) => l === 'write' || l === 'schema'))
+    .filter(([, p]) => Object.values(p.envs || {}).some((l) => atLeast(l, 'write')))
     .map(([email]) => email);
   const emails = [...new Set([...expected, ...logs.map((l) => l.email), ...events.map((e) => e.email)])].filter(Boolean);
 
@@ -56,6 +58,7 @@ function summarize({ now = new Date(), days = 7, access, logs, events, people = 
     const silent = canWrite && lastSeen && now - lastSeen > SILENT_DAYS * DAY;
     return {
       email, name, lastSeen, canWrite, silent,
+      grants: granted.envs || {}, merges: granted.merge || {},
       writes: applied.length,
       rows: applied.reduce((s, l) => s + (l.written || 0), 0),
       cancels: mine.filter((l) => inWindow(l.time) && l.outcome === 'cancelled').length,
@@ -112,6 +115,21 @@ function render(s, { generatedBy = null } = {}) {
     if (p.cancels) parts.push(`${p.cancels} cancel${p.cancels === 1 ? '' : 's'}`);
     if (p.open) parts.push(`${p.open} open`);
     out.push(`  ${p.name.padEnd(18)} seen ${md(p.lastSeen).padEnd(6)} ${parts.join(', ').padEnd(40)} ${versionShort(p.versions)}`);
+  }
+  // Who holds what (DESIGN.md §10a): one line per person with any grant above read, grouped by level.
+  const granted = s.people.filter((p) => Object.values(p.grants || {}).some((l) => atLeast(l, 'write')));
+  if (granted.length) {
+    out.push('', 'Access');
+    for (const p of granted) {
+      const by = {};
+      for (const [env, l] of Object.entries(p.grants)) {
+        if (!atLeast(l, 'write')) continue;
+        const lv = normalize(l);
+        const tag = `${lv}${lv !== 'admin' && p.merges[env] ? ' + merge' : ''}`;
+        (by[tag] = by[tag] || []).push(env);
+      }
+      out.push(`  ${p.name.padEnd(18)} ${Object.entries(by).map(([t, es]) => `${t}: ${es.join(', ')}`).join('; ')}`);
+    }
   }
   out.push('', `Open (${s.open.length})`);
   if (!s.open.length) out.push('  nothing open');

@@ -11,8 +11,15 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
+// The ACCOUNT's own folder, from the operating system, not the HOME / USERPROFILE environment variables a
+// run can override (10/7 re-verify: `USERPROFILE=/tmp/x node <engine> apply` moved plans and the local log
+// out of the folder the guard protects; os.userInfo() ignores the override, checked live on Windows).
+function accountHome() {
+  try { return os.userInfo().homedir || os.homedir(); } catch { return os.homedir(); }
+}
+
 function home(env = process.env) {
-  return env.SBRM_DV_HOME || path.join(os.homedir(), '.sbrm-dataverse');
+  return env.SBRM_DV_HOME || path.join(accountHome(), '.sbrm-dataverse');
 }
 
 function dir(name, env) {
