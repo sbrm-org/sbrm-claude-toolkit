@@ -33,6 +33,38 @@ function fail(msg) {
   process.exit(1);
 }
 
+// An app this machine does not use (engine/lib/apps.js, 1.11.1): a stand-in MCP server that answers the
+// handshake with no tools and never starts the CLI, so nothing signs in to that app at all. It still
+// connects cleanly, so Claude Code shows no failed server.
+function switchedOff(envKey, info) {
+  let buf = '';
+  const send = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (c) => {
+    buf += c;
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (!line) continue;
+      let m;
+      try { m = JSON.parse(line); } catch { continue; }
+      if (m.id === undefined || m.id === null) continue; // a notification: nothing to answer
+      if (m.method === 'initialize') {
+        send({ jsonrpc: '2.0', id: m.id, result: {
+          protocolVersion: (m.params && m.params.protocolVersion) || '2024-11-05',
+          capabilities: { tools: {} },
+          serverInfo: { name: `sbrm-dataverse-${envKey}`, version: 'off' },
+          instructions: `The ${info.name} connection is switched off on this machine (not one of the apps chosen in /dataverse-setup). To use it, run /dataverse-setup again.`,
+        } });
+      } else if (m.method === 'tools/list') send({ jsonrpc: '2.0', id: m.id, result: { tools: [] } });
+      else if (m.method === 'ping') send({ jsonrpc: '2.0', id: m.id, result: {} });
+      else send({ jsonrpc: '2.0', id: m.id, error: { code: -32601, message: `the ${info.name} connection is switched off on this machine` } });
+    }
+  });
+  process.stdin.on('end', () => process.exit(0));
+}
+
 function main(envKey) {
   let envs;
   try {
@@ -42,6 +74,9 @@ function main(envKey) {
   }
   const info = envs[envKey];
   if (!envKey || envKey.startsWith('_') || !info) fail(`unknown environment "${envKey}"; one of: ${Object.keys(envs).filter((k) => !k.startsWith('_')).join(', ')}`);
+  let use = true;
+  try { use = require('../engine/lib/apps').opens(envKey); } catch { use = true; }
+  if (!use) { switchedOff(envKey, info); return; }
 
   let cli;
   try {

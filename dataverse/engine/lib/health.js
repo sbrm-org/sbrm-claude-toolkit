@@ -162,6 +162,19 @@ function doctor(deps) {
       const first = Object.values(deps.envs)[0];
       add('Any app', 'fail', 'Dataverse did not answer in any app; you are probably not signed in', first ? SIGN_IN(first.host) : 'run /dataverse-setup');
     }
+    // 4b. a SAVED sign-in for every chosen app (1.11.1; only on a machine that chose its apps). Found 10/8 on
+    // the first staff Mac: with one saved sign-in (the Donor App), every other app's connection opened a
+    // browser sign-in at each start, yet still answered here, so the check above passed. Dylan's machine
+    // holds one saved sign-in per app and never asks.
+    if (deps.chosen && deps.profiles) {
+      const saved = deps.profiles.map((u) => String(u).toLowerCase().replace(/\/+$/, ''));
+      for (const env of deps.chosen) {
+        const info = deps.envs[env];
+        if (!info) continue;
+        if (saved.includes(info.host.toLowerCase().replace(/\/+$/, ''))) add(`Saved sign-in: ${info.name}`, 'ok', 'kept on this machine');
+        else add(`Saved sign-in: ${info.name}`, 'fail', `no saved sign-in for the ${info.name} on this machine, so its connection signs in again at every start`, SIGN_IN(info.host));
+      }
+    }
   }
 
   // 5. nothing stuck on this machine: first send what is waiting to every app that answered, then count
