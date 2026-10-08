@@ -4,6 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+// The signing key lives in the store: never the real one in a test.
+process.env.SBRM_DV_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-store-'));
 const { canonical, planHash, savePlan, loadPlan } = require('../lib/store');
 const { headline, summary, detail, nounCase } = require('../lib/render');
 
@@ -89,4 +91,43 @@ test('detail lists every change row by row', () => {
   assert.match(d, /1\. Jane\n     City: \(blank\) -> SB/);
   assert.match(d, /2\. Bob\n     City: Goleta -> SB/);
   assert.match(d, /Requested by: Test Person \(t@example\.org\)/);
+});
+
+test('plans are SIGNED with this machine key: created is covered, and another key does not verify (1.10.1)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-'));
+  const env = { SBRM_DV_HOME: home };
+  const { id, file } = savePlan(samplePlan(), { env });
+  const key = path.join(home, 'config', 'plan.key');
+  assert.match(fs.readFileSync(key, 'utf8'), /^[0-9a-f]{64}$/, 'a 256-bit key is made on first use');
+  const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
+  rec.created = new Date(Date.now() + 3600 * 1000).toISOString();
+  fs.writeFileSync(file, JSON.stringify(rec));
+  assert.equal(loadPlan(id, { env }).intact, false, 'editing created breaks the signature');
+  // Recomputing a plain SHA-256 (what anyone could do before) no longer verifies.
+  const crypto = require('crypto');
+  const { hash, id: _i, ...rest } = rec; // eslint-disable-line no-unused-vars
+  rec.hash = crypto.createHash('sha256').update(canonical(rest)).digest('hex');
+  fs.writeFileSync(file, JSON.stringify(rec));
+  assert.equal(loadPlan(id, { env }).intact, false, 'an unkeyed hash is not a signature');
+  // The same plan under another machine's key does not verify.
+  const other = { SBRM_DV_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-')) };
+  const saved = savePlan(samplePlan(), { env });
+  fs.mkdirSync(path.join(other.SBRM_DV_HOME, 'plans'), { recursive: true });
+  fs.copyFileSync(saved.file, path.join(other.SBRM_DV_HOME, 'plans', path.basename(saved.file)));
+  assert.equal(loadPlan(saved.id, { env: other }).intact, false);
+});
+
+test('the signing key: many runs at once agree on one key; a damaged key stops the run instead of being replaced', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-race-'));
+  const { spawnSync } = require('child_process');
+  const script = `process.env.SBRM_DV_HOME=${JSON.stringify(home)};const s=require(${JSON.stringify(path.join(__dirname, '..', 'lib', 'store.js'))});console.log(s.planHash({a:1}))`;
+  const runs = Array.from({ length: 6 }, () => require('child_process').spawn(process.execPath, ['-e', script]));
+  return Promise.all(runs.map((p) => new Promise((res) => { let out = ''; p.stdout.on('data', (d) => { out += d; }); p.on('close', () => res(out.trim())); }))).then((hashes) => {
+    assert.equal(new Set(hashes).size, 1, `every run signed with the same key: ${hashes.join(' ')}`);
+    fs.writeFileSync(path.join(home, 'config', 'plan.key'), 'short');
+    const r = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8' });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /plan signing key .* is damaged/);
+    assert.equal(fs.readFileSync(path.join(home, 'config', 'plan.key'), 'utf8'), 'short', 'never silently replaced');
+  });
 });

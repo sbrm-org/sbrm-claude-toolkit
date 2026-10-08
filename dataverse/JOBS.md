@@ -19,8 +19,8 @@ with a merge grant), develop for `schema` and `component`, admin for every delet
 
 ```json
 { "contract": "sbrm-dv-job/1", "kind": "rows", "env": "donorapp", "table": "contacts", "mode": "update",
-  "source": "claude-session", "reason": "Fix two addresses from returned mail.",
-  "intent": { "verb": "update", "count": 2, "table": "contacts", "fields": ["address1_city", "address1_line1"] },
+  "source": "claude-session", "reason": "Fix the mailing address from returned mail.",
+  "intent": { "verb": "update", "count": 1, "table": "contacts", "fields": ["address1_city", "address1_line1"] },
   "rows": [
     { "name": "Jane Example", "id": "<contact guid>", "body": { "address1_line1": "123 Main St", "address1_city": "Santa Barbara" } }
   ] }
@@ -61,6 +61,7 @@ Describe the OBJECTS; the engine works out the steps, waits for a new table, pub
   "intent": { "verb": "develop", "solution": "SBRMInterviews", "objects": { "tables": 1, "columns": 1 } },
   "objects": {
     "tables": [ { "schema_name": "sbrm_Interview", "display": "Interview", "plural": "Interviews",
+                  "description": "One row per intake interview.",
                   "primary": { "schema_name": "sbrm_Name", "display": "Name" } } ],
     "columns": [ { "table": "sbrm_interview", "type": "date", "schema_name": "sbrm_InterviewDate", "display": "Interview Date" } ]
   } }
@@ -68,15 +69,17 @@ Describe the OBJECTS; the engine works out the steps, waits for a new table, pub
 
 - Every object has an `action`: `create` (the default), `update` or `delete` (admin). Schema names carry
   the `sbrm_` prefix; `table` / `column` name existing ones by logical name (lowercase).
-- **tables**: create `schema_name, display, plural, description?, primary {schema_name, display,
+- **tables**: create `schema_name, display, plural, description, primary {schema_name, display,
   max_length?}, audit?, change_tracking?, quick_create?`; update `table, set {display, plural,
   description, audit, change_tracking, quick_create}`; delete `table`.
 - **columns**: create `table, type, schema_name, display, description?, required?` plus by type:
-  `text` / `memo` (`max_length`), `whole_number` / `decimal` / `money` (`min_value, max_value, precision`),
+  `text` / `memo` (`max_length`), `whole_number` (`min_value, max_value`), `decimal` / `money` (`min_value,
+  max_value, precision`),
   `yes_no` (`default`), `date`, `datetime`, `choice` / `multi_choice` (`options` [labels], or
   `global_choice`), `autonumber` (`format` with `{SEQNUM:n}`). Update `table, column, set {display,
   description, required, max_length}` (length only UP; a type never changes). Delete `table, column`
-  (destroys every value in it). Raising `required` on a column with blank rows is admin.
+  (destroys every value in it). Raising `required` on a column with blank rows, or creating a required column on a table that has rows, is
+  admin.
 - **relationships**: `type: "one_to_many"` (a lookup: `schema_name, display, referenced, referencing,
   required?, show_on_parent?`) or `"many_to_many"` (`schema_name, entity1, entity2, menu1?, menu2?`);
   delete by `schema_name` (admin).
@@ -101,20 +104,29 @@ It prints the `snapshot_hash` and saves the current definition to `~/.sbrm-datav
 ```json
 { "contract": "sbrm-dv-job/1", "kind": "component", "env": "donorapp",
   "component": { "set": "savedqueries", "id": "<view guid>", "name": "Active Donors" },
-  "mode": "update", "definition": { "layoutxml": "<grid ...>...</grid>" },
+  "mode": "update", "definition": { "layoutxml": "<grid name=\"resultset\" object=\"2\" jump=\"fullname\" select=\"1\" icon=\"1\" preview=\"1\"><row name=\"result\" id=\"contactid\"><cell name=\"emailaddress1\" width=\"150\" /><cell name=\"fullname\" width=\"300\" /></row></grid>" },
   "snapshot_hash": "<64 hex from snapshot>", "proven_in": null,
   "source": "claude-session", "reason": "Show the email column first.",
   "intent": { "verb": "update", "component": "view", "name": "Active Donors", "changed": ["columns"] } }
 ```
 
-- `mode`: `update`, `create` (with `solution` = an unmanaged SBRM solution's unique name; a view needs
-  `returnedtypecode`, a form `objecttypecode`), and for flows only `on`, `off`, `own` (with `owner` = the
-  new owner's systemuser id); `delete` is admin, typed name, and never a flow that is On.
+- `mode`: `update`, `create` (with `solution` = an unmanaged SBRM solution's unique name; a new view needs
+  `returnedtypecode`, `fetchxml` and `layoutxml`, a new form `objecttypecode` and `formxml`, a new flow
+  `clientdata`), and for flows only `on`, `off` and `own` (with `owner` = the new owner's systemuser id;
+  admin, since a flow acts as its owner); `delete` is admin, typed name, and never a flow that is On.
+  Every mode except `create` needs the `snapshot_hash` from `snapshot`.
 - `definition` holds only what changes: flows `clientdata` (+ `description`), views `fetchxml` /
   `layoutxml`, forms `formxml`, sitemaps `sitemapxml`. Every field a form names must exist on the table.
-- `intent.changed` lists every section that changes (the engine computes the same list from its own diff
-  and refuses on any difference). Flows: `trigger, concurrency, actions, notes, connections, description,
-  other`. Ask the plan if unsure: a refusal names the sections it found.
+- `intent.changed` (updates only; leave it out for every other mode) lists every section that changes; the
+  engine computes the same list from its own diff and refuses on any difference. Flows: `trigger,
+  concurrency, actions, notes, connections, description, other`. Views: `columns, filters, sort,
+  description, other`. Forms: `tabs, sections, fields, events, description, other`. Sitemaps: `areas,
+  groups, subareas, other`. A refusal names the sections it found.
+- Admin, not develop: a flow step that reaches beyond its connection (an HTTP step, a child flow, a table
+  named at run time, a step on someone else's connection), anything in a flow's "other" section, a
+  changed trigger or connection on a live flow, a script or web content in a view or form, handing a
+  flow to a new owner. A flow that holds a secret in plain text is refused: move it to a Secret
+  environment variable first.
 - A flow plan prints who the flow RUNS AS (its connections' owner): say it to the person. Adding or
   swapping a connection, or changing the trigger of a flow that is On, is admin. Turning a flow On fails
   unless the person owns its connections; the engine says who must do it.

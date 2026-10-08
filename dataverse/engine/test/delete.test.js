@@ -236,3 +236,10 @@ test('re-verify: the shown TEXT must match the written value, and every written 
   delete nobefore.rows[0].before.address1_city;
   await assert.rejects(run(savePlan(nobefore).id, dv, noPopup), /without a before value to re-check/);
 });
+
+test('a delete is refused when WHICH linked kinds could not be checked changed since the plan (final re-verify)', async () => {
+  const dv = fakeDv({ email: 'dgross@example.org' });
+  const id = await deletePlan(dv, [{ name: 'Jane Example', id: IDS.jane }]);
+  delete dv.data.tasks; // the task table can no longer be read at apply
+  await assert.rejects(run(id, dv, { confirm: () => { throw new Error('no pop-up'); } }), /which linked records could not be checked changed since the plan/);
+});

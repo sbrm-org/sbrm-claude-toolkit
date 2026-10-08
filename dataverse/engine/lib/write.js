@@ -86,8 +86,9 @@ function writeConnection(host, cli = resolveCli()) {
   return {
     host,
     cliVersion: cli.version,
-    get(apiPath, { formatted = false } = {}) {
-      return request(cli, host, apiPath, { method: 'GET', headers: formatted ? [FORMATTED] : [] });
+    // `strong`: read past the metadata cache, for read-backs right after a write (10/7 third pass).
+    get(apiPath, { formatted = false, strong = false } = {}) {
+      return request(cli, host, apiPath, { method: 'GET', headers: [...(formatted ? [FORMATTED] : []), ...(strong ? ['Consistency: Strong'] : [])] });
     },
     // A new record. `solution` (a new view, form, sitemap or flow) puts it in that unmanaged solution.
     create(set, body, { solution } = {}) {

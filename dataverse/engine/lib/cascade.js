@@ -58,9 +58,10 @@ function manyToMany(dv, logical) {
   return rels.map((r) => {
     const other = r.Entity1LogicalName === logical ? r.Entity2LogicalName : r.Entity1LogicalName;
     const attr = r.Entity1LogicalName === logical ? r.Entity1IntersectAttribute : r.Entity2IntersectAttribute;
+    const otherAttr = r.Entity1LogicalName === logical ? r.Entity2IntersectAttribute : r.Entity1IntersectAttribute;
     const o = meta.get(other);
     const what = o ? o.singular.toLowerCase() : other;
-    return { schema: r.SchemaName, entity: r.IntersectEntityName, attr, plainAttr: true, action: 'Unlink',
+    return { schema: r.SchemaName, entity: r.IntersectEntityName, attr, otherAttr, plainAttr: true, action: 'Unlink',
       set: (meta.get(r.IntersectEntityName) || {}).set || null, pk: attr, plural: `links to ${what} records`, singular: `link to a ${what} record` };
   });
 }
@@ -83,7 +84,7 @@ async function inventory(dv, rels, ids) {
     const key = r.plainAttr ? r.attr : `_${r.attr}_value`;
     for (let i = 0; i < ids.length; i += CHUNK) {
       const f = encodeURIComponent(ids.slice(i, i + CHUNK).map((id) => `${key} eq ${id}`).join(' or '));
-      jobs.push({ r, key, path: r.plainAttr ? `${r.set}?$select=${key}&$filter=${f}` : `${r.set}?$select=${r.pk},${key}&$filter=${f}` });
+      jobs.push({ r, key, path: r.plainAttr ? `${r.set}?$select=${key},${r.otherAttr}&$filter=${f}` : `${r.set}?$select=${r.pk},${key}&$filter=${f}` });
     }
   }
   while (jobs.length) {
@@ -102,8 +103,8 @@ async function inventory(dv, rels, ids) {
       for (const row of res.value.value || []) {
         const parent = String(row[key] || '').toLowerCase();
         const list = (m[parent] = m[parent] || []);
-        // A link row has no id of its own worth keeping; it is counted by the parent it belongs to.
-        list.push(r.plainAttr ? `link-${list.length + 1}` : String(row[r.pk]).toLowerCase());
+        // A link is recorded by WHAT it links to (re-verify: a count alone missed a changed link).
+        list.push(r.plainAttr ? `link:${String(row[r.otherAttr] || '').toLowerCase()}` : String(row[r.pk]).toLowerCase());
       }
       by.set(r.schema, m);
       const n = (pages.get(r.schema) || 0) + 1;

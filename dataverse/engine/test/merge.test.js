@@ -226,7 +226,8 @@ test('undo: reactivates the duplicate, moves its children back, restores the fil
   const mergeId = await merged(dv);
   const plan = await go(['revert', mergeId, 'donorapp'], deps(dv));
   assert.equal(plan.code, 0, plan.out);
-  assert.match(plan.out, /Undo 1 merge in the Donor App\n\n {2}Acme Foundation, Inc\. {2}<- {2}back out of Acme Foundation\n {4}reactivates it\n {4}moves back 2 transactions\n {4}restores on Acme Foundation: Main Phone, Description/);
+  // The values each field goes back to are shown, not only the names (third pass, 1.10.1).
+  assert.match(plan.out, /Undo 1 merge in the Donor App\n\n {2}Acme Foundation, Inc\. {2}<- {2}back out of Acme Foundation\n {4}reactivates it\n {4}moves back 2 transactions\n {4}on Acme Foundation: Main Phone -> \(blank\)\n {4}on Acme Foundation: Description -> Long-time foundation donor\./);
   assert.match(plan.out, /Reactivating the duplicate also clears its merged mark \(Dataverse does that itself\)\./);
   let shown = null;
   const r = await go(['apply', plan.run.planId], deps(dv, { confirm: (x) => { shown = x; return { approved: true }; } }));
@@ -293,4 +294,39 @@ test('show and check understand a merge plan', async () => {
   const { run } = await planned(dv);
   const shown = await go(['show', run.planId], deps(dv));
   assert.match(shown.out, /1\. Acme Foundation, Inc\. \(aaaaaaaa-aaaa-aaaa-aaaa-000000000002\) into Acme Foundation[\s\S]*Transactions: 2[\s\S]*fills telephone1: 805-555-0100/);
+});
+
+// A Write Log row can be created by any writer outside the toolkit, so an undo built from one is checked
+// against live metadata, never trusted (10/7 third adversarial pass).
+function forgeEntry(dv, mergeId, edit) {
+  const row = Object.values(dv.data[LOG]).find((x) => x.sbrm_planid === mergeId);
+  const m = /```json\n([\s\S]*?)\n```/.exec(row.sbrm_entry);
+  const entry = JSON.parse(m[1]);
+  edit(entry);
+  row.sbrm_entry = row.sbrm_entry.replace(m[1], JSON.stringify(entry, null, 1));
+}
+
+test('undo from a forged log entry: another table, a non-merge child or a system field is refused', async () => {
+  for (const [label, edit, re] of [
+    ['another table', (e) => { e.table = 'sbrm_dataversewriteaccesses'; }, /not a table merges run on/],
+    // A real child still on the kept record, but re-bound through a different lookup than the merge moved.
+    ['a child through a made-up relationship', (e) => { const inv = Object.values(e.rows[0].inventory)[0]; inv.nav = 'ownerid_account'; }, /is not a merge child/],
+    ['a system field to restore', (e) => { e.rows[0].content.ownerid = e.rows[0].keep_before.ownerid || null; }, /ownerid is not a field an undo restores/],
+  ]) {
+    const dv = fakeDv();
+    const mergeId = await merged(dv);
+    forgeEntry(dv, mergeId, edit);
+    const r = await go(['revert', mergeId, 'donorapp'], deps(dv));
+    assert.equal(r.code, 1, label);
+    assert.match(r.out, re, label);
+  }
+});
+
+test('an undo whose log entry names another environment than it was read from is refused (final re-verify)', async () => {
+  const dv = fakeDv();
+  const mergeId = await merged(dv);
+  forgeEntry(dv, mergeId, (e) => { e.env = 'hgs'; });
+  const r = await go(['revert', mergeId, 'donorapp'], deps(dv));
+  assert.equal(r.code, 1);
+  assert.match(r.out, /says it ran in "hgs" but was found in "donorapp"/);
 });

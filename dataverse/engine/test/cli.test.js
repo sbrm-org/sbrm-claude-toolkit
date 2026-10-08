@@ -224,7 +224,7 @@ test('INVARIANT: every run that does not succeed leaves a record (an event, or i
     ['no arguments', [], deps(dv)],
     ['unknown command', ['frobnicate', 'x'], deps(dv)],
     ['unreadable job file', ['plan', path.join(HOME, 'missing.json')], deps(dv)],
-    ['check, invalid job', ['check', jobFile({ mode: 'delete' })], deps(dv)],
+    // (`check` refusals are Claude's own lint and deliberately leave no event: see the test below.)
     ['plan, read access', ['plan', jobFile()], deps(reader)],
     ['plan, every row refused', ['plan', jobFile({ rows: [{ name: 'Ina Active', id: IDS.inactive, body: { address1_city: 'Z' } }] })], deps(dv)],
     ['apply, no such plan', ['apply', '20261007-000000-0000ffff'], deps(dv)],
@@ -267,4 +267,54 @@ test('the send connection can only create rows in the event table', () => {
   assert.deepEqual(calls, ["request(cli, host, EVENT_SET, { method: 'POST', headers: [], bodyFile: tmp })"]);
   assert.equal(events.EVENT_SET, 'sbrm_dataverseevents');
   assert.ok(!/require\(['"]\.\/write['"]\)/.test(src));
+});
+
+test('a refused `check` is Claude\'s own lint: it prints why and records no event (10/7 review)', () => {
+  clearPending();
+  const dv = fakeDv();
+  const r = go(['check', jobFile({ mode: 'merge' })], deps(dv));
+  assert.equal(r.code, 1);
+  assert.equal(r.run.events.length, 0, 'no event for a check refusal');
+  const crash = go(['check', jobFile()], deps(dv, {}));
+  assert.equal(crash.code, 0, 'a valid check still passes');
+});
+
+test('an apply cut off part-way leaves a marker; the next run files it as a signal event (1.10.1)', () => {
+  clearPending();
+  const pending = path.join(process.env.SBRM_DV_HOME, 'pending');
+  fs.mkdirSync(pending, { recursive: true });
+  const marker = path.join(pending, 'inflight--20261007-120000-abcdef12.marker');
+  fs.writeFileSync(marker, JSON.stringify({ plan_id: '20261007-120000-abcdef12', env: 'donorapp', app: 'Donor App', kind: 'rows', table: 'contacts' }));
+  const old = new Date(Date.now() - 7 * 3600 * 1000);
+  fs.utimesSync(marker, old, old);
+  const r = go(['whoami', 'donorapp'], deps(fakeDv()));
+  const ev = r.run.events.find((e) => e.reason_code === 'interrupted');
+  assert.ok(ev, 'an interrupted event is recorded');
+  assert.equal(ev.signal, true);
+  assert.match(ev.headline, /plan 20261007-120000-abcdef12 .* was cut off part-way/);
+  assert.equal(fs.existsSync(marker), false, 'the marker is consumed');
+  // A fresh marker (an apply still running in another window) is left alone.
+  fs.writeFileSync(marker, '{}');
+  go(['whoami', 'donorapp'], deps(fakeDv()));
+  assert.equal(fs.existsSync(marker), true);
+  fs.rmSync(marker);
+});
+
+test('every apply clears its own marker, applied or refused', () => {
+  const pending = path.join(process.env.SBRM_DV_HOME, 'pending');
+  const dv = fakeDv();
+  go(['apply', planId(dv)], deps(dv));
+  go(['apply', planId(dv)], deps(dv, { confirm: () => ({ approved: false }) }));
+  go(['apply', planId(dv)], deps(fakeDv({ userId: IDS.bob })));
+  assert.deepEqual(fs.readdirSync(pending).filter((f) => f.startsWith('inflight--')), []);
+});
+
+test('the real CLI refuses apply and resolve with a substitute Dataverse CLI named (final re-verify)', () => {
+  const { spawnSync } = require('child_process');
+  const engine = path.join(__dirname, '..', 'dataverse-write.js');
+  for (const verb of ['apply', 'resolve']) {
+    const r = spawnSync(process.execPath, [engine, verb, 'x'], { encoding: 'utf8', env: { ...process.env, SBRM_DV_HOME: '', SBRM_DV_CONFIG: '', SBRM_DATAVERSE_CLI: 'C:/tmp/fake' } });
+    assert.equal(r.status, 1, verb);
+    assert.match(r.stdout, /runs only with the engine's own store, settings and Dataverse CLI/);
+  }
 });

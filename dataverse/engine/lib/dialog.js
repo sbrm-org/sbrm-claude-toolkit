@@ -141,6 +141,10 @@ function openFile(file) {
 // temp folder) and deleted when the pop-up closes; the viewer has already loaded it.
 function confirm({ summaryText, detailText, title, typed = null }, { ask = askOnce, open = openFile, env = process.env } = {}) {
   const file = path.join(store.dir('tmp', env), `changes-${process.pid}.txt`);
+  // While the pop-up waits, a marker tells the guard to refuse any tool that drives the screen, mouse or
+  // keyboard (10/7 third pass: an apply run in the background plus a screen tool could press Approve).
+  const marker = path.join(store.dir('tmp', env), `popup-open-${process.pid}`);
+  try { fs.writeFileSync(marker, new Date().toISOString(), 'utf8'); } catch { /* the pop-up still works */ }
   try {
     for (let i = 0; i < 20; i += 1) {
       const { answer, note } = ask(summaryText, title, env, typed);
@@ -152,6 +156,7 @@ function confirm({ summaryText, detailText, title, typed = null }, { ask = askOn
     return { approved: false, note: 'asked too many times' };
   } finally {
     fs.rmSync(file, { force: true });
+    fs.rmSync(marker, { force: true });
   }
 }
 

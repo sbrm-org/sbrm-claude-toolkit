@@ -364,6 +364,298 @@ function carryConcurrency(oldCd, newCd) {
   return carried;
 }
 
+// ---------- what a change can DO (blind review round 3, 10/7) ----------
+
+// Plain-text secrets in a flow definition. A live Donor App Dev flow keeps an app secret as the default value
+// of a String parameter (an environment variable that is not of type Secret), read 10/7 by name and shape
+// only. A job on such a flow would copy it into the plan file, the pop-up's detail and the Write Log, which
+// every writer can read, so the engine refuses it before anything is stored. Returns WHERE (never a value).
+// "token" but not "tokens": some live flows send max_tokens / max_completion_tokens (a count) in their
+// request bodies, the only false positives when this scan ran over every unmanaged flow in Donor App Dev and
+// the Donor App (10/7, 60 + 82 flows, locations only).
+const SECRET_NAME = /secret|password|passwd|api.?key|apikey|token(?!s)|client.?secret|connection.?string|subscription.?key|access.?key|private.?key|credential/i;
+// Inside an `authentication` object: Basic password, Raw value, ClientCertificate pfx/password,
+// ActiveDirectoryOAuth secret (round 4: Raw auth keeps its secret in `value`).
+const AUTH_SECRET_KEY = /secret|password|passwd|pfx|key|token|^value$/i;
+const SECRET_HEADER = /authorization|api.?key|secret|token|password|subscription.?key|functions.?key|cookie|^x-.*key$/i;
+// Query-string names that carry a credential in a URI or a form body (round 4).
+const SECRET_QUERY = /^(key|code|sig|token|apikey|api_key|api-key|access_token|client_secret|secret|password|subscription-key)$/i;
+
+// A value typed into the definition, as opposed to one the flow computes: an expression (@...) or a string
+// interpolating one (@{...}) is not a literal.
+function isLiteral(v) {
+  if (typeof v === 'string') {
+    const s = v.trim();
+    return s !== '' && !s.startsWith('@') && !s.includes('@{');
+  }
+  return v !== null && v !== undefined && typeof v !== 'object';
+}
+
+// Credential-carrying names in a query string ("a=1&sig=xyz"), literal values only.
+function queryKeys(s) {
+  const q2 = String(s).includes('?') ? String(s).slice(String(s).indexOf('?') + 1) : String(s);
+  return q2.split(/[&;]/).map((kv) => kv.split('=')).filter(([k, v]) => k && v !== undefined && SECRET_QUERY.test(decodeURIComponent(k.trim())) && isLiteral(decodeURIComponent(v)))
+    .map(([k]) => k.trim());
+}
+
+// A body, any shape: an object's secret-named keys with literal values, a JSON string parsed, a form body scanned.
+function bodySecrets(v, path, out, depth = 0) {
+  if (depth > 12 || v === null || v === undefined) return;
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (/^[[{]/.test(s)) { try { bodySecrets(JSON.parse(s), path, out, depth + 1); return; } catch { /* not JSON */ } }
+    if (/[^=\s]+=[^&]/.test(s)) for (const k of queryKeys(s)) out.push(`${path} ${k}`);
+    return;
+  }
+  if (Array.isArray(v)) { v.forEach((x) => bodySecrets(x, path, out, depth + 1)); return; }
+  if (typeof v !== 'object') return;
+  for (const [k, x] of Object.entries(v)) {
+    if (SECRET_NAME.test(k) && isLiteral(x)) out.push(`${path} ${k}`);
+    else bodySecrets(x, path, out, depth + 1);
+  }
+}
+
+// Every place in one step's or trigger's inputs where a typed-in credential can sit.
+function inputSecrets(label, inputs, out) {
+  if (!obj(inputs)) return;
+  const at = (what) => out.push(`${label} (its ${what})`);
+  if (obj(inputs.authentication)) for (const [k, v] of Object.entries(inputs.authentication)) if (AUTH_SECRET_KEY.test(k) && isLiteral(v)) at(`authentication ${k}`);
+  if (obj(inputs.headers)) for (const [k, v] of Object.entries(inputs.headers)) if (SECRET_HEADER.test(k) && isLiteral(v)) at(`${k} header`);
+  if (typeof inputs.uri === 'string' && inputs.uri.includes('?')) for (const k of queryKeys(inputs.uri)) at(`URI query ${k}`);
+  if (obj(inputs.queries)) for (const [k, v] of Object.entries(inputs.queries)) if ((SECRET_QUERY.test(k) || SECRET_NAME.test(k)) && isLiteral(v)) at(`query ${k}`);
+  if (inputs.body !== undefined) { const b = []; bodySecrets(inputs.body, 'body', b); for (const x of b) at(x); }
+  // Connector parameters (OpenApiConnection): a parameter whose own name (after any "item/" path) looks secret.
+  if (obj(inputs.parameters)) {
+    for (const [k, v] of Object.entries(inputs.parameters)) {
+      const leaf = k.split('/').pop();
+      if (SECRET_NAME.test(leaf) && isLiteral(v)) at(`parameter ${k}`);
+      else if (obj(v) || Array.isArray(v)) { const b = []; bodySecrets(v, `parameter ${k}`, b); for (const x of b) at(x); }
+    }
+  }
+}
+
+function hasValue(v) {
+  if (v === null || v === undefined) return false;
+  if (typeof v === 'string') return v.trim() !== '';
+  if (Array.isArray(v)) return v.length > 0;
+  if (typeof v === 'object') return Object.keys(v).length > 0;
+  return true;
+}
+
+function flowSecrets(cd) {
+  const out = [];
+  if (!obj(cd)) return out;
+  const { def } = flowDef(cd);
+  for (const [k, p] of Object.entries(obj(def.parameters) ? def.parameters : {})) {
+    const secureType = obj(p) && /^secure/i.test(String(p.type || ''));
+    if ((SECRET_NAME.test(k) || secureType) && obj(p) && hasValue(p.defaultValue)) out.push(`parameter "${k}"`);
+  }
+  // Round 4: EVERY step and every trigger, not only Http steps (a connector step or a webhook trigger can carry
+  // a key in a header, a query string, a body or a parameter too). This is the one gate for disk as well: the
+  // snapshot CLI refuses a flow this finds anything in.
+  for (const [n, x] of walkActions(def.actions)) inputSecrets(`step "${n}"`, x.a.inputs, out);
+  for (const [n, t] of Object.entries(obj(def.triggers) ? def.triggers : {})) if (obj(t)) inputSecrets(`trigger "${n}"`, t.inputs, out);
+  return [...new Set(out)];
+}
+
+// Where plain-text secrets sit in either of two flow definitions ({clientdata}), names only.
+function secretsIn(...defs) {
+  const out = [];
+  for (const d of defs) {
+    if (!d || blank(d.clientdata)) continue;
+    let cd;
+    try { cd = typeof d.clientdata === 'string' ? JSON.parse(d.clientdata) : d.clientdata; } catch { continue; }
+    out.push(...flowSecrets(cd));
+  }
+  return [...new Set(out)];
+}
+
+function secretRefusal(where) {
+  return `the flow holds a secret in plain text (${where.join(', ')}); move it to a Secret environment variable first. Nothing was logged.`;
+}
+
+// The inputs of a step that decide what it can reach (shown in the pop-up; compared for proven_in). Never a
+// secret value: authentication shows its TYPE only, and secrets are refused before this is ever printed.
+function actionFacts(a) {
+  const i = obj(a.inputs) ? a.inputs : {};
+  const host = obj(i.host) ? i.host : {};
+  const p = obj(i.parameters) ? i.parameters : {};
+  let uriHost = null;
+  if (typeof i.uri === 'string') {
+    const u = i.uri.trim();
+    if (u.startsWith('@') || u.includes('@{')) uriHost = '(an expression)';
+    else { try { uriHost = new URL(u).host; } catch { uriHost = '(not a URL)'; } }
+  }
+  // The connection: a connection reference key (OpenApiConnection: host.connectionName) or, in older
+  // ApiConnection steps, host.connection.name = "@parameters('$connections')['<key>']['connectionId']" (round 4).
+  // A connection named any other way cannot be matched to who owns it.
+  let connection = host.connectionName || null;
+  let unresolved = false;
+  if (!connection && obj(host.connection)) {
+    const m = /parameters\('\$connections'\)\['([^']+)'\]/.exec(String(host.connection.name || ''));
+    if (m) connection = m[1];
+    else unresolved = true;
+  }
+  return {
+    type: a.type || '?',
+    kind: a.kind || null,
+    method: typeof i.method === 'string' ? i.method.toUpperCase() : null,
+    host: uriHost,
+    entity: p.entityName === undefined ? null : String(p.entityName),
+    operation: host.operationId || null,
+    child: host.workflowReferenceName || null,
+    auth: obj(i.authentication) ? String(i.authentication.type || 'set') : null,
+    connection,
+    connection_unresolved: unresolved,
+  };
+}
+
+function actionText(name, f) {
+  const parts = [];
+  if (f.method || f.host) parts.push([f.method, f.host].filter(Boolean).join(' '));
+  if (f.entity) parts.push(`table ${f.entity}`);
+  if (f.operation) parts.push(`operation ${f.operation}`);
+  if (f.child) parts.push(`child flow ${f.child}`);
+  if (f.auth) parts.push(`auth ${f.auth}`);
+  if (f.connection) parts.push(`via ${f.connection}`);
+  return `${name} [${f.type}]${parts.length ? `: ${parts.join(', ')}` : ''}`;
+}
+
+// Why a step takes admin even with no connection reference change (blind review round 3): it runs another
+// flow, calls out over HTTP, picks its table or operation at run time, or acts through a connection that
+// belongs to someone other than the person approving. runsAs: runsAs(...) of the definition; me: systemuserid.
+// Connector operations that send a raw HTTP request through the connection's own sign-in (SharePoint "Send an
+// HTTP request to SharePoint", Office 365 "Send an HTTP request", "HTTP with Microsoft Entra ID"): as strong as
+// an Http step, with someone's credentials attached (round 4).
+const HTTP_OPERATION = /HttpRequest|InvokeHttp|SendHttp/i;
+
+// Whose connection a step or trigger acts through: someone else's, or one that cannot be matched to a
+// connection reference at all, is an admin's.
+function connectionPower(label, f, runsAsList, me) {
+  if (f.connection_unresolved) return [`${label} uses a connection the engine cannot match to a connection reference`];
+  if (!f.connection) return [];
+  const ref = (runsAsList || []).find((r) => r.key === f.connection);
+  if (!ref) return [`${label} uses a connection (${f.connection}) the definition's connection references do not name`];
+  if (!ref.invoker && !ref.missing && me && ref.owner_id !== String(me).toLowerCase()) return [`${label} acts through ${ref.display || ref.key}, as ${ref.owner}`];
+  return [];
+}
+
+function stepPower(name, f, runsAsList, me) {
+  const why = [];
+  if (f.type === 'Workflow') why.push(`step ${name} runs another flow (child flow ${f.child || 'unknown'})`);
+  if (/^http/i.test(f.type)) why.push(`step ${name} calls ${[f.method, f.host].filter(Boolean).join(' ') || 'out'} directly over HTTP`);
+  if (f.operation && HTTP_OPERATION.test(f.operation)) why.push(`step ${name} sends a raw HTTP request through its connection (operation ${f.operation})`);
+  if ((f.entity && /@|concat/i.test(f.entity)) || (f.operation && /@/.test(f.operation))) why.push(`step ${name} picks its table or operation at run time`);
+  why.push(...connectionPower(`step ${name}`, f, runsAsList, me));
+  return why;
+}
+
+// Triggers (round 4): one that takes HTTP requests from outside ("When an HTTP request is received": a Request
+// trigger of any kind but the in-platform ones, Button for manual and child flows, PowerApp(V2), Skills), one
+// that registers a webhook with an outside service, and one listening through someone else's connection.
+const INTERNAL_REQUEST_KINDS = new Set(['button', 'powerapp', 'powerappv2', 'skills']);
+function triggerPower(name, f, runsAsList, me) {
+  const why = [];
+  if (f.type === 'Request' && !INTERNAL_REQUEST_KINDS.has(String(f.kind || '').toLowerCase())) why.push(`trigger ${name} takes HTTP requests from outside (anyone holding its URL can start the flow)`);
+  if (f.type === 'HttpWebhook') why.push(`trigger ${name} registers a webhook with an outside service`);
+  why.push(...connectionPower(`trigger ${name}`, f, runsAsList, me));
+  return why;
+}
+
+function allEls(node, out = []) {
+  if (!node || typeof node === 'string') return out;
+  out.push(node);
+  for (const c of node.c) allEls(c, out);
+  return out;
+}
+
+function textOf(node, name) {
+  const el = els(node, name)[0];
+  return el ? el.c.filter((c) => typeof c === 'string').join('').trim() || null : null;
+}
+
+// Script hooks in a view's layout: a web resource or JavaScript function on a column (imageproviderwebresource,
+// imageproviderfunctionname). The designer writes an EMPTY "$webresource:" on plain columns (read live 10/7),
+// which is not a hook.
+function viewHooks(layoutxml) {
+  if (blank(layoutxml)) return [];
+  const out = [];
+  for (const el of allEls(parseXml(layoutxml))) {
+    for (const [k, v] of Object.entries(el.a)) {
+      if (!/webresource|functionname/i.test(k)) continue;
+      const s = String(v || '').trim();
+      if (s && !/^\$webresource:\s*$/i.test(s)) out.push(`column ${el.a.name || el.n}: ${k} ${s}`);
+    }
+  }
+  return out.sort();
+}
+
+// Form controls that run or show something from outside the form: a web resource, an iframe, a custom (PCF)
+// control that is not Microsoft's own (MscrmControls.*), or any control carrying a URL, even when it also
+// binds a field; plus the form's script libraries and event handlers. [{ label, sig }]: sig changes whenever
+// the control does, so an edited one counts as changed.
+const WEB_RESOURCE_CONTROL = '{9fdf5f91-88b1-47f4-ad53-c11efc01a01d}';
+const IFRAME_CONTROL = '{fd2a7985-3187-444e-908d-6624b21f69c0}';
+function formHooks(formxml) {
+  if (blank(formxml)) return [];
+  const x = parseXml(formxml);
+  const custom = new Map();
+  for (const d of els(x, 'controlDescription')) {
+    for (const cc of els(d, 'customControl')) {
+      if (cc.a.name && !/^MscrmControls\./i.test(cc.a.name)) custom.set(d.a.forControl, [...(custom.get(d.a.forControl) || []), cc.a.name]);
+    }
+  }
+  const out = [];
+  for (const c of els(x, 'control')) {
+    const cls = String(c.a.classid || '').toLowerCase();
+    const url = textOf(c, 'Url') || allEls(c).flatMap((e) => e.c.filter((t) => typeof t === 'string' && /^https?:\/\//i.test(t.trim()))).map((t) => t.trim())[0] || null;
+    const kinds = [];
+    if (cls === WEB_RESOURCE_CONTROL) kinds.push('web resource');
+    if (cls === IFRAME_CONTROL) kinds.push('iframe');
+    if (!kinds.length && url) kinds.push('URL');
+    const cc = custom.get(c.a.id) || [];
+    if (cc.length) kinds.push('custom control');
+    if (!kinds.length) continue;
+    const what = [url, textOf(c, 'WebResourceId'), ...cc].filter(Boolean).join(', ');
+    const label = `control ${c.a.id} (${kinds.join(', ')}${what ? `: ${what}` : ''})`;
+    out.push({ label, sig: `${label}|${canonical(c)}|${canonical(cc)}` });
+  }
+  for (const lib of els(x, 'Library')) out.push({ label: `script library ${lib.a.name}`, sig: `lib|${canonical(lib)}` });
+  for (const ev of els(x, 'event')) {
+    for (const h of els(ev, 'Handler')) {
+      const label = `on ${ev.a.name}${ev.a.attribute ? ` of ${ev.a.attribute}` : ''}: ${h.a.libraryName}.${h.a.functionName}`;
+      out.push({ label, sig: `handler|${label}|${canonical(h)}` });
+    }
+  }
+  return out;
+}
+
+// A sitemap page that opens a URL or a web resource instead of a table.
+function sitemapHooks(xml) {
+  if (blank(xml)) return [];
+  return els(parseXml(xml), 'SubArea').filter((s) => s.a.Url).map((s) => ({ label: `page ${s.a.Id} opens ${s.a.Url}`, sig: canonical(s.a) }));
+}
+
+// What in a view, form or sitemap change needs admin: script hooks, web resources, iframes, custom controls and
+// URLs that are ADDED or CHANGED (a removed one runs nothing). { why: [...], lines: [...] }.
+function markupPower(set, before, after) {
+  const why = [];
+  const lines = [];
+  if (set === 'savedqueries') {
+    const added = listDiff(viewHooks((before || {}).layoutxml), viewHooks((after || {}).layoutxml)).added;
+    for (const h of added) { why.push(`a view ${h} runs a script`); lines.push(`Script hook added or changed: ${h}`); }
+  } else if (set === 'systemforms' || set === 'sitemaps') {
+    const fn = set === 'systemforms' ? formHooks : sitemapHooks;
+    const field = set === 'systemforms' ? 'formxml' : 'sitemapxml';
+    const old = new Set(fn((before || {})[field]).map((h) => h.sig));
+    for (const h of fn((after || {})[field]).filter((x) => !old.has(x.sig))) {
+      why.push(`it adds or changes ${h.label}`);
+      lines.push(`Added or changed: ${h.label}`);
+    }
+  }
+  return { why, lines };
+}
+
 // ---------- section diffs (pure) ----------
 //
 // Each returns { sections: [names, in SETS[set].sections order], lines: [plain summary lines], detail: [...] }.
@@ -458,6 +750,11 @@ function diffFlow(oldCd, newCd, { oldDescription = null, newDescription = null }
     if (added.length) parts.push(`${added.length} added (${names(added)})`);
     if (removed.length) parts.push(`${removed.length} removed (${names(removed)})`);
     lines.push(`Actions: ${oa.size} -> ${na.size}; ${parts.join(', ')}`);
+    // What each added or changed step reaches (blind review round 3): method, host, table, operation, child
+    // flow, authentication type, connection. Never a secret value.
+    const steps = [...added.map((k) => ['+', k]), ...changed.map((k) => ['~', k])];
+    for (const [mark, k] of steps.slice(0, 12)) lines.push(`  ${mark} ${actionText(k, actionFacts(na.get(k).a))}`);
+    if (steps.length > 12) lines.push(`  ... and ${steps.length - 12} more step(s) (see the detail)`);
     for (const k of changed) {
       detail.push(`  CHANGED ${k}`);
       detail.push(...textDiff(JSON.stringify(actionCore(oa.get(k).a), null, 1), JSON.stringify(actionCore(na.get(k).a), null, 1), 20).map((l) => `      ${l}`));
@@ -516,12 +813,17 @@ function diffFlow(oldCd, newCd, { oldDescription = null, newDescription = null }
   };
   if (rest(oldCd) !== rest(newCd)) {
     found.add('other');
-    lines.push('Other parts of the definition changed (parameters or settings; see the detail)');
+    lines.push('Other parts of the definition changed (parameters, outputs or settings; see the detail)');
+    // Shown, not summarised (blind review round 3): these parts are not reviewed step by step. Secrets were
+    // refused before any diff is made, so nothing printed here is one.
+    const restObj = (cd) => JSON.parse(rest(cd));
+    detail.push(...textDiff(JSON.stringify(restObj(oldCd), null, 1), JSON.stringify(restObj(newCd), null, 1), 30).map((l) => `  other ${l}`));
   }
   // What each section's change IS, for "was this the same change in the dev copy?" (proven_in, blind review
   // 10/7). Never the raw clientdata: connection reference logical names and ids differ by environment, so a
   // connection change is compared by its keys, and actions by name and type.
-  const typeOf = (m, k) => `${k}:${m.get(k).a.type || '?'}`;
+  // A step's name, type and the inputs that decide what it reaches (round 3: not name and type alone).
+  const typeOf = (m, k) => `${k}:${m.get(k).a.type || '?'}:${canonical(actionFacts(m.get(k).a))}`;
   const filt = (s) => String(s || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean).sort().join(',');
   const shape = {
     trigger: canonical(tnames.filter((t) => has(nt, t)).map((t) => ({ ...triggerInfo(t, nt[t]), filter: filt(triggerInfo(t, nt[t]).filter) }))),
@@ -532,7 +834,13 @@ function diffFlow(oldCd, newCd, { oldDescription = null, newDescription = null }
     description: newDescription || null,
     other: rest(newCd),
   };
-  return { sections: order('workflows', found), lines, detail, connections: conn, trigger_changed: trigChanged, concurrency_added: concurrencyAdded, shape };
+  return {
+    sections: order('workflows', found), lines, detail, connections: conn, trigger_changed: trigChanged, concurrency_added: concurrencyAdded, shape,
+    steps: [...added, ...changed].map((k) => ({ name: k, facts: actionFacts(na.get(k).a) })),
+    // Triggers added or changed (round 4: judged by what they can reach, like steps).
+    trigger_steps: tnames.filter((t) => has(nt, t) && (!has(ot, t) || canonical(triggerCore(ot[t])) !== canonical(triggerCore(nt[t]))))
+      .map((t) => ({ name: t, facts: actionFacts(nt[t]) })),
+  };
 }
 
 function viewParts(fetchxml, layoutxml) {
@@ -550,7 +858,9 @@ function viewParts(fetchxml, layoutxml) {
     };
     walk(f, '');
   }
-  const cells = l ? els(l, 'cell').map((c) => ({ name: c.a.name, width: c.a.width || null })) : [];
+  // The WHOLE cell, every attribute (round 3: a script hook such as imageproviderfunctionname sits on the cell,
+  // so name and width alone let one be added unseen).
+  const cells = l ? els(l, 'cell').map((c) => ({ name: c.a.name, attrs: c.a, kids: c.c })) : [];
   const conds = f ? els(f, 'condition').map((c) => `${c.a.entityname ? `${c.a.entityname}.` : ''}${c.a.attribute} ${c.a.operator}${has(c.a, 'value') ? ` ${c.a.value}` : ''}`) : [];
   // Filters = every filter element plus the shape of every join (a join narrows the rows as much as a filter).
   const filters = f ? canonical([...els(f, 'filter'), ...els(f, 'link-entity').map((x) => ({ n: 'link-entity', a: x.a, c: kids(x, 'filter') }))]) : null;
@@ -577,7 +887,7 @@ function diffView(oldDef, newDef) {
     const parts = [];
     if (cd.added.length) parts.push(`added ${names(cd.added)}`);
     if (cd.removed.length) parts.push(`${cd.removed.length} column${cd.removed.length === 1 ? ' leaves' : 's leave'} the view (${names(cd.removed)})`);
-    if (!cd.added.length && !cd.removed.length) parts.push(canonical(ca) !== canonical(cb) ? 'order changed' : 'widths or fetched columns changed');
+    if (!cd.added.length && !cd.removed.length) parts.push(canonical(ca) !== canonical(cb) ? 'order changed' : 'column settings (width, icon or script) or fetched columns changed');
     lines.push(`Columns: ${parts.join('; ')}`);
     if (fd.added.length || fd.removed.length) detail.push(`  fetched columns: +${fd.added.join(', ') || 'none'} / -${fd.removed.join(', ') || 'none'}`);
     detail.push(`  shown before: ${ca.join(', ') || 'none'}`, `  shown after:  ${cb.join(', ') || 'none'}`);
@@ -866,6 +1176,8 @@ function checkFlowDefinition(cd, err) {
   for (const [n, t] of Object.entries(d.triggers || {})) if (obj(t) && String(t.description || '').length > 256) err(`trigger ${n}: its note is ${t.description.length} characters; the platform limit is 256`);
   const long = [...walkActions(d.actions).entries()].filter(([, x]) => String(x.a.description || '').length > 256).map(([k]) => k);
   if (long.length) err(`step note(s) over 256 characters (the platform limit): ${names(long, 6)}`);
+  const secrets = flowSecrets(cd);
+  if (secrets.length) err(secretRefusal(secrets));
   return null;
 }
 
@@ -895,7 +1207,7 @@ function validateComponentJob(raw, { envs }) {
     } else if (typeof c.id !== 'string' || !GUID.test(c.id)) err('"component.id" must be the component\'s GUID');
   }
   if (set && FLOW_ONLY.has(mode) && set !== 'workflows') err(`mode "${mode}" is for flows only`);
-  if (set === 'sitemaps' && mode === 'create') err('a new sitemap belongs to a new app, which is made in the maker portal (DESIGN.md §10b)');
+  if (set === 'sitemaps' && mode === 'create') err('a new sitemap belongs to a new app, which is made in the maker portal');
 
   const needsHash = MODES.includes(mode) && mode !== 'create';
   if (needsHash) {
@@ -1159,7 +1471,7 @@ function readSolution(dv, envInfo, uniquename) {
   if (s.ismanaged) return { why: `the solution "${uniquename}" is managed; nothing is ever added to a managed solution (the change rules)`, code: 'not_permitted' };
   if (!envInfo.publisher) return { why: `envs.json names no SBRM publisher for the ${envInfo.name}`, code: 'engine_bug' };
   if (String(s._publisherid_value || '').toLowerCase() !== String(envInfo.publisher).toLowerCase()) {
-    return { why: `the solution "${uniquename}" is not under the SBRM publisher; SBRM's own changes go only in SBRM-publisher solutions (DESIGN.md §10b)`, code: 'not_permitted' };
+    return { why: `the solution "${uniquename}" is not under the SBRM publisher; SBRM's own changes go only in SBRM-publisher solutions`, code: 'not_permitted' };
   }
   return { solution: { id: String(s.solutionid).toLowerCase(), uniquename: s.uniquename, name: s.friendlyname || s.uniquename } };
 }
@@ -1179,7 +1491,15 @@ function needFor(f) {
   if (f.set === 'workflows' && f.mode === 'update') {
     if (f.connections_added) why.push('it adds or swaps a connection reference (the flow would act through different connections)');
     if (f.trigger_changed && f.live_on) why.push('it changes the trigger of a flow that is on');
+    // Round 3: parameters, outputs and anything else outside the trigger, steps and connections are not
+    // reviewed step by step, so a change there is an admin's.
+    if ((f.sections || []).includes('other')) why.push('it changes parts of the flow outside its trigger, steps and connections');
   }
+  // Round 3: a flow acts as its owner (its trigger subscription runs as the owner), so handing one over changes
+  // who it acts as.
+  if (f.set === 'workflows' && f.mode === 'own') why.push('it changes who owns the flow, and a flow acts as its owner');
+  // Round 3: what a step, script, control or page can REACH (lib: stepPower, markupPower).
+  for (const p of f.power || []) why.push(p);
   return { level: why.length ? 'admin' : 'develop', why };
 }
 
@@ -1193,6 +1513,7 @@ function severityFor(f, warnRows) {
     const live = ['trigger', 'concurrency', 'actions', 'connections'].filter((s) => f.sections.includes(s));
     if (f.live_on && live.length) irreversible.push(`changes the ${live.join(', ')} of ${what} while it is on; whatever it does before a revert stays done`);
     if (f.concurrency_added) irreversible.push(`adds trigger concurrency to ${what}, which the platform never lets anyone remove`);
+    if ((f.sections || []).includes('other')) irreversible.push(`changes parts of ${what} outside its trigger, steps and connections (parameters, outputs or settings), shown in the detail`);
   }
   if (f.mode === 'on') irreversible.push(`turning on ${what} starts it running and acting as ${f.runs_as_text}`);
   if ((f.other_drafts || []).length) irreversible.push(`publishing ${f.table} also publishes unpublished edits to: ${names(f.other_drafts)}`);
@@ -1205,16 +1526,41 @@ function severityFor(f, warnRows) {
 //   live      readComponent(...) or null (create)
 //   written   the definition the write leaves (update: live + the body; create: the new definition) or null
 // Returns { facts, diff, flow, typed }. READS ONLY.
-function describe(dv, { mode, set, name, table, id, live, written, unproven, carried = null, extra = {} }) {
+function describe(dv, { mode, set, name, table, id, live, written, unproven, carried = null, extra = {}, me = null }) {
   const spec = SETS[set];
   let diff = { sections: [], lines: [], detail: [] };
   if (mode === 'update') diff = diffComponent(set, live.definition, written);
   else if (mode === 'create') diff = { sections: [], lines: createLines(set, written, createBody(set, name, written, extra || {})), detail: [] };
+  diff.lines = [...diff.lines];
+  const power = [];
+  if (set !== 'workflows' && (mode === 'update' || mode === 'create')) {
+    const m = markupPower(set, live ? live.definition : null, written);
+    power.push(...m.why);
+    diff.lines.push(...m.lines);
+  }
   let flow = null;
   if (set === 'workflows') {
     const cd = JSON.parse((written || live.definition).clientdata || '{}');
     const ra = runsAs(dv, cd);
+    if (mode === 'update' || mode === 'create') {
+      // Every step a create adds, and every step an update adds or changes, judged by what it can reach.
+      const steps = mode === 'create'
+        ? [...walkActions(flowDef(cd).def.actions).entries()].map(([k, x]) => ({ name: k, facts: actionFacts(x.a) }))
+        : (diff.steps || []);
+      if (mode === 'create') for (const s of steps.slice(0, 12)) diff.lines.push(`  + ${actionText(s.name, s.facts)}`);
+      for (const s of steps) power.push(...stepPower(s.name, s.facts, ra, me));
+      const triggers = mode === 'create'
+        ? Object.entries(flowDef(cd).def.triggers || {}).filter(([, t]) => obj(t)).map(([n, t]) => ({ name: n, facts: actionFacts(t) }))
+        : (diff.trigger_steps || []);
+      for (const t of triggers) power.push(...triggerPower(t.name, t.facts, ra, me));
+    }
+    let triggerRunas = null;
+    if (mode === 'own' && id) {
+      // What the trigger subscription runs as, shown with an owner change (round 3).
+      triggerRunas = (dv.get(filterPath('callbackregistrations', 'name,runas', `name eq '${q(id)}'`)).value || []).map((c) => c.runas);
+    }
     flow = {
+      trigger_runas: triggerRunas,
       live_on: live ? live.statecode === 1 : false,
       runs_as: ra, runs_as_text: runsAsText(ra),
       trigger: Object.entries(flowDef(cd).def.triggers || {}).map(([n, t]) => triggerInfo(n, t)),
@@ -1233,6 +1579,7 @@ function describe(dv, { mode, set, name, table, id, live, written, unproven, car
     concurrency_added: flow ? flow.concurrency_added : false, runs_as_text: flow ? flow.runs_as_text : null,
     target_drafts: drafts.target.map((d) => d.name), other_drafts: drafts.others.map((d) => d.name),
     toolkit: toolkitTables(set, table, written || (live ? live.definition : {})),
+    power: [...new Set(power)],
     unproven: unproven || null,
   };
   // What the person types to approve a delete: the component's LIVE name, or its id when it has none
@@ -1305,7 +1652,7 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
     live = readComponent(dv, set, job.component.id);
     if (!live) throw new PlanRefused([`there is no ${spec.noun} ${job.component.id} in the ${envInfo.name}`], 'invalid_job');
     if (live.managed) throw new PlanRefused([`'${live.name}' is a MANAGED ${spec.noun} (Microsoft's or a vendor's layer); managed components are never changed (the change rules). Make our own copy instead.`], 'not_permitted');
-    if (set === 'workflows' && live.category !== 5) throw new PlanRefused([`'${live.name}' is not a cloud flow (category ${live.category}); business rules and classic workflows are changed in the maker portal (DESIGN.md §10b)`], 'invalid_job');
+    if (set === 'workflows' && live.category !== 5) throw new PlanRefused([`'${live.name}' is not a cloud flow (category ${live.category}); business rules and classic workflows are changed in the maker portal`], 'invalid_job');
     if (String(live.name || '').trim() !== job.component.name) {
       throw new PlanRefused([`the job calls this ${spec.noun} '${job.component.name}', but ${job.component.id} is named '${live.name}'. Check the id.`], 'invalid_job');
     }
@@ -1334,6 +1681,13 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
           : `'${live.name}' already has this definition (nothing to change)`], 'every_row_refused');
       }
     }
+  }
+
+  // A plain-text secret in the flow, before or after, is never copied into a plan, a pop-up or the Write Log
+  // (round 3). Checked first, so no later step stores or prints the definition.
+  if (set === 'workflows') {
+    const where = secretsIn(live ? live.definition : null, after);
+    if (where.length) throw new PlanRefused([secretRefusal(where)], 'invalid_job');
   }
 
   // Mode-specific checks.
@@ -1381,6 +1735,7 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
   const createExtra = job.mode === 'create' ? Object.fromEntries(Object.entries(job.definition).filter(([k]) => !spec.fields.includes(k))) : null;
   const { facts, diff, flow, typed } = describe(dv, {
     mode: job.mode, set, name: live ? live.name : job.component.name, table, id: live ? live.id : null, live, written: after, carried, extra: createExtra,
+    me: identity.systemuserid,
   });
   if (facts.target_drafts.length) throw new PlanRefused([draftRefusal(live.name)], 'invalid_job');
 
@@ -1471,7 +1826,11 @@ function componentSummary(plan) {
     }
     if (plan.mode === 'on') out.push(`  Only the owner of its connections (${plan.flow.runs_as_text}) can turn it on; if Power Automate refuses, they turn it on themselves.`);
   }
-  if (plan.mode === 'own') out.push(`  Owner: ${plan.before.owner ? plan.before.owner.name : 'unknown'} -> ${plan.owner_to.name}`);
+  if (plan.mode === 'own') {
+    out.push(`  Owner: ${plan.before.owner ? plan.before.owner.name : 'unknown'} -> ${plan.owner_to.name}`);
+    const ra = plan.flow && plan.flow.trigger_runas;
+    out.push(`  A flow acts as its owner: from now on it acts as ${plan.owner_to.name}${ra && ra.length ? ` (its trigger subscription: runas ${[...new Set(ra)].join(', ')})` : ' (it has no trigger subscription now)'}.`);
+  }
   if (plan.mode === 'delete') out.push(`  To approve, type its name exactly: ${plan.typed}`);
   if (plan.publish) out.push(`  Published after the change (${plan.publish.entities ? `the ${plan.component.table} table only` : 'this sitemap only'}).`);
   out.push('', `  ${undoLine(plan)}`, '', `Reason given: ${plan.reason}`);
@@ -1487,6 +1846,7 @@ function componentDetail(plan, { id } = {}) {
   if (plan.solution) out.push(`Solution: ${plan.solution.name} (${plan.solution.uniquename})`);
   out.push(`Access needed: ${plan.need}${plan.need_why.length ? ` (${plan.need_why.join('; ')})` : ''}; ${plan.identity.fullname} has ${plan.access}`);
   if (plan.diff.sections.length) out.push(`Changes: ${plan.diff.sections.join(', ')}`);
+  for (const p of (plan.facts && plan.facts.power) || []) out.push(`  admin because ${p}`);
   out.push('');
   for (const l of plan.diff.lines) out.push(`  ${l}`);
   for (const l of plan.diff.detail) out.push(l);
@@ -1504,6 +1864,32 @@ function componentDetail(plan, { id } = {}) {
 
 function defaultSleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// What a plan may ask apply to write (round 3): an update sends only definition fields; a create sends the
+// definition, the name, the fixed flow fields and the create extras validation allows. Anything else in a plan
+// file was put there by hand, and apply refuses it (plan_tampered).
+const CREATE_EXTRAS = { savedqueries: ['returnedtypecode', 'querytype'], systemforms: ['objecttypecode', 'type'] };
+const FLOW_CREATE_FIXED = ['category', 'type', 'primaryentity'];
+
+function planShapeProblems(plan) {
+  const c = plan && plan.component;
+  if (!c || !has(SETS, c.set)) return ['an unknown kind of component'];
+  if (!MODES.includes(plan.mode)) return [`the mode "${plan.mode}"`];
+  const set = c.set;
+  const fields = SETS[set].fields;
+  const bad = [];
+  if (plan.mode === 'update') {
+    if (!Array.isArray(plan.sent_fields) || !plan.sent_fields.length) bad.push('no field at all');
+    else for (const f of plan.sent_fields) if (!fields.includes(f)) bad.push(`the field "${f}"`);
+  }
+  for (const k of Object.keys(plan.after_definition || {})) if (!fields.includes(k)) bad.push(`the definition key "${k}"`);
+  if (plan.mode === 'create') for (const k of Object.keys(plan.create_extra || {})) if (!(CREATE_EXTRAS[set] || []).includes(k)) bad.push(`the create field "${k}"`);
+  if (!bad.length && (plan.mode === 'update' || plan.mode === 'create')) {
+    const allowed = new Set([...fields, ...(plan.mode === 'create' ? ['name', ...(CREATE_EXTRAS[set] || []), ...(set === 'workflows' ? FLOW_CREATE_FIXED : [])] : [])]);
+    for (const k of Object.keys(bodyFor(plan))) if (!allowed.has(k)) bad.push(`the body key "${k}"`);
+  }
+  return [...new Set(bad)];
 }
 
 // The body of the one write.
@@ -1532,20 +1918,36 @@ function connectionRefusalText(plan) {
 
 // Is the flow's trigger subscription live with the filter the definition declares? (the earlier Python component tool
 // _trigger_live, Gate A #4 9/24/26: a saved definition is not a live trigger.) null = nothing to check.
+// Round 3: the message, scope and runas are compared too, not only the filter and table. A trigger with no
+// runas parameter registers runas 1 (read live in Donor App Dev 10/7: the QGiv intake flow's trigger has
+// message 1 and scope 4 and no runas; its subscription reads message 1, scope 4, runas 1).
 function checkSubscription(dv, plan, cd, sleep) {
-  const t = Object.entries(flowDef(cd).def.triggers || {}).map(([n, x]) => triggerInfo(n, x)).find((x) => x.dataverse);
-  if (!t) return null;
+  const hit = Object.entries(flowDef(cd).def.triggers || {}).find(([n, x]) => triggerInfo(n, x).dataverse);
+  if (!hit) return null;
+  const t = triggerInfo(hit[0], hit[1]);
+  const p = hit[1].inputs.parameters;
   const norm = (s) => String(s || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean).sort().join(',');
+  const want = {
+    message: p['subscriptionRequest/message'], scope: p['subscriptionRequest/scope'],
+    runas: p['subscriptionRequest/runas'] === undefined ? 1 : p['subscriptionRequest/runas'],
+  };
+  const off = (c) => {
+    const why = [];
+    if (norm(c.filteringattributes) !== norm(t.filter)) why.push(`filter ${c.filteringattributes || 'none'}`);
+    if (c.entityname && c.entityname !== t.table) why.push(`table ${c.entityname}`);
+    for (const k of ['message', 'scope', 'runas']) if (want[k] !== undefined && c[k] !== undefined && c[k] !== null && Number(c[k]) !== Number(want[k])) why.push(`${k} ${c[k]} (the definition says ${want[k]})`);
+    return why;
+  };
   let cb = [];
   for (let i = 0; i < 10; i += 1) { // re-registers within seconds; ~30 s ceiling, as the Python
-    cb = dv.get(filterPath('callbackregistrations', 'name,entityname,filteringattributes,modifiedon,_ownerid_value', `name eq '${q(plan.component.id)}'`)).value || [];
-    if (cb.length && cb.every((c) => norm(c.filteringattributes) === norm(t.filter) && (!c.entityname || c.entityname === t.table))) break;
+    cb = dv.get(filterPath('callbackregistrations', 'name,entityname,message,scope,runas,filteringattributes,modifiedon,_ownerid_value', `name eq '${q(plan.component.id)}'`)).value || [];
+    if (cb.length && cb.every((c) => !off(c).length)) break;
     if (i < 9) sleep(3000);
   }
   if (!cb.length) return { ok: false, why: `the trigger is not registered (no subscription for ${t.table}); turn the flow off and on in the designer, never Save` };
-  const bad = cb.filter((c) => norm(c.filteringattributes) !== norm(t.filter) || (c.entityname && c.entityname !== t.table));
-  if (bad.length) return { ok: false, why: `the trigger is not live with the new filter (${t.filter || 'none'}; registered: ${bad.map((c) => c.filteringattributes || 'none').join(', ')}); turn the flow off and on in the designer, never Save` };
-  return { ok: true, note: `trigger live on ${t.table}, filter ${t.filter || 'none'}` };
+  const bad = cb.map(off).filter((w) => w.length);
+  if (bad.length) return { ok: false, why: `the trigger is not live as the definition says (${t.table}, filter ${t.filter || 'none'}; registered: ${bad.map((w) => w.join(', ')).join('; ')}); turn the flow off and on in the designer, never Save` };
+  return { ok: true, note: `trigger live on ${t.table}, filter ${t.filter || 'none'}, message ${want.message}, scope ${want.scope}, runas ${want.runas}` };
 }
 
 function readBack(dv, plan, rid, sleep) {
@@ -1570,6 +1972,12 @@ function readBack(dv, plan, rid, sleep) {
     if (off.length) bad.push(`the definition read back differs from what was sent (${off.join(', ')})`);
     if (plan.mode === 'create' && set === 'workflows' && now.statecode !== 0) bad.push(`the new flow is not off (statecode ${now.statecode})`);
   }
+  // Round 3: a flow the platform switched off (or on) while saving the definition is not "written": a save that
+  // fails the platform's own validation can leave the flow off.
+  if (plan.mode === 'update' && set === 'workflows' && plan.live_before
+    && (now.statecode !== plan.live_before.statecode || now.statuscode !== plan.live_before.statuscode)) {
+    bad.push(`the flow's state changed on save (statecode ${plan.live_before.statecode} -> ${now.statecode}, statuscode ${plan.live_before.statuscode} -> ${now.statuscode}); open it and run the Flow checker`);
+  }
   if (plan.mode === 'on' && now.statecode !== 1) bad.push(`it is not on (statecode ${now.statecode})`);
   if (plan.mode === 'off' && now.statecode !== 0) bad.push(`it is not off (statecode ${now.statecode})`);
   if (plan.mode === 'own' && (!now.owner || now.owner.id !== plan.owner_to.id)) bad.push(`the owner is ${now.owner ? now.owner.name : 'unknown'}, not ${plan.owner_to.name}`);
@@ -1588,6 +1996,8 @@ async function applyComponent(plan, deps, { id, file, fs }) {
   const me = whoAmI(dv);
   if (me.systemuserid !== plan.identity.systemuserid) throw new ApplyRefused(`this plan was made by ${plan.identity.fullname}; you are signed in as ${me.fullname}. Nothing was written.`, 'different_person');
   const acc = accessFor(resolveAccess(access, dv, plan.env), me.email, plan.env);
+  const shapeBad = planShapeProblems(plan);
+  if (shapeBad.length) throw new ApplyRefused(`this plan file asks to write ${shapeBad.join(', ')}, which no plan of this kind writes. It was changed after it was made; make a new plan. Nothing was written.`, 'plan_tampered');
   const set = plan.component.set;
 
   // Re-check that what the plan read is still true.
@@ -1621,9 +2031,14 @@ async function applyComponent(plan, deps, { id, file, fs }) {
   // dev-copy line is carried from the plan (apply has no connection to the dev copy).
   const body = bodyFor(plan);
   const written = plan.mode === 'update' ? { ...live.definition, ...body } : plan.mode === 'create' ? plan.after_definition : null;
+  if (set === 'workflows') {
+    const where = secretsIn(live ? live.definition : null, written);
+    if (where.length) throw new ApplyRefused(secretRefusal(where), 'invalid_job');
+  }
   const d = describe(dv, {
     mode: plan.mode, set, name: live ? live.name : plan.component.name, table: live ? live.table : plan.component.table,
     id: live ? live.id : null, live, written, unproven: plan.facts && plan.facts.unproven, carried: plan.flow ? plan.flow.concurrency_carried : null, extra: plan.create_extra || {},
+    me: me.systemuserid,
   });
   if (d.facts.target_drafts.length) throw new ApplyRefused(`${draftRefusal(live.name)}. Nothing was written.`, 'snapshot_moved');
   if (set === 'systemforms' && written) {
@@ -1654,6 +2069,16 @@ async function applyComponent(plan, deps, { id, file, fs }) {
   const base = entryFor(view, { time: now.toISOString(), planId: id, person: me, outcome: 'cancelled', rows: [] });
   if (!answer.approved) return { entry: { ...base, outcome: 'cancelled', note: answer.note || null, rows: [] }, outcome: 'cancelled', person: me, dv, written: 0, rows: [], left_out: [] };
 
+  // Drafts again, AFTER the approval and just before the write (round 3): the pop-up can stay open for
+  // minutes, and an edit saved in the maker portal meanwhile would be overwritten (the target's) or published
+  // along with this change (the table's) without the person having seen it.
+  const again = draftState(dv, set, plan.mode, live ? live.id : null, d.facts.table);
+  if (again.target.length) throw new ApplyRefused(`${draftRefusal(live.name)} (saved while the pop-up was open). Nothing was written.`, 'snapshot_moved');
+  const newDrafts = again.others.map((x) => x.name).filter((n) => !d.facts.other_drafts.includes(n));
+  if (newDrafts.length) {
+    throw new ApplyRefused(`unpublished edits were saved while the pop-up was open, and publishing ${d.facts.table} now would publish them too: ${names(newDrafts)}. Nothing was written; make a new plan.`, 'severity_grew');
+  }
+
   // The one write, then publish (views, forms, sitemaps), then the read-back.
   const row = { name: view.component.name, id: plan.component.id, set, action: plan.mode, changes: changesFor(view), before: stateOf(live), after: null, notes: [] };
   let rid = plan.component.id;
@@ -1677,7 +2102,7 @@ async function applyComponent(plan, deps, { id, file, fs }) {
         row.publish_failed = true;
       }
     }
-    const rb = readBack(dv, { ...plan, after_definition: written || plan.after_definition }, rid, sleep);
+    const rb = readBack(dv, { ...plan, after_definition: written || plan.after_definition, live_before: stateOf(live) }, rid, sleep);
     row.after = rb.after;
     row.notes.push(...rb.notes);
     const problems = [...rb.bad, ...(row.publish_failed ? ['not published'] : [])];
@@ -1707,10 +2132,23 @@ async function planComponentRevert(dv, entry, ctx) {
   if (!row || !row.after && entry.action !== 'delete' || !/^(written|read-back mismatch)/.test(String(row.outcome))) {
     throw new PlanRefused([`that change did not land (${row ? row.outcome : 'no row'}); there is nothing to undo`], 'nothing_to_undo');
   }
-  const set = row.set || entry.component.set;
+  // A log entry is data, and a forged or damaged one must be refused cleanly, never crash (round 4): the set,
+  // the id and the name are checked, and the entry must belong to the environment this revert reads.
+  const envs = (ctx && ctx.envs) || {};
+  if (typeof entry.env !== 'string' || !has(envs, entry.env)) throw new PlanRefused([`that log entry names an environment the toolkit does not know ("${entry.env}")`], 'invalid_job');
+  if (dv.host && String(dv.host).toLowerCase() !== String(envs[entry.env].host).toLowerCase()) {
+    throw new PlanRefused([`that change was made in the ${envs[entry.env].name}; this revert was planned against another environment. Revert it in the ${envs[entry.env].name}.`], 'invalid_job');
+  }
+  const set = row.set || (obj(entry.component) ? entry.component.set : null);
+  if (typeof set !== 'string' || !has(SETS, set) || (row.set && obj(entry.component) && entry.component.set && row.set !== entry.component.set)) {
+    throw new PlanRefused([`that log entry does not name a component set this engine changes (${Object.keys(SETS).join(', ')})`], 'invalid_job');
+  }
+  if (typeof row.id !== 'string' || !GUID.test(row.id)) throw new PlanRefused(['that log entry has no valid component id'], 'invalid_job');
+  const rawName = (row.after && row.after.name) || row.name;
+  if (typeof rawName !== 'string' || !rawName.trim()) throw new PlanRefused(['that log entry has no component name'], 'invalid_job');
   const spec = SETS[set];
   const noun = spec.noun;
-  const name = (row.after && row.after.name) || row.name;
+  const name = rawName;
   const what = `the ${noun} '${name}'`;
   if (entry.action === 'delete') {
     throw new PlanRefused([`a deleted ${noun} cannot be brought back by revert. Its full definition is in the Write Log entry for plan ${entry.plan_id} (rows[0].before.definition); rebuilding it is a new create.`], 'nothing_to_undo');
@@ -1757,4 +2195,5 @@ module.exports = {
   validateComponentJob, planComponent, componentSummary, componentDetail, componentHeadline, applyComponent, planComponentRevert, snapshot,
   readSnapshot, parseXml, formFields, diffFlow, diffView, diffForm, diffSitemap, diffComponent, carryConcurrency, flowConnections,
   needFor, severityFor, SETS, MAX_ENTRY, sameChange, sectionContent, createBody, TOOLKIT_TABLES,
+  flowSecrets, actionFacts, stepPower, triggerPower, viewHooks, formHooks, markupPower, planShapeProblems,
 };

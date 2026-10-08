@@ -61,7 +61,7 @@ function validateJob(raw, { envs }) {
 
   for (const k of Object.keys(raw)) if (!TOP_KEYS.has(k)) err(`unknown top-level key "${k}"`);
   if (raw.contract !== CONTRACT) err(`"contract" must be exactly "${CONTRACT}"`);
-  if (raw.kind === 'steps') err('"kind": "steps" is retired (DESIGN.md §10e): app changes are "kind": "schema" (tables, columns, relationships, keys, options) or "kind": "component" (views, forms, sitemaps, flows)');
+  if (raw.kind === 'steps') err('"kind": "steps" is retired: app changes are "kind": "schema" (tables, columns, relationships, keys, options) or "kind": "component" (views, forms, sitemaps, flows)');
   else if (raw.kind !== 'rows') err('"kind" must be "rows", "merge", "schema" or "component"');
   if (typeof raw.env !== 'string' || !Object.prototype.hasOwnProperty.call(envs, raw.env)) {
     err(`"env" must be one of: ${Object.keys(envs).join(', ')}`);

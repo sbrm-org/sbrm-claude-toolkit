@@ -24,6 +24,7 @@ const IDS = {
   offflow: '11111111-1111-1111-1111-000000000003',
   mflow: '11111111-1111-1111-1111-000000000004',
   rule: '11111111-1111-1111-1111-000000000005',
+  secretflow: '11111111-1111-1111-1111-000000000006',
   view: '22222222-2222-2222-2222-000000000001',
   mview: '22222222-2222-2222-2222-000000000002',
   form: '33333333-3333-3333-3333-000000000001',
@@ -69,6 +70,19 @@ function flowCd({ filter = 'msnfp_amount', table = 'msnfp_transaction', message 
   };
 }
 
+// A flow that keeps an app secret in plain text, as one live Donor App Dev flow does (10/7). PLACEHOLDER value.
+const PLACEHOLDER_SECRET = 'PLACEHOLDER-not-a-real-secret-0000';
+function secretFlowCd({ secret = PLACEHOLDER_SECRET } = {}) {
+  const cd = flowCd({ refs: { shared_commondataserviceforapps: REF('sbrm_dataverse_owner2') } });
+  cd.properties.definition.parameters['ClientId (sbrm_ClientId)'] = { defaultValue: '00000000-0000-0000-0000-00000000c1d0', type: 'String', metadata: { schemaName: 'sbrm_ClientId' } };
+  cd.properties.definition.parameters['SecretId (sbrm_SecretId)'] = { defaultValue: secret, type: 'String', metadata: { schemaName: 'sbrm_SecretId' } };
+  cd.properties.definition.actions.HTTP = {
+    runAfter: {}, type: 'Http', description: 'Forces the rollup.',
+    inputs: { method: 'POST', uri: 'https://example.invalid/api/rollup', authentication: { type: 'ActiveDirectoryOAuth', tenant: 't', audience: 'a', clientId: "@parameters('ClientId (sbrm_ClientId)')", secret: "@parameters('SecretId (sbrm_SecretId)')" } },
+  };
+  return cd;
+}
+
 const FETCH = '<fetch version="1.0" output-format="xml-platform" mapping="logical" distinct="false"><entity name="contact"><attribute name="fullname" /><attribute name="emailaddress1" /><attribute name="contactid" /><order attribute="fullname" descending="false" /><filter type="and"><condition attribute="statecode" operator="eq" value="0" /></filter></entity></fetch>';
 const LAYOUT = '<grid name="resultset" jump="fullname" select="1" icon="1" preview="1" object="2"><row name="result" id="contactid"><cell name="fullname" width="300" /><cell name="emailaddress1" width="150" /></row></grid>';
 const FORM = '<form showImage="true"><hiddencontrols><data id="fullname" datafieldname="fullname" classid="{5546E6CD-394C-4bee-94A8-4425E17EF6C6}" /></hiddencontrols>'
@@ -90,6 +104,7 @@ function data() {
       [IDS.caller]: { workflowid: IDS.caller, name: 'Gift Batch Posted', ismanaged: false, category: 5, statecode: 1, statuscode: 2, _ownerid_value: IDS.appadmin, description: null, clientdata: JSON.stringify(flowCd({ actions: { Run_child: { runAfter: {}, type: 'Workflow', inputs: { host: { workflowReferenceName: IDS.offflow } } } } })) },
       [IDS.offflow]: { workflowid: IDS.offflow, name: 'Sync Letters', ismanaged: false, category: 5, statecode: 0, statuscode: 1, _ownerid_value: IDS.me, description: null, clientdata: JSON.stringify(flowCd({ refs: { shared_commondataserviceforapps: REF('sbrm_dataverse_owner2') } })) },
       [IDS.mflow]: { workflowid: IDS.mflow, name: 'Microsoft Flow', ismanaged: true, category: 5, statecode: 1, statuscode: 2, _ownerid_value: IDS.appadmin, description: null, clientdata: JSON.stringify(flowCd()) },
+      [IDS.secretflow]: { workflowid: IDS.secretflow, name: 'Example Secret Flow', ismanaged: false, category: 5, statecode: 0, statuscode: 1, _ownerid_value: IDS.me, description: null, clientdata: JSON.stringify(secretFlowCd()) },
       [IDS.rule]: { workflowid: IDS.rule, name: 'Require Phone', ismanaged: false, category: 2, statecode: 1, statuscode: 2, _ownerid_value: IDS.appadmin, description: null, clientdata: null },
     },
     savedqueries: {
@@ -119,7 +134,7 @@ function data() {
       [IDS.gone]: { fullname: 'Former Staff', isdisabled: true },
     },
     callbackregistrations: [
-      { callbackregistrationid: 'cb000000-0000-0000-0000-000000000001', name: IDS.flow, entityname: 'msnfp_transaction', message: 3, filteringattributes: 'msnfp_amount', modifiedon: '2026-09-25T10:00:00Z', _ownerid_value: IDS.appadmin },
+      { callbackregistrationid: 'cb000000-0000-0000-0000-000000000001', name: IDS.flow, entityname: 'msnfp_transaction', message: 3, scope: 4, runas: 1, filteringattributes: 'msnfp_amount', modifiedon: '2026-09-25T10:00:00Z', _ownerid_value: IDS.appadmin },
     ],
     sbrm_dataversewritelogs: [],
     // Unpublished layers (maker-portal edits saved, not published): set -> id -> the fields that differ, or a
@@ -165,7 +180,8 @@ function daTrigger(clientdata) {
   try {
     const t = Object.values(JSON.parse(clientdata).properties.definition.triggers)[0];
     const p = t.inputs.parameters;
-    return p['subscriptionRequest/entityname'] ? { table: p['subscriptionRequest/entityname'], filter: p['subscriptionRequest/filteringattributes'] || null, message: p['subscriptionRequest/message'] } : null;
+    // As read live 10/7: message and scope as the trigger says; runas 1 when the trigger names none.
+    return p['subscriptionRequest/entityname'] ? { table: p['subscriptionRequest/entityname'], filter: p['subscriptionRequest/filteringattributes'] || null, message: p['subscriptionRequest/message'], scope: p['subscriptionRequest/scope'], runas: p['subscriptionRequest/runas'] === undefined ? 1 : p['subscriptionRequest/runas'] } : null;
   } catch {
     return null;
   }
@@ -179,7 +195,8 @@ function hasConcurrency(clientdata) {
   }
 }
 
-function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname = 'Test Person', d = data() } = {}) {
+// host: the environment this connection reaches (a revert checks its log entry belongs to it).
+function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname = 'Test Person', d = data(), host = 'https://donor.invalid' } = {}) {
   const calls = [];
   const notFound = () => new DataverseError('Does Not Exist', { code: '0x80040217' });
   const etags = new Map();
@@ -191,15 +208,18 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
     const t = w && w.statecode === 1 ? daTrigger(w.clientdata) : null;
     if (dv.staleSubscription) return;
     d.callbackregistrations = d.callbackregistrations.filter((c) => c.name !== id);
-    if (t) d.callbackregistrations.push({ callbackregistrationid: `cb-${id}`, name: id, entityname: t.table, message: t.message, filteringattributes: t.filter, modifiedon: new Date().toISOString(), _ownerid_value: w._ownerid_value });
+    if (t) d.callbackregistrations.push({ callbackregistrationid: `cb-${id}`, name: id, entityname: t.table, message: t.message, scope: dv.subscriptionScope || t.scope, runas: t.runas, filteringattributes: t.filter, modifiedon: new Date().toISOString(), _ownerid_value: w._ownerid_value });
   };
 
   const dv = {
     cliVersion: 'fake',
+    host,
     calls,
     data: d,
     connectionOwnerOnly: false,
     staleSubscription: false,
+    subscriptionScope: null, // a scope the platform registers instead of the trigger's (subscription drift)
+    switchOffOnSave: false, // the platform turns the flow off when a saved definition fails its own validation
     publishFails: false,
     readBackDrops: null, // a field the platform silently does not store (read-back mismatch)
     failReads: null, // an id whose reads fail with something other than "does not exist", once anything was written
@@ -275,6 +295,7 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
       }
       bump(set, id);
       if (d.drafts[set]) delete d.drafts[set][id]; // a PATCH replaces the unpublished layer: the draft is gone
+      if (set === 'workflows' && body.clientdata && dv.switchOffOnSave) Object.assign(rec, { statecode: 0, statuscode: 1 });
       if (set === 'workflows') register(dv, id);
       return {};
     },
@@ -338,4 +359,4 @@ const ACCESS = {
   },
 };
 
-module.exports = { fakeComponentDv, devDv, devEntry, data, flowCd, REF, IDS, ENVS, ACCESS, FETCH, LAYOUT, FORM, SITEMAP };
+module.exports = { fakeComponentDv, devDv, devEntry, secretFlowCd, PLACEHOLDER_SECRET, data, flowCd, REF, IDS, ENVS, ACCESS, FETCH, LAYOUT, FORM, SITEMAP };

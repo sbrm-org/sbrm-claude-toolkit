@@ -14,7 +14,8 @@ const S = require('../lib/schema');
 const { PlanRefused } = require('../lib/resolve');
 const { ApplyRefused } = require('../lib/apply');
 const { entryText, rowFor } = require('../lib/log');
-const { fakeSchemaDv, ENVS, ACCESS, PUB } = require('./fake_schema');
+const { fakeSchemaDv, ENVS, ACCESS, PUB, USERS } = require('./fake_schema');
+const { DataverseError } = require('../lib/cli');
 
 const { validateSchemaJob, planSchema, schemaSummary, schemaDetail, applySchema, planSchemaRevert } = S;
 const text = (lbl) => lbl.LocalizedLabels[0].Label;
@@ -281,7 +282,7 @@ test('plan: a new build lists every step in dependency order, with the pop-up co
   assert.deepEqual(p.publish, { entities: ['contact', 'sbrm_schematest', 'sbrm_widget'], optionsets: [] });
   assert.equal(p.steps[0].body['publisherid@odata.bind'], `/publishers(${PUB})`, 'the publisher comes from envs.json, never the job');
   assert.ok(p.steps.slice(1).filter((s) => s.object !== 'option').every((s) => s.headers.includes('MSCRM.SolutionUniqueName: SBRMToolkitSchemaTest')));
-  assert.equal(p.steps.find((s) => s.object === 'option' && s.action === 'create').value, 338300002, 'the next value in our series');
+  assert.equal(p.steps.find((s) => s.object === 'option' && s.action === 'create').value, 100000000, 'the first value in the Donor App publisher series (prefix 10000, read live 10/7)');
   const out = schemaSummary(p);
   assert.match(out, /^Before you approve:\n {2}! Lasting: creates the table Schema Test\. Undo cannot remove it; only an admin delete can\./);
   assert.match(out, /Lasting: creates the column Note on Schema Test\./);
@@ -661,14 +662,14 @@ test('options: add then reorder in one job is worked out against the running lis
   const dv = fakeSchemaDv();
   const p = await plan(dv, job({ options: [
     { target: { global: 'sbrm_regions' }, label: 'East' },
-    { action: 'reorder', target: { global: 'sbrm_regions' }, order: [338300002, 338300000, 338300001] },
+    { action: 'reorder', target: { global: 'sbrm_regions' }, order: [100000000, 338300000, 338300001] },
   ] }));
-  assert.match(schemaSummary(p), /add the option 'East' \(338300002\) to the global choice Regions \(sbrm_regions\), shared by every column that uses it/);
+  assert.match(schemaSummary(p), /add the option 'East' \(100000000\) to the global choice Regions \(sbrm_regions\), shared by every column that uses it/);
   assert.match(schemaSummary(p), /reorder the global choice Regions .*: East, North, South/);
   assert.deepEqual(p.publish, { entities: [], optionsets: ['sbrm_regions'] });
   const r = await apply(p, dv);
   assert.equal(r.outcome, 'applied');
-  assert.deepEqual(dv.data.globals.sbrm_regions.Options.map((o) => o.Value), [338300002, 338300000, 338300001]);
+  assert.deepEqual(dv.data.globals.sbrm_regions.Options.map((o) => o.Value), [100000000, 338300000, 338300001]);
   const bad = await refused(plan(fakeSchemaDv(), job({ options: [{ action: 'reorder', target: { global: 'sbrm_regions' }, order: [338300001] }] })));
   assert.match(bad.message, /must list every option value exactly once/);
 });
@@ -677,8 +678,12 @@ test('keys (admin): created, read back with the index status reported', async ()
   const dv = fakeSchemaDv();
   const p = await plan(dv, job({ keys: [{ table: 'sbrm_widget', schema_name: 'sbrm_CodeKey', display: 'Code', columns: ['sbrm_code'] }] }));
   const r = await apply(p, dv);
-  assert.equal(r.outcome, 'applied');
+  assert.equal(r.outcome, 'applied with problems', 'an index still building is not done');
+  assert.equal(r.rows[0].outcome, 'pending (index building)');
   assert.equal(r.rows[0].index_status, 'Pending');
+  const dvA = fakeSchemaDv();
+  dvA.keyStatus = 'Active';
+  assert.equal((await apply(await plan(dvA, job({ keys: [{ table: 'sbrm_widget', schema_name: 'sbrm_CodeKey', display: 'Code', columns: ['sbrm_code'] }] })), dvA)).rows[0].outcome, 'written');
   const dv2 = fakeSchemaDv();
   dv2.keyStatus = 'Failed';
   const r2 = await apply(await plan(dv2, job({ keys: [{ table: 'sbrm_widget', schema_name: 'sbrm_CodeKey', display: 'Code', columns: ['sbrm_code'] }] })), dv2);
@@ -727,11 +732,13 @@ test('revert of a column settings change: PUT of the logged before, applied thro
   rp.created = new Date().toISOString();
   assert.equal(rp.reverts_plan_id, '20261007-200000-aaaaaaaa');
   assert.match(schemaSummary(rp), /^Undo plan 20261007-200000-aaaaaaaa: Change 1 column in the Donor App Dev \(solution SBRM Ad-Hoc Changes\)/);
-  assert.match(schemaSummary(rp), /Label: Widget Code -> Code\n {7}Max length: 80 -> 50/);
+  assert.match(schemaSummary(rp), /Label: Widget Code -> Code\n/);
+  assert.doesNotMatch(schemaSummary(rp), /Max length: 80 -> 50/, 'an undo never lowers max length (it could cut off text)');
+  assert.match(schemaSummary(rp), /Left out, will NOT be changed \(1\):\n {2}column Widget Code \(sbrm_code\) on sbrm_widget: its max length stays 80/);
   const back = await apply(rp, dv);
   assert.equal(back.outcome, 'applied', JSON.stringify(back.rows));
   assert.equal(back.entry.reverts_plan_id, '20261007-200000-aaaaaaaa');
-  assert.equal(dv.data.attrs.sbrm_widget.sbrm_code.MaxLength, 50);
+  assert.equal(dv.data.attrs.sbrm_widget.sbrm_code.MaxLength, 80);
   assert.equal(dv.data.attrs.sbrm_widget.sbrm_code.DisplayName.UserLocalizedLabel.Label, 'Code');
 });
 
@@ -749,7 +756,7 @@ test('revert of an option relabel and a reorder uses the reverse actions; create
   const rp = await planSchemaRevert(dv, roundTrip(r.entry), { envs: ENVS, access: ACCESS });
   rp.created = new Date().toISOString();
   assert.deepEqual(rp.steps.map((s) => s.path), ['UpdateOptionValue', 'OrderOption']);
-  assert.match(schemaSummary(rp), /Stays as it is \(1\): undo does not delete; only an admin delete removes it\.\n {4}column Fresh \(sbrm_fresh\) on Widget: stays; only an admin delete removes it/);
+  assert.match(schemaSummary(rp), /Stays as it is \(1\): undo does not delete; only an admin delete removes it\.\n {4}the column sbrm_widget: stays; only an admin delete removes it/, 'named from the request, never the row text');
   assert.equal((await apply(rp, dv)).outcome, 'applied');
   assert.deepEqual(dv.data.optionSets['sbrm_widget.sbrm_size'].Options.map((o) => [o.Value, o.Label.UserLocalizedLabel.Label]), [[338300000, 'Small'], [338300001, 'Large']]);
 });
@@ -906,15 +913,22 @@ test('review 5: the fingerprint is the read the PUT was built from; a change lan
   let reads = 0;
   dv.afterGet = (p) => {
     if (p === "EntityDefinitions(LogicalName='sbrm_widget')/Attributes(LogicalName='sbrm_code')" && (reads += 1) === 1) {
-      dv.data.attrs.sbrm_widget.sbrm_code.MaxLength = 75; // someone's portal edit lands right after the read
+      // someone's portal edit lands right after the read (a field no rule looks at: only the fingerprint can catch it)
+      dv.data.attrs.sbrm_widget.sbrm_code.Description = { LocalizedLabels: [{ Label: 'portal edit', LanguageCode: 1033 }], UserLocalizedLabel: { Label: 'portal edit', LanguageCode: 1033 } };
     }
   };
-  const p = await plan(dv, job({ columns: [{ action: 'update', table: 'sbrm_widget', column: 'sbrm_code', set: { display: 'Widget Code' } }] }));
+  // The body was built from the first read; the plan reads again to show it and sees the move: refused,
+  // never a plan that would PUT the old description back over the portal edit.
+  const e = await refused(plan(dv, job({ columns: [{ action: 'update', table: 'sbrm_widget', column: 'sbrm_code', set: { display: 'Widget Code' } }] })));
+  assert.equal(e.code, 'snapshot_moved');
+  assert.match(e.message, /the app changed while this plan was being made/);
   dv.afterGet = null;
-  assert.equal(p.steps[0].body.MaxLength, 50, 'the body was built from the first read');
-  const e = await refused(apply(p, dv), ApplyRefused);
-  assert.equal(e.code, 'snapshot_moved', 'so apply sees the move instead of PUTting 50 over 75');
-  assert.equal(dv.data.attrs.sbrm_widget.sbrm_code.MaxLength, 75);
+  assert.deepEqual(writes(dv), []);
+  // A move AFTER the plan is caught by apply's fingerprint of that same first read.
+  const p = await plan(dv, job({ columns: [{ action: 'update', table: 'sbrm_widget', column: 'sbrm_code', set: { display: 'Widget Code' } }] }));
+  dv.data.attrs.sbrm_widget.sbrm_code.Description = { LocalizedLabels: [{ Label: 'second edit', LanguageCode: 1033 }], UserLocalizedLabel: { Label: 'second edit', LanguageCode: 1033 } };
+  assert.equal((await refused(apply(p, dv), ApplyRefused)).code, 'snapshot_moved');
+  assert.equal(dv.data.attrs.sbrm_widget.sbrm_code.Description.UserLocalizedLabel.Label, 'second edit');
 });
 
 test('review 7: a delete read back with a non-404 error is "could not confirm", never written', async () => {
@@ -1007,12 +1021,12 @@ test('re-verify 1: options run in job order, so "delete, add, then reorder" runs
   const p = await plan(dv, job({ options: [
     { action: 'delete', target: { global: 'sbrm_regions' }, value: 338300000 },
     { target: { global: 'sbrm_regions' }, label: 'East' },
-    { action: 'reorder', target: { global: 'sbrm_regions' }, order: [338300002, 338300001] },
+    { action: 'reorder', target: { global: 'sbrm_regions' }, order: [100000000, 338300001] },
   ] }));
   assert.deepEqual(p.steps.map((s) => s.path), ['DeleteOptionValue', 'InsertOptionValue', 'OrderOption']);
   const r = await apply(p, dv);
   assert.equal(r.outcome, 'applied', JSON.stringify(r.rows.map((x) => x.outcome)));
-  assert.deepEqual(dv.data.globals.sbrm_regions.Options.map((o) => o.Value), [338300002, 338300001]);
+  assert.deepEqual(dv.data.globals.sbrm_regions.Options.map((o) => o.Value), [100000000, 338300001]);
 });
 
 test('re-verify 2: proven_in matches on CONTENT: a dev label change does not prove a live "make it required"', async () => {
@@ -1075,4 +1089,293 @@ test('re-verify 4: unpublished table or column LABEL edits on a published table 
   dv2.data.labelDrafts = { 'sbrm_widget.sbrm_code': 'Draft Code' };
   assert.equal((await refused(apply(p2, dv2, { confirm: noPopup }), ApplyRefused)).code, 'severity_grew');
   assert.deepEqual(writes(dv2), []);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// Round 3 (blind adversarial pass on 1.10.0)
+// ---------------------------------------------------------------------------------------------------
+
+const FRESH_CHOICE = () => ({ table: 'sbrm_widget', type: 'choice', schema_name: 'sbrm_Tier', display: 'Tier', options: ['Low', 'High'] });
+
+test('r3-1: choice values come from the env publisher prefix (Donor App 10000, HGS 33830), never a constant', async () => {
+  const dv = fakeSchemaDv();
+  const p = await plan(dv, job({ columns: [FRESH_CHOICE()] }));
+  assert.deepEqual(p.steps[0].body.OptionSet.Options.map((o) => o.Value), [100000000, 100000001]);
+  assert.equal((await apply(p, dv)).outcome, 'applied', 'read back against the same series');
+  const hgs = fakeSchemaDv();
+  const h = await plan(hgs, job({ columns: [FRESH_CHOICE()] }, { env: 'hgs', solution: { uniquename: 'SBRMHgsTest', friendlyname: 'SBRM HGS Test' } }));
+  assert.deepEqual(h.steps.find((s) => s.object === 'column').body.OptionSet.Options.map((o) => o.Value), [338300000, 338300001]);
+  const none = fakeSchemaDv();
+  delete none.data.publishers[PUB];
+  assert.equal((await refused(plan(none, job({ columns: [FRESH_CHOICE()] })))).code, 'engine_bug');
+});
+
+test('r3-2: deletes log what a rebuild needs: options, the lookup column, other tables lookups a table takes', async () => {
+  const dv = fakeSchemaDv();
+  const c = await plan(dv, job({ columns: [{ action: 'delete', table: 'sbrm_widget', column: 'sbrm_size' }, { action: 'delete', table: 'sbrm_widget', column: 'sbrm_region' }] }));
+  const size = c.steps.find((s) => /sbrm_size/.test(s.path)).before;
+  assert.deepEqual(size.OptionSet.Options.map((o) => o.Value), [338300000, 338300001]);
+  assert.equal(c.steps.find((s) => /sbrm_region/.test(s.path)).before.GlobalOptionSet.Name, 'sbrm_regions');
+  const r = await plan(dv, job({ relationships: [{ action: 'delete', schema_name: 'sbrm_contact_sbrm_widget_ContactId' }] }));
+  assert.equal(r.steps[0].before.LookupAttribute.LogicalName, 'sbrm_contactid');
+  assert.ok(r.steps[0].before.LookupAttribute.RequiredLevel && r.steps[0].before.LookupAttribute.DisplayName);
+  const t = await plan(dv, job({ tables: [{ action: 'delete', table: 'sbrm_widget' }] }));
+  assert.match(schemaSummary(t), /Can't be fully undone: deleting the table Widget removes it and its 3 rows, and the lookup columns on other tables that point at it: sbrm_favoritewidgetid on contact \(1 rows linked\)\./);
+  assert.equal(t.steps[0].before.LookupsElsewhere[0].definition.LogicalName, 'sbrm_favoritewidgetid');
+  const done = await apply(t, dv);
+  assert.equal(done.outcome, 'applied');
+  assert.equal(dv.data.attrs.contact.sbrm_favoritewidgetid, undefined, 'Dataverse took the other table lookup with it');
+  const e = await refused(planSchemaRevert(dv, roundTrip(done.entry), { envs: ENVS, access: ACCESS }));
+  assert.match(e.message, /the log does not keep data/);
+  assert.match(e.message, /the other tables' lookup columns it took with it/);
+});
+
+test('r3-3: a NEW required column or required lookup on a table with rows is admin; on a new table it is not', async () => {
+  const dev = () => fakeSchemaDv({ email: 'dev2@example.org' });
+  const col = await refused(plan(dev(), job({ columns: [{ table: 'sbrm_widget', type: 'text', schema_name: 'sbrm_Fresh', display: 'Fresh', required: true }] })));
+  assert.equal(col.code, 'not_permitted');
+  assert.match(col.message, /create Fresh as required on sbrm_widget: its 3 existing rows would have no value/);
+  const lk = await refused(plan(dev(), job({ relationships: [{ type: 'one_to_many', schema_name: 'sbrm_OwnerContactId', display: 'Owner Contact', referenced: 'contact', referencing: 'sbrm_widget', required: true }] })));
+  assert.match(lk.message, /create Owner Contact as required on sbrm_widget/);
+  await plan(fakeSchemaDv(), job({ columns: [{ table: 'sbrm_widget', type: 'text', schema_name: 'sbrm_Fresh', display: 'Fresh', required: true }] })); // admin
+  const fresh = job({
+    tables: [{ schema_name: 'sbrm_Gizmo', display: 'Gizmo', plural: 'Gizmos', description: 'x', primary: { schema_name: 'sbrm_Name', display: 'Name' } }],
+    columns: [{ table: 'sbrm_gizmo', type: 'text', schema_name: 'sbrm_Must', display: 'Must', required: true }],
+  });
+  assert.equal((await plan(dev(), fresh)).admin_only, false, 'a table this plan creates has no rows');
+});
+
+test('r3-4: every read after the first write asks for Consistency: Strong', async () => {
+  const dv = fakeSchemaDv();
+  const p = await plan(dv, BUILD());
+  dv.calls.length = 0;
+  await apply(p, dv);
+  const first = dv.calls.findIndex((x) => x.method !== 'GET');
+  const after = dv.calls.slice(first).filter((x) => x.method === 'GET');
+  assert.ok(after.length > 10);
+  assert.ok(after.every((x) => x.strong === true), after.filter((x) => !x.strong).map((x) => x.path).join('\n'));
+});
+
+test('r3-5: a delete or create that times out is re-read: landed = written, still missing = unknown, never "failed" blind', async () => {
+  const dv = fakeSchemaDv();
+  const p = await plan(dv, DEL_NOTES());
+  dv.timeoutOn = (c) => (c.method === 'DELETE' ? 'lands' : null);
+  const r = await apply(p, dv);
+  assert.equal(r.rows[0].outcome, 'written');
+  assert.match(r.rows[0].note, /timed out on this computer, but it landed/);
+  const dv2 = fakeSchemaDv();
+  const p2 = await plan(dv2, ONE_COL());
+  dv2.timeoutOn = (c) => (/\/Attributes$/.test(c.path) ? 'lost' : null);
+  sleeps = [];
+  const r2 = await apply(p2, dv2);
+  assert.match(r2.rows[0].outcome, /^failed: the request timed out on this computer and has not shown up in 2 minutes\. It may still land: make a new plan/);
+  assert.equal(sleeps.reduce((a, b) => a + b, 0), 2 * 60 * 1000);
+});
+
+test('r3-5: a re-run of the SAME job adopts the table its earlier run made but never put in the solution', async () => {
+  const lonely = () => job({ tables: [{ schema_name: 'sbrm_Lonely', display: 'Lonely', plural: 'Lonelies', description: 'x', primary: { schema_name: 'sbrm_Name', display: 'Name' } }] });
+  const dv = fakeSchemaDv();
+  assert.match((await refused(plan(dv, lonely()))).message, /someone else built it/, 'no earlier run: still refused');
+  dv.data.entities.sbrm_lonely.CreatedOn = '2026-10-07T20:05:00Z';
+  const earlier = { mode: 'schema', solution: 'SBRMAdHoc', time: '2026-10-07T20:04:00Z', rows: [{ name: 'table', method: 'POST', path: 'EntityDefinitions', body: { SchemaName: 'sbrm_Lonely' }, outcome: 'failed: TaskCanceledException' }] };
+  const logRow = (by) => ({
+    sbrm_planid: '20261007-200400-00000abc', sbrm_outcome: 'applied with problems', sbrm_mode: 'schema', _createdby_value: by,
+    sbrm_entry: entryText({ ...earlier, plan_id: 'p', person: { fullname: 'x', email: 'x', systemuserid: by }, env: 'fedev', app: 'Donor App Dev', table: 't', source: 's', reason: 'r', approval: 'dialog', left_out: [], headline: 'h', outcome: 'applied with problems' }),
+  });
+  dv.data.records.sbrm_dataversewritelogs.push(logRow(USERS['dev2@example.org']));
+  assert.match((await refused(plan(dv, lonely()))).message, /someone else built it/, 'another person run does not count');
+  // My own runs that are NOT this job's earlier attempt do not count either.
+  const mine = (patch) => {
+    const e = { ...earlier, ...patch };
+    return { ...logRow(USERS['dgross@example.org']), sbrm_entry: entryText({ ...e, plan_id: 'p', person: { fullname: 'x', email: 'x', systemuserid: USERS['dgross@example.org'] }, env: 'fedev', app: 'Donor App Dev', table: 't', source: 's', reason: 'r', approval: 'dialog', left_out: [], headline: 'h', outcome: 'applied with problems' }) };
+  };
+  for (const patch of [
+    { solution: 'VendorStuff' }, // another solution
+    { time: '2026-10-07T20:30:00Z' }, // after the table was made
+    { rows: [{ ...earlier.rows[0], outcome: 'written' }] }, // that create finished
+    { rows: [{ ...earlier.rows[0], body: { SchemaName: 'sbrm_Other' } }] }, // another table
+  ]) {
+    const t = fakeSchemaDv();
+    t.data.entities.sbrm_lonely.CreatedOn = '2026-10-07T20:05:00Z';
+    t.data.records.sbrm_dataversewritelogs.push(mine(patch));
+    assert.match((await refused(plan(t, lonely()))).message, /someone else built it/, JSON.stringify(patch));
+  }
+  dv.data.records.sbrm_dataversewritelogs.push(logRow(USERS['dgross@example.org']));
+  const p = await plan(dv, lonely());
+  assert.deepEqual(p.steps.map((s) => `${s.object}.${s.action}`), ['table.adopt']);
+  assert.match(schemaSummary(p), /put the existing table Lonely \(sbrm_lonely\) into the solution SBRMAdHoc, with its columns/);
+  assert.equal((await apply(p, dv)).outcome, 'applied');
+  assert.equal((await refused(plan(dv, lonely()))).code, 'nothing_to_change');
+  // In another solution: someone else's, still refused.
+  const dv2 = fakeSchemaDv();
+  dv2.data.entities.sbrm_lonely.CreatedOn = '2026-10-07T20:05:00Z';
+  dv2.data.records.sbrm_dataversewritelogs.push(logRow(USERS['dgross@example.org']));
+  dv2.data.components.push({ solutionid: dv2.data.solutions.VendorStuff.solutionid, objectid: dv2.data.entities.sbrm_lonely.MetadataId });
+  assert.match((await refused(plan(dv2, lonely()))).message, /someone else built it/);
+});
+
+test('r3-6: a key over values that already repeat is refused with the count; re-checked at apply; blanks are not repeats', async () => {
+  const key = (col) => job({ keys: [{ table: 'sbrm_widget', schema_name: 'sbrm_TheKey', display: 'The Key', columns: [col] }] });
+  const e = await refused(plan(fakeSchemaDv(), key('sbrm_size')));
+  assert.equal(e.code, 'invalid_job');
+  assert.match(e.message, /the alternate key The Key on sbrm_widget: 1 value combination already repeat \(2 rows\), so Dataverse cannot build its index/);
+  await plan(fakeSchemaDv(), key('sbrm_notes')); // one value and two blanks: fine
+  const broken = fakeSchemaDv();
+  broken.aggregateFails = true;
+  assert.match((await refused(plan(broken, key('sbrm_code')))).message, /could not be checked for repeated values/);
+  const dv = fakeSchemaDv();
+  const p = await plan(dv, key('sbrm_code'));
+  dv.data.records.sbrm_widgets[1].sbrm_code = 'A';
+  const a = await refused(apply(p, dv, { confirm: noPopup }), ApplyRefused);
+  assert.equal(a.code, 'snapshot_moved');
+  assert.match(a.message, /already repeat \(2 rows\)/);
+});
+
+test('r3-7: right before a PUT the definition is re-read; a change since the pop-up stops it, nothing written', async () => {
+  const dv = fakeSchemaDv();
+  const p = await plan(dv, CODE_LABEL());
+  const r = await apply(p, dv, { confirm: () => { dv.data.attrs.sbrm_widget.sbrm_code.MaxLength = 75; return { approved: true }; } });
+  assert.match(r.rows[0].outcome, /^failed: it changed in the moments before the write/);
+  assert.ok(!dv.calls.some((c) => c.method === 'PUT'));
+  assert.equal(dv.data.attrs.sbrm_widget.sbrm_code.MaxLength, 75);
+});
+
+test('r3-7: PUT bodies drop DatabaseLength, send an explicit empty label for a cleared description, and name every type', async () => {
+  const dv = fakeSchemaDv();
+  dv.data.attrs.sbrm_widget.sbrm_code.DatabaseLength = 100;
+  dv.data.attrs.sbrm_widget.sbrm_code.Description = { LocalizedLabels: [{ Label: 'old words', LanguageCode: 1033 }], UserLocalizedLabel: { Label: 'old words', LanguageCode: 1033 } };
+  const p = await plan(dv, job({ columns: [{ action: 'update', table: 'sbrm_widget', column: 'sbrm_code', set: { description: '', max_length: 80 } }] }));
+  const s = p.steps[0];
+  assert.equal(s.body.DatabaseLength, undefined, 'Dataverse derives it');
+  assert.equal(s.before.DatabaseLength, 100, 'the log keeps it');
+  assert.deepEqual(s.body.Description.LocalizedLabels, [{ '@odata.type': 'Microsoft.Dynamics.CRM.LocalizedLabel', Label: '', LanguageCode: 1033 }]);
+  assert.equal((await apply(p, dv)).outcome, 'applied');
+  assert.equal(S.attrTypeName({ AttributeType: 'Uniqueidentifier' }), 'Microsoft.Dynamics.CRM.UniqueIdentifierAttributeMetadata');
+  assert.equal(S.attrTypeName({ AttributeType: 'Virtual', AttributeTypeName: { Value: 'MultiSelectPicklistType' } }), 'Microsoft.Dynamics.CRM.MultiSelectPicklistAttributeMetadata');
+  const odd = fakeSchemaDv();
+  Object.assign(odd.data.attrs.sbrm_widget.sbrm_code, { AttributeType: 'Virtual', AttributeTypeName: { Value: 'VirtualType' } });
+  delete odd.data.attrs.sbrm_widget.sbrm_code['@odata.type'];
+  assert.match((await refused(plan(odd, CODE_LABEL()))).message, /whose type this engine cannot name/);
+});
+
+test('r3-8: a malformed query (0x80060888 "Could not find a property") is an error, never "does not exist"', async () => {
+  const bad = new DataverseError("Could not find a property named 'DatabaseLength' on type 'Microsoft.Dynamics.CRM.AttributeMetadata'.", { code: '0x80060888' });
+  assert.equal(S.isNotFound(bad), false);
+  assert.equal(S.isNotFound(new DataverseError("EntityMetadata With Id = LogicalName='x' does not exist.", { code: '0x80060888' })), true);
+  const dv = fakeSchemaDv();
+  dv.getFails = (path) => (path === "EntityDefinitions(LogicalName='sbrm_widget')/Attributes(LogicalName='sbrm_code')" ? { message: bad.message, code: '0x80060888' } : null);
+  await assert.rejects(plan(dv, CODE_LABEL()), /Could not find a property named/);
+});
+
+test('r3-9: a run starts no new step after 25 minutes; what landed is logged; run the same job again', async () => {
+  const dv = fakeSchemaDv();
+  const p = await plan(dv, BUILD());
+  const clock = () => writes(dv).length * 10 * 60 * 1000; // each write "takes" ten minutes
+  const r = await apply(p, dv, { clock });
+  assert.deepEqual(r.rows.map((x) => x.outcome.split(':')[0]), ['written', 'written', 'written', 'not started', 'not started', 'not started', 'not started', 'not started']);
+  assert.match(r.rows[3].outcome, /25-minute limit\. Run the same job again to finish/);
+  assert.match(r.entry.publish.outcome, /not attempted: the run reached its time limit/);
+  assert.match(r.entry.note, /run the same job again to finish/);
+  const again = await plan(dv, BUILD());
+  assert.equal(again.steps.length, 5, 'resumable: only what is missing');
+});
+
+// ---------------------------------------------------------------------------------------------------
+// Round 4 (final re-verify): a revert built from a FORGED Write Log row obeys every forward rule
+// ---------------------------------------------------------------------------------------------------
+
+// A forged "applied" entry that "changed" a column: its before carries what the forger wants put back.
+function forged(dv, { table = 'sbrm_widget', column = 'sbrm_code', solution = 'SBRMAdHoc', env = 'fedev', planId = '20261007-200000-aaaaaaaa', path, id, before } = {}) {
+  const live = JSON.parse(JSON.stringify(dv.data.attrs[table][column]));
+  const was = before || { ...live, DisplayName: { LocalizedLabels: [{ Label: 'Forged', LanguageCode: 1033 }], UserLocalizedLabel: { Label: 'Forged', LanguageCode: 1033 } } };
+  return {
+    mode: 'schema', outcome: 'applied', env, plan_id: planId, solution, headline: 'Totally harmless', person: { fullname: 'Someone Trusted' },
+    rows: [{
+      name: 'Harmless label fix', object: 'column', action: 'update', outcome: 'written', id: id === undefined ? live.MetadataId : id,
+      method: 'PUT', path: path || `EntityDefinitions(LogicalName='${table}')/Attributes(LogicalName='${column}')`,
+      body: live, before: was, after: live, changes: [{ label: 'Label', old_text: 'Forged', new_text: 'x' }],
+    }],
+  };
+}
+const revertOf = (dv, entry, ctx = {}) => planSchemaRevert(dv, entry, { envs: ENVS, access: ACCESS, ...ctx });
+
+test('r4: a forged revert of a MANAGED column is refused for everyone, admin included', async () => {
+  const dv = fakeSchemaDv();
+  const e = await refused(revertOf(dv, forged(dv, { table: 'contact', column: 'fullname' })));
+  assert.equal(e.code, 'not_permitted');
+  assert.match(e.message, /fullname is managed/);
+  onlyGets(dv);
+});
+
+test('r4: a forged revert into a managed or foreign solution is refused', async () => {
+  const dv = fakeSchemaDv();
+  assert.match((await refused(revertOf(dv, forged(dv, { solution: 'msdyn_Nonprofit' })))).message, /is managed \(imported\)/);
+  assert.match((await refused(revertOf(dv, forged(dv, { solution: 'VendorStuff' })))).message, /belongs to another publisher/);
+});
+
+test('r4: the entry must belong to the environment the revert is planned in', async () => {
+  const dv = fakeSchemaDv();
+  const e = await refused(revertOf(dv, forged(dv, { env: 'donorapp' })));
+  assert.equal(e.code, 'invalid_job');
+  assert.match(e.message, /is for the Donor App, not the environment this undo is planned in/);
+  assert.match((await refused(revertOf(dv, forged(dv), { env: 'hgs' }))).message, /not the environment this undo is planned in/);
+  const nowhere = fakeSchemaDv({ host: '' });
+  assert.equal((await refused(revertOf(nowhere, forged(nowhere)))).code, 'invalid_job', 'unknown here: refused, not assumed');
+});
+
+test('r4: every id and name taken from the entry is shape-checked before it reaches a path', async () => {
+  const dv = fakeSchemaDv();
+  const bad = [
+    forged(dv, { planId: "x') or 1 eq 1" }),
+    forged(dv, { solution: 'SBRMAdHoc; DROP' }),
+    forged(dv, { path: "EntityDefinitions(LogicalName='sbrm_widget')/Attributes(LogicalName='sbrm_code')?$x=1" }),
+    forged(dv, { id: 'not-a-guid' }),
+  ];
+  for (const entry of bad) {
+    const e = await refused(revertOf(dv, entry));
+    assert.ok(['invalid_job', 'nothing_to_undo'].includes(e.code), e.message);
+  }
+  const opt = forged(dv);
+  opt.rows[0] = { name: 'x', object: 'option', action: 'update', outcome: 'written', method: 'POST', path: 'UpdateOptionValue', body: { EntityLogicalName: "sbrm_widget') or (1", AttributeLogicalName: 'sbrm_size', Value: 338300000 }, changes: [{ old_text: 'a', new_text: 'b' }] };
+  assert.match((await refused(revertOf(dv, opt))).message, /its choice is not a valid name/);
+  onlyGets(dv);
+});
+
+test('r4: a revert never shows the log row\'s own text: names come from the requests, reason from the plan id', async () => {
+  const dv = fakeSchemaDv();
+  const r = await apply(await plan(dv, CODE_LABEL()), dv);
+  const entry = roundTrip(r.entry);
+  entry.rows[0].name = 'Harmless label fix';
+  entry.headline = 'Totally harmless';
+  const rp = await revertOf(dv, entry);
+  const shown = schemaSummary(rp) + schemaDetail(rp, { id: 'X' });
+  assert.doesNotMatch(shown, /Harmless label fix|Totally harmless/);
+  assert.ok(rp.steps.every((s) => !/Harmless/.test(s.name)), 'nor in the names the new log row and its messages carry');
+  assert.equal(rp.steps[0].name, 'column Widget Code (sbrm_code) on sbrm_widget');
+  assert.equal(rp.reason, 'Undo plan 20261007-200000-aaaaaaaa (its Dataverse Write Log entry).');
+});
+
+test('r4: apply holds every plan to the same rules: the plan\'s own solution only, and never a managed object', async () => {
+  const dv = fakeSchemaDv();
+  const p = await plan(dv, ONE_COL());
+  const elsewhere = { ...p, steps: p.steps.map((s) => ({ ...s, headers: ['MSCRM.SolutionUniqueName: VendorStuff'] })) };
+  const e = await refused(apply(elsewhere, dv, { confirm: noPopup }), ApplyRefused);
+  assert.equal(e.code, 'not_permitted');
+  assert.match(e.message, /names a solution other than SBRMAdHoc/);
+  // A hand-built step on a managed column, fingerprinted and rendered so every other check passes.
+  const dv2 = fakeSchemaDv();
+  const base = await plan(dv2, CODE_LABEL());
+  const live = dv2.data.attrs.contact.fullname;
+  const body = S.putBody(live, 'Microsoft.Dynamics.CRM.StringAttributeMetadata');
+  body.DisplayName = S.label('Hacked');
+  const step = {
+    ...base.steps[0], name: 'column Full Name (fullname) on Contact', logical: { table: 'contact', column: 'fullname' },
+    path: "EntityDefinitions(LogicalName='contact')/Attributes(LogicalName='fullname')", body, before: live,
+    probes: [{ type: 'attrDef', table: 'contact', column: 'fullname' }], expect: S.canonical([{ '@odata.context': 'fake#attribute', ...live }]),
+  };
+  S.renderInto(dv2, [step], { publisher: PUB });
+  const e2 = await refused(apply({ ...base, steps: [step], publish: { entities: ['contact'], optionsets: [] } }, dv2, { confirm: noPopup }), ApplyRefused);
+  assert.equal(e2.code, 'not_permitted');
+  assert.match(e2.message, /fullname is managed/);
+  assert.ok(!dv2.calls.some((c) => c.method === 'PUT'));
 });

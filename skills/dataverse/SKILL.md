@@ -27,7 +27,7 @@ Each person has a level in each app, on that app's Dataverse Write Access list (
 | read | look only (anyone without a row) |
 | write | change records; merge only with a separate "may merge" yes |
 | develop | everything in write, plus change the app: tables, columns, choices, views, forms, sitemaps, flows |
-| admin | everything in develop, plus deletes of any kind, the toolkit's own lists, and closing reported items |
+| admin | everything in develop, plus deletes of any kind, alternate keys, making a column required on a table that has rows, flow steps that reach beyond their connection (HTTP, child flows, a run-time table, someone else's connection, a changed trigger on a live flow), script or web content in views and forms, handing a flow to a new owner, the toolkit's own lists, and closing reported items |
 
 There is no limit on how much one change may touch. Instead the engine flags a big or serious change
 (below), and the person decides knowing it. The level is the toolkit's; the person's own Dataverse role
@@ -59,12 +59,14 @@ Verify the path on first use and say it in full whenever you hand the person a c
    contacts"), something that can't be fully undone and why, something lasting (a new column stays until
    an admin deletes it), or a change to something live that was not tried in Donor App Dev first. Never
    soften, summarize away or skip a line; the person approves knowing all of it. Then: "Go ahead?"
-5. **When they say yes, run `apply <plan-id>` yourself**, with the longest command timeout (10 minutes).
-   Tell them first: "A window will pop up on your screen listing the change. Click Approve to write it,
-   or Cancel." For a delete add: "To approve, type the name it shows into the box." Only their click
-   writes. The window closes itself as Cancel after 9 minutes. Never try to click it, answer it, or write
-   some other way if they cancel. If apply refuses because the change grew or moved since the plan, plan
-   it again and go back to step 4.
+5. **When they say yes, run `apply <plan-id>` yourself, IN THE BACKGROUND** (the shell tool's run in
+   background option), so a long change (a big merge, a new table) is never cut off by the command time
+   limit part-way; you are told when it finishes. Tell them first: "A window will pop up on your screen
+   listing the change. Click Approve to write it, or Cancel." For a delete add: "To approve, type the name
+   it shows into the box." Only their click writes. The window closes itself as Cancel after 9 minutes.
+   While it is open, use no tool that drives the screen, mouse or keyboard (the guard refuses them). Never
+   try to click it, answer it, or write some other way if they cancel. If apply refuses because the change
+   grew or moved since the plan, plan it again and go back to step 4.
 6. **After the apply, read the output back to them**: what was written, anything that was not, and
    that it is in the Write Log.
 
@@ -139,7 +141,8 @@ failure reaches Dylan.
 Dataverse role can actually customize an app where they hold develop or admin, the log tables,
 anything waiting to be sent, and that the toolkit's connections are the only Dataverse connections on
 the machine. Run it when the person asks whether their Dataverse setup works, after a tools failure is
-fixed, and at the end of setup. Read the result back in plain words. If it reports an extra Dataverse
+fixed, and at the end of setup, as `doctor --apps <the apps they use>` when you know them (an app that
+does not answer is a failure only where they use it). Read the result back in plain words. If it reports an extra Dataverse
 connection or hook, don't remove it yourself: tell the person, and suggest `/dataverse-setup`, which
 cleans up with their OK.
 

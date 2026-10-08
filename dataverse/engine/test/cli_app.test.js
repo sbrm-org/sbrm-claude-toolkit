@@ -151,3 +151,13 @@ test('snapshot refuses a bad set or id without reading anything', async () => {
   assert.equal(r.code, 2);
   assert.match(r.out, /snapshot <env> <set> <id>/);
 });
+
+test('snapshot never saves a flow that holds a plain-text secret (1.10.1)', async () => {
+  writeConfig(K.ENVS);
+  const dv = withToolkitTables(K.fakeComponentDv({ email: 'dev@example.org' }), K.ACCESS, 'donorapp');
+  const r = await go(['snapshot', 'donorapp', 'workflows', K.IDS.secretflow], deps(dv));
+  assert.equal(r.code, 1);
+  assert.match(r.out, /holds a secret in plain text .*Nothing was saved/);
+  const jobs = path.join(process.env.SBRM_DV_HOME, 'jobs');
+  assert.ok(!fs.existsSync(jobs) || !fs.readdirSync(jobs).some((f) => f.includes(K.IDS.secretflow)), 'no file written');
+});

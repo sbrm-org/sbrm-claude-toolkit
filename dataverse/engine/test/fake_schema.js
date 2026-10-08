@@ -20,7 +20,9 @@
 //   labelsUnreadable true: the RetrieveEntity reads fail (unpublished labels cannot be checked)
 //   data.labelDrafts { "table" | "table.column": label }: someone's unpublished label edits
 //   afterGet        (path) -> void: runs after a GET has answered (something changing mid-plan)
-//   getFails        (path) -> message | null: that GET throws a NON-404 error (a throttle, a sign-in fault)
+//   getFails        (path) -> message | {message, code, status} | null: that GET throws (default: a 429 throttle)
+//   timeoutOn       (call) -> 'lands' | 'lost' | null: that write times out client side, after landing or not
+//   Every GET records { strong } (Consistency: Strong), so a test can see read-backs ask for it.
 
 const { DataverseError } = require('../lib/cli');
 const { checkMeta, publishXml } = require('../lib/write');
@@ -109,6 +111,8 @@ function world() {
         fullname: attr('fullname', 'StringAttributeMetadata', 'Full Name', { IsManaged: true, IsPrimaryName: true, MaxLength: 160 }),
         donotemail: attr('donotemail', 'BooleanAttributeMetadata', 'Do not allow Emails', { IsManaged: true }),
         sbrm_altphone: attr('sbrm_altphone', 'StringAttributeMetadata', 'Alt Phone', { MaxLength: 100, FormatName: { Value: 'Text' } }),
+        // Ours, on a Microsoft table, pointing at Widget: deleting Widget takes it with it.
+        sbrm_favoritewidgetid: attr('sbrm_favoritewidgetid', 'LookupAttributeMetadata', 'Favorite Widget'),
       },
       msnfp_transaction: {
         msnfp_transactionid: attr('msnfp_transactionid', 'UniqueIdentifierAttributeMetadata', 'Transaction', { IsManaged: true, IsPrimaryId: true }),
@@ -145,8 +149,9 @@ function world() {
     },
     attrGlobal: { 'sbrm_widget.sbrm_region': 'sbrm_regions' },
     relationships: {
-      contact_customer_accounts: { '@odata.type': '#Microsoft.Dynamics.CRM.OneToManyRelationshipMetadata', SchemaName: 'contact_customer_accounts', MetadataId: newId(), IsManaged: true, RelationshipType: 'OneToManyRelationship', ReferencedEntity: 'account', ReferencingEntity: 'contact', ReferencingAttribute: 'parentcustomerid' },
-      sbrm_contact_sbrm_widget_ContactId: { '@odata.type': '#Microsoft.Dynamics.CRM.OneToManyRelationshipMetadata', SchemaName: 'sbrm_contact_sbrm_widget_ContactId', MetadataId: newId(), IsManaged: false, RelationshipType: 'OneToManyRelationship', ReferencedEntity: 'contact', ReferencingEntity: 'sbrm_widget', ReferencingAttribute: 'sbrm_contactid' },
+      sbrm_sbrm_widget_contact_FavoriteWidgetId: { '@odata.type': '#Microsoft.Dynamics.CRM.OneToManyRelationshipMetadata', SchemaName: 'sbrm_sbrm_widget_contact_FavoriteWidgetId', MetadataId: newId(), IsManaged: false, IsCustomRelationship: true, RelationshipType: 'OneToManyRelationship', ReferencedEntity: 'sbrm_widget', ReferencingEntity: 'contact', ReferencingAttribute: 'sbrm_favoritewidgetid' },
+      contact_customer_accounts: { '@odata.type': '#Microsoft.Dynamics.CRM.OneToManyRelationshipMetadata', SchemaName: 'contact_customer_accounts', MetadataId: newId(), IsManaged: true, IsCustomRelationship: false, RelationshipType: 'OneToManyRelationship', ReferencedEntity: 'account', ReferencingEntity: 'contact', ReferencingAttribute: 'parentcustomerid' },
+      sbrm_contact_sbrm_widget_ContactId: { '@odata.type': '#Microsoft.Dynamics.CRM.OneToManyRelationshipMetadata', SchemaName: 'sbrm_contact_sbrm_widget_ContactId', MetadataId: newId(), IsManaged: false, IsCustomRelationship: true, RelationshipType: 'OneToManyRelationship', ReferencedEntity: 'contact', ReferencingEntity: 'sbrm_widget', ReferencingAttribute: 'sbrm_contactid' },
     },
     keys: { sbrm_widget: [], sbrm_dataversewritelog: [] },
     // Forms and views: `xml` is the published copy, `draft` (when set) an unpublished edit someone left.
@@ -157,13 +162,18 @@ function world() {
     views: [
       { savedqueryid: 'v0000000-0000-0000-0000-000000000001', name: 'Active Widgets', returnedtypecode: 'sbrm_widget', fetchxml: '<fetch/>', layoutxml: '<grid/>' },
     ],
+    publishers: {
+      [PUB]: { customizationprefix: 'sbrm', customizationoptionvalueprefix: 10000 },
+      [OTHER_PUB]: { customizationprefix: 'sbrm', customizationoptionvalueprefix: 33830 },
+      '9811ffde-bb43-4f05-be7c-2eb124dedf0c': { customizationprefix: 'sbrm', customizationoptionvalueprefix: 33830 },
+    },
     records: {
       sbrm_widgets: [
         { sbrm_widgetid: 'w1', sbrm_name: 'One', sbrm_notes: 'has notes', sbrm_code: 'A', sbrm_size: 338300000, _sbrm_contactid_value: 'c1' },
         { sbrm_widgetid: 'w2', sbrm_name: 'Two', sbrm_notes: null, sbrm_code: 'B', sbrm_size: 338300001, _sbrm_contactid_value: null },
         { sbrm_widgetid: 'w3', sbrm_name: 'Three', sbrm_notes: null, sbrm_code: 'C', sbrm_size: 338300001, _sbrm_contactid_value: null },
       ],
-      contacts: [{ contactid: 'c1', fullname: 'Jane Example', sbrm_altphone: null }],
+      contacts: [{ contactid: 'c1', fullname: 'Jane Example', sbrm_altphone: null, _sbrm_favoritewidgetid_value: 'w1' }],
       sbrm_lonelies: [],
       sbrm_dataversewritelogs: [],
     },
@@ -171,12 +181,13 @@ function world() {
   return w;
 }
 
-function fakeSchemaDv({ email = 'dgross@example.org', data = world() } = {}) {
+// host: the environment this fake answers as (a revert checks its log entry belongs here).
+function fakeSchemaDv({ email = 'dgross@example.org', data = world(), host = 'https://fedev.invalid' } = {}) {
   const calls = [];
   const notFound = (what, code = '0x80060888') => new DataverseError(`${what} does not exist.`, { code });
   const W = data;
   const dv = {
-    cliVersion: 'fake', calls, data: W,
+    cliVersion: 'fake', host, calls, data: W,
     provisionReads: 0, tableTimeout: false, failOn: null, hideOnce: new Set(), keyStatus: 'Pending', publishFails: false,
     notReady: {}, // table -> by-name reads left before it answers
   };
@@ -201,13 +212,42 @@ function fakeSchemaDv({ email = 'dgross@example.org', data = world() } = {}) {
   const route = (p) => {
     calls.push({ method: 'GET', path: p });
     const gf = dv.getFails && dv.getFails(p);
-    if (gf) throw new DataverseError(gf, { code: '0x80072322', status: 429 });
+    if (gf) throw (typeof gf === 'object' ? new DataverseError(gf.message, { code: gf.code, status: gf.status }) : new DataverseError(gf, { code: '0x80072322', status: 429 }));
     let m;
     if (p === 'WhoAmI') return { UserId: USERS[email] || '11111111-1111-1111-1111-111111111111' };
     if (/^systemusers\(/.test(p)) return { fullname: email.split('@')[0], internalemailaddress: email, domainname: email };
     if ((m = /^solutions\?\$select=[^&]+&\$filter=(.*)$/.exec(p))) {
       const name = filterEq(decodeURIComponent(m[1]), 'uniquename');
       return { value: W.solutions[name] ? [clone(W.solutions[name])] : [] };
+    }
+    if ((m = /^publishers\(([^)]+)\)\?\$select=/.exec(p))) {
+      const x = W.publishers[m[1]];
+      if (!x) throw notFound(`publisher ${m[1]}`, '0x80040217');
+      return { publisherid: m[1], ...clone(x) };
+    }
+    // Every solution a component is in (Default is implied for everything unmanaged, so it is not stored).
+    if ((m = /^solutioncomponents\?\$select=_solutionid_value&\$filter=(.*)&\$expand=solutionid\(\$select=uniquename,ismanaged\)$/.exec(p))) {
+      const oid = (/objectid eq (\S+)/.exec(decodeURIComponent(m[1])) || [])[1];
+      const sols = Object.values(W.solutions);
+      return { value: [{ solutionid: { uniquename: 'Default', ismanaged: false } }, ...W.components.filter((c) => c.objectid === oid).map((c) => ({ solutionid: clone(sols.find((x) => x.solutionid === c.solutionid)) }))] };
+    }
+    if ((m = /^EntityDefinitions\(([0-9a-f-]{36})\)\?\$select=LogicalName$/.exec(p))) {
+      const e = Object.values(W.entities).find((x) => x.MetadataId === m[1]);
+      if (!e) throw notFound(`EntityMetadata With Id = ${m[1]}`);
+      return { LogicalName: e.LogicalName, MetadataId: e.MetadataId };
+    }
+    // Grouped counts (the duplicate check before an alternate key; groupby read live 10/7).
+    if ((m = /^(\w+)\?\$apply=groupby\(\(([^)]+)\),aggregate\(\$count%20as%20n\)\)$/.exec(p))) {
+      if (dv.aggregateFails) throw new DataverseError('AggregateQueryRecordLimit exceeded');
+      const rows = W.records[m[1]];
+      if (!rows) throw new DataverseError(`Resource not found for the segment '${m[1]}'.`);
+      const cols = m[2].split(',');
+      const groups = new Map();
+      for (const r of rows) {
+        const k = JSON.stringify(cols.map((c) => (r[c] === undefined ? null : r[c])));
+        groups.set(k, (groups.get(k) || 0) + 1);
+      }
+      return { value: [...groups].map(([k, n]) => ({ ...Object.fromEntries(cols.map((c, i) => [c, JSON.parse(k)[i]])), n })) };
     }
     if ((m = /^solutioncomponents\?\$select=objectid&\$filter=(.*)$/.exec(p))) {
       const f = decodeURIComponent(m[1]);
@@ -285,6 +325,10 @@ function fakeSchemaDv({ email = 'dgross@example.org', data = world() } = {}) {
           : { savedqueryid: x.savedqueryid, name: x.name, fetchxml: draft && x.draft ? x.draft : x.fetchxml, layoutxml: x.layoutxml })),
       };
     }
+    if ((m = /^EntityDefinitions\(LogicalName='([^']+)'\)\/OneToManyRelationships\?\$select=/.exec(p))) {
+      if (!W.entities[m[1]]) throw notFound(`EntityMetadata With Id = LogicalName='${m[1]}'`);
+      return { value: clone(Object.values(W.relationships).filter((r) => r.ReferencedEntity === m[1])) };
+    }
     if ((m = /^EntityDefinitions\(LogicalName='([^']+)'\)\/Keys\?\$select=/.exec(p))) {
       if (!W.entities[m[1]]) throw notFound(`EntityMetadata With Id = LogicalName='${m[1]}'`);
       return { value: clone(W.keys[m[1]] || []) };
@@ -306,8 +350,11 @@ function fakeSchemaDv({ email = 'dgross@example.org', data = world() } = {}) {
       if (!W.globals[m[1]]) throw new DataverseError(`Could not find an optionset with name ${m[1]} and id 00000000-0000-0000-0000-000000000000.`, { code: '0x80040217' });
       return clone(W.globals[m[1]]);
     }
-    if ((m = /^sbrm_dataversewritelogs\?\$select=[^&]+&\$filter=(.*)$/.exec(p))) {
-      const id = filterEq(decodeURIComponent(m[1]), 'sbrm_planid');
+    if ((m = /^sbrm_dataversewritelogs\?\$select=[^&]+&\$filter=([^&]*)(&.*)?$/.exec(p))) {
+      const f = decodeURIComponent(m[1]);
+      const by = (/_createdby_value eq (\S+)/.exec(f) || [])[1];
+      if (by) return { value: W.records.sbrm_dataversewritelogs.filter((r) => r._createdby_value === by && (!/sbrm_mode eq 'schema'/.test(f) || r.sbrm_mode === 'schema')) };
+      const id = filterEq(f, 'sbrm_planid');
       return { value: W.records.sbrm_dataversewritelogs.filter((r) => r.sbrm_planid === id) };
     }
     if ((m = /^(\w+)\?\$select=\w+&\$count=true&\$top=1(?:&\$filter=(.*))?$/.exec(p))) {
@@ -329,10 +376,15 @@ function fakeSchemaDv({ email = 'dgross@example.org', data = world() } = {}) {
   };
 
   // afterGet(path): runs AFTER a read has answered (a change landing between two reads of the plan).
-  dv.get = (p) => {
-    const r = route(p);
-    if (dv.afterGet) dv.afterGet(p);
-    return r;
+  dv.get = (p, o = {}) => {
+    const at = calls.length;
+    try {
+      const r = route(p);
+      if (dv.afterGet) dv.afterGet(p);
+      return r;
+    } finally {
+      if (calls[at]) calls[at].strong = Boolean(o.strong);
+    }
   };
 
   dv.getMany = (paths) => Promise.resolve(paths.map((p) => {
@@ -377,7 +429,15 @@ function fakeSchemaDv({ email = 'dgross@example.org', data = world() } = {}) {
     return a;
   };
 
+  const TIMEOUT = 'System.Threading.Tasks.TaskCanceledException: The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing.';
   dv.metadata = (method, apiPath, body, headers = []) => {
+    const t = dv.timeoutOn && dv.timeoutOn({ method: String(method).toUpperCase(), path: apiPath, body });
+    if (t === 'lost') { calls.push({ method: String(method).toUpperCase(), path: apiPath, body: clone(body), headers: [...headers], lost: true }); throw new DataverseError(TIMEOUT); }
+    const r = writeMeta(method, apiPath, body, headers);
+    if (t === 'lands') throw new DataverseError(TIMEOUT);
+    return r;
+  };
+  const writeMeta = (method, apiPath, body, headers = []) => {
     checkMeta(method, apiPath, headers); // the real allow-list: a step it would refuse fails the test
     const call = { method: String(method).toUpperCase(), path: apiPath, body: clone(body), headers: [...headers] };
     calls.push(call);
@@ -399,6 +459,7 @@ function fakeSchemaDv({ email = 'dgross@example.org', data = world() } = {}) {
       delete b['@odata.type'];
       const { Attributes: atts, ...props } = b;
       Object.assign(e, props, { LogicalName: t, PrimaryNameAttribute: atts[0].SchemaName.toLowerCase() });
+      e.CreatedOn = '2026-10-07T20:00:00Z';
       W.entities[t] = e;
       W.attrs[t] = { [`${t}id`]: attr(`${t}id`, 'UniqueIdentifierAttributeMetadata', e.DisplayName.UserLocalizedLabel.Label, { IsPrimaryId: true }) };
       W.attrs[t][atts[0].SchemaName.toLowerCase()] = { ...newAttrShape(atts[0]), IsPrimaryName: true };
@@ -423,6 +484,11 @@ function fakeSchemaDv({ email = 'dgross@example.org', data = world() } = {}) {
       }
       if (M === 'DELETE') {
         const set = W.entities[t].EntitySetName;
+        // As Dataverse does: every relationship to or from it goes, and the lookups on other tables with it.
+        for (const [k, r] of Object.entries(W.relationships)) {
+          if (r.ReferencedEntity === t && r.ReferencingEntity !== t && W.attrs[r.ReferencingEntity]) delete W.attrs[r.ReferencingEntity][r.ReferencingAttribute];
+          if ([r.ReferencedEntity, r.ReferencingEntity, r.Entity1LogicalName, r.Entity2LogicalName].includes(t)) delete W.relationships[k];
+        }
         delete W.entities[t]; delete W.attrs[t]; delete W.keys[t]; delete W.records[set];
         return {};
       }
@@ -479,6 +545,12 @@ function fakeSchemaDv({ email = 'dgross@example.org', data = world() } = {}) {
       if (!r) throw notFound(`Relationship ${m[1]}`, '0x80040217');
       if (r.ReferencingAttribute && W.attrs[r.ReferencingEntity]) delete W.attrs[r.ReferencingEntity][r.ReferencingAttribute];
       delete W.relationships[m[1]];
+      return {};
+    }
+    if (apiPath === 'AddSolutionComponent') {
+      const sol = W.solutions[body.SolutionUniqueName];
+      if (!sol) throw new DataverseError(`no solution ${body.SolutionUniqueName}`);
+      W.components.push({ solutionid: sol.solutionid, objectid: body.ComponentId });
       return {};
     }
     if (apiPath === 'InsertOptionValue') {
