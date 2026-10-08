@@ -1,0 +1,725 @@
+#!/usr/bin/env node
+'use strict';
+// The shared Dataverse write engine (job contract `sbrm-dv-job/1`).
+//
+//   check  <job.json>   file-level validation only, no Dataverse calls
+//   plan   <job.json>   validate + resolve live (reads only) + save a plan record, print it
+//   show   <plan-id>    every change in a saved plan, row by row
+//   whoami <env>        who Dataverse says you are, and your access in the shared path
+//   apply  <plan-id>    re-check, the pop-up, write, read back, log (CONTRACT.md §5, §9)
+//   revert <plan-id> [env]  plan the undo of an applied plan (CONTRACT.md §10); apply it as usual
+//   doctor              the health check for this machine (DESIGN.md §7 D4, D4a)
+//   report "<words>" [--plan <id>] [--env <env>]   the person says something is wrong (§7 D3)
+//   review [--days N] [--brief]                    Dylan's view of the whole toolkit (§7 D5)
+//   resolve <number> <resolution> "<note>" [--fixed-in <version>]   Dylan closes an open item (§7 D7)
+//
+// The job file is a REQUEST; nothing in it is trusted. Everything shown for approval is
+// computed here from the job plus live reads.
+//
+// EVERY command runs inside runCli() (DESIGN.md §7): one run id, what the run printed, and ONE place
+// where a refusal or crash is printed AND recorded as an event. Commands never print their own
+// refusals; they throw them, so no refusal can leave without a record (test/cli.test.js proves it).
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { validateJob } = require('./lib/contract');
+const { readConnection, resolveCli, launchError, DataverseError } = require('./lib/cli');
+const health = require('./lib/health');
+const review = require('./lib/review');
+const log = require('./lib/log');
+const merge = require('./lib/merge');
+const { readAccess, resolveAccess, mergeAccessLists } = require('./lib/access');
+const { planJob, whoAmI, accessFor, PlanRefused } = require('./lib/resolve');
+const { savePlan, loadPlan, home, dir, PLAN_ID } = require('./lib/store');
+const { gitExposure } = require('./lib/safety');
+const { summary, detail } = require('./lib/render');
+const { applyPlan, ApplyRefused } = require('./lib/apply');
+const { writeConnection } = require('./lib/write');
+const { confirm } = require('./lib/dialog');
+const { planRevert, findEntry } = require('./lib/revert');
+const { readEntries } = require('./lib/log');
+const events = require('./lib/events');
+
+// The machine as doctor sees it (D4a drift reads Claude Code's own config files).
+function realIo() {
+  return {
+    home: os.homedir(),
+    cwd: process.cwd(),
+    read(file) {
+      try { return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')); } catch { return null; }
+    },
+  };
+}
+
+// The guard beside this engine, fed a test apply exactly as Claude Code feeds it (stdin JSON, exit 2 =
+// blocked), plus a look for disableAllHooks in the person's settings. Nothing is written.
+function realGuard() {
+  const { spawnSync } = require('child_process');
+  const file = path.join(__dirname, '..', 'guard', 'guard.js');
+  if (!fs.existsSync(file)) return { present: false };
+  // A session reaching the write side without the CLI (which would skip the pop-up) must be blocked.
+  const lib = path.join(__dirname, 'lib', 'write').replace(/\\/g, '/');
+  const probe = JSON.stringify({ tool_name: 'Bash', tool_input: { command: `node -e "const { ${['write', 'Connection'].join('')} } = require('${lib}')"` } });
+  const r = spawnSync(process.execPath, [file], { input: probe, encoding: 'utf8', windowsHide: true });
+  let hooksOff = null;
+  for (const f of [path.join(os.homedir(), '.claude', 'settings.json'), path.join(os.homedir(), '.claude', 'settings.local.json')]) {
+    try { if (JSON.parse(fs.readFileSync(f, 'utf8')).disableAllHooks === true) hooksOff = f; } catch { /* absent or unreadable */ }
+  }
+  return { present: true, blocksBypass: r.status === 2, detail: `exit ${r.status}`, hooksOff };
+}
+
+// doctor's CLI check STARTS the binary (finding it is not enough: ThreatLocker can block a found file).
+function realCli() {
+  const { spawnSync } = require('child_process');
+  const c = resolveCli();
+  const r = spawnSync(c.binary, ['--version'], { encoding: 'utf8', windowsHide: true });
+  if (r.error) throw launchError(c.binary, r.error);
+  return c;
+}
+
+const DEFAULT_DEPS = {
+  readConnection, writeConnection, confirm, eventConnection: events.eventConnection,
+  cli: realCli, io: realIo, guard: realGuard,
+};
+
+function configDir() {
+  return process.env.SBRM_DV_CONFIG || path.join(__dirname, '..');
+}
+
+function readJson(file) {
+  return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
+}
+
+// `access` is a READER, not data: who may write lives in each environment's Dataverse Write Access table
+// (10/7, lib/access.js), read through the person's own connection once it exists. There is no access.json.
+function config() {
+  const noNotes = (o) => Object.fromEntries(Object.entries(o).filter(([k]) => !k.startsWith('_')));
+  const defaults = { default_max_rows: toolkitConfig().default_max_rows || 25 };
+  return {
+    envs: noNotes(readJson(path.join(configDir(), 'envs.json'))),
+    access: (dv, env) => readAccess(dv, env, defaults),
+  };
+}
+
+// A refusal raised by the CLI itself. `nothing` says what did not happen ("planned" / "written").
+class Refusal extends Error {
+  constructor(code, title, reasons, { nothing = code === 'usage' ? 'done' : 'planned', exitCode = 1 } = {}) {
+    super(`${title}: ${reasons.join(' ')}`);
+    this.name = 'Refusal';
+    this.code = code;
+    this.title = title;
+    this.reasons = reasons;
+    this.nothing = nothing;
+    this.exitCode = exitCode;
+  }
+}
+
+function loadJob(file, envs) {
+  let raw;
+  try {
+    raw = readJson(file);
+  } catch (e) {
+    return { errors: [`cannot read ${file} as JSON: ${e.message}`] };
+  }
+  // Two kinds: rows (CONTRACT.md §2a) and merge (DESIGN.md §8c).
+  return raw && raw.kind === 'merge' ? merge.validateMergeJob(raw, { envs }) : validateJob(raw, { envs });
+}
+
+function jobRefusal(errors) {
+  const code = errors.some((e) => /^intent does not match/.test(e)) ? 'intent_mismatch' : 'invalid_job';
+  return new Refusal(code, 'the job file is not valid', errors);
+}
+
+// Client information stays in the Microsoft tenant (lib/safety.js). Returns a refusal reason or null.
+function storeExposure() {
+  const s = gitExposure(home());
+  return s.exposed
+    ? `the engine's store (${home()}) is inside a git-tracked folder (${s.repo}); plans and logs hold client records. Point SBRM_DV_HOME outside it.`
+    : null;
+}
+
+function jobExposure(file, envInfo) {
+  if (!envInfo.hipaa) return null;
+  const s = gitExposure(file);
+  return s.exposed
+    ? `this job file is for the ${envInfo.name}, which holds HIPAA client records, and it sits in a git-tracked folder (${s.repo}). Client information never goes where git can carry it. Save the job file in ${path.join(home(), 'jobs')} instead, and delete this copy.`
+    : null;
+}
+
+function refuseIfExposed(reasons, nothing) {
+  const r = reasons.filter(Boolean);
+  if (r.length) throw new Refusal('client_info_exposed', 'client information would be exposed', r, { nothing });
+}
+
+function connect(run, deps, kind, host) {
+  const dv = kind === 'write' ? deps.writeConnection(host) : deps.readConnection(host);
+  run.connected = true;
+  return dv;
+}
+
+function cmdCheck(run, deps, file) {
+  const { envs } = config();
+  const { errors, job } = loadJob(file, envs);
+  if (errors.length) throw jobRefusal(errors);
+  run.env = job.env;
+  refuseIfExposed([jobExposure(file, envs[job.env])]);
+  console.log(job.kind === 'merge'
+    ? `\nThe job file is valid: merge ${job.pairs.length} pair(s) of ${job.table} (${envs[job.env].name}).`
+    : `\nThe job file is valid: ${job.mode} ${job.rows.length} row(s) in ${job.table} (${envs[job.env].name}).`);
+  console.log('Live checks (access, columns, targets, duplicates) run at `plan`.\n');
+  return 0;
+}
+
+function cmdPlan(run, deps, file) {
+  const { envs, access } = config();
+  const { errors, job } = loadJob(file, envs);
+  if (errors.length) throw jobRefusal(errors);
+  run.env = job.env;
+  refuseIfExposed([storeExposure(), jobExposure(file, envs[job.env])]);
+  const dv = connect(run, deps, 'read', envs[job.env].host);
+  if (job.kind === 'merge') return planMergeCmd(run, dv, job, { envs, access });
+  const plan = planJob(dv, job, { envs, access });
+  run.person = plan.identity;
+  const { id, file: planFile } = savePlan(plan);
+  run.planId = id;
+  console.log('\n' + summary(plan));
+  console.log(`\nPlan ${id} saved (${planFile}).`);
+  console.log(`Every change, row by row: node "${path.resolve(__filename)}" show ${id}`);
+  console.log(`To write it: node "${path.resolve(__filename)}" apply ${id}`);
+  console.log('Nothing has been written. Apply shows a pop-up; only Approve writes.\n');
+  return 0;
+}
+
+// A merge plan (async: the inventory reads run in parallel).
+async function planMergeCmd(run, dv, job, { envs, access }) {
+  const plan = await merge.planMerge(dv, job, { envs, access });
+  run.person = plan.identity;
+  const { id, file: planFile } = savePlan(plan);
+  run.planId = id;
+  console.log('\n' + merge.mergeSummary(plan));
+  console.log(`\nPlan ${id} saved (${planFile}).`);
+  console.log(`Every pair, record by record: node "${path.resolve(__filename)}" show ${id}`);
+  console.log(`To merge: node "${path.resolve(__filename)}" apply ${id}`);
+  console.log('Nothing has been merged. Apply shows a pop-up; only Approve merges.\n');
+  return 0;
+}
+
+// Undo of a merge (DESIGN.md §8f): the rebuild, planned from the merge's Write Log entry.
+async function planUnmergeCmd(run, dv, entry, mergeId, note, { envs, access }) {
+  const plan = await merge.planUnmerge(dv, entry, { envs, access });
+  run.person = plan.identity;
+  const { id, file: planFile } = savePlan(plan);
+  run.planId = id;
+  console.log(`\nUndo of merge plan ${mergeId}${note}:\n`);
+  console.log(merge.unmergeSummary(plan));
+  console.log(`\nPlan ${id} saved (${planFile}).`);
+  console.log(`To write it: node "${path.resolve(__filename)}" apply ${id}`);
+  console.log('Nothing has been written. Apply shows a pop-up; only Approve writes.\n');
+  return 0;
+}
+
+async function applyMergeCmd(run, deps, id, record, file) {
+  const { access } = config();
+  const fn = record.kind === 'unmerge' ? merge.applyUnmerge : merge.applyMerge;
+  const res = await fn(record, { access, connect: (host) => connect(run, deps, 'write', host), confirm: deps.confirm }, { id, file, fs });
+  run.person = res.person;
+  const logged = log.writeEntry(res.entry, res.dv);
+  run.wroteLog = true;
+  if (res.outcome === 'cancelled') {
+    console.log(`\nCancelled. Nothing was ${record.kind === 'unmerge' ? 'written' : 'merged'}. The plan is kept: apply it again, or make a new one.`);
+  } else {
+    const verb = record.kind === 'unmerge' ? ['written', 'not written'] : ['merged', 'not merged'];
+    console.log(`\n${res.outcome.toUpperCase()}: ${res.written} ${verb[0]}, ${res.rows.length - res.written} ${verb[1]}, ${res.left_out.length} left out.\n`);
+    for (const r of res.rows) console.log(`  ${r.outcome === 'written' ? 'OK ' : '!! '} ${r.name}${r.outcome === 'written' ? '' : `  ${r.outcome}`}`);
+  }
+  console.log(logged.rowOk
+    ? `\nLogged in Dataverse: Dataverse Write Log row "${logged.key}"${record.kind === 'merge' ? ' (both records in full as they were, and every moved record)' : ` (undoes plan ${record.reverts_plan_id})`}.`
+    : `\nNOT logged in Dataverse yet (${logged.error || 'unknown error'}). The row is parked on this machine and retried at the next apply here.`);
+  console.log(`Local copy: ${logged.local}\n`);
+  if (!logged.rowOk) events.record(run, { kind: 'parked', code: 'parked', headline: `Write Log row for merge plan ${id} could not be written: ${logged.error || 'unknown error'}` });
+  return res.outcome === 'applied' ? 0 : 1;
+}
+
+function readLocal(id) {
+  const logDir = dir('log');
+  for (const f of fs.readdirSync(logDir).filter((x) => x.endsWith('.md'))) {
+    try {
+      const hit = readEntries(path.join(logDir, f)).find((e) => e.plan_id === id && e.outcome !== 'cancelled');
+      if (hit) return hit;
+    } catch { /* unreadable file: skip */ }
+  }
+  return null;
+}
+
+// The env a plan wrote to: the local log on this machine first, then each env's log table.
+function locate(run, deps, id, envs) {
+  const local = readLocal(id);
+  if (local && envs[local.env]) return { env: local.env, local };
+  for (const env of Object.keys(envs)) {
+    let entry = null;
+    try { entry = findEntry(connect(run, deps, 'read', envs[env].host), id); } catch { entry = null; }
+    if (entry) return { env, entry };
+  }
+  return null;
+}
+
+function cmdRevert(run, deps, id, envArg) {
+  const { envs, access } = config();
+  if (!PLAN_ID.test(id)) throw new Refusal('usage', 'the undo', [`not a plan id: ${id}`], { exitCode: 2 });
+  if (envArg && !envs[envArg]) throw new Refusal('usage', 'the undo', [`unknown env "${envArg}"; one of: ${Object.keys(envs).join(', ')}`], { exitCode: 2 });
+  refuseIfExposed([storeExposure()]);
+  const found = envArg ? { env: envArg } : locate(run, deps, id, envs);
+  if (!found) throw new Refusal('nothing_to_undo', 'the undo', [`no applied entry for plan ${id} in any environment's log or this machine's local log`]);
+  run.env = found.env;
+  const dv = connect(run, deps, 'read', envs[found.env].host);
+  // The Dataverse row is the record of what happened; this machine's local copy covers a row
+  // that is still parked here waiting to land.
+  let entry = found.entry || findEntry(dv, id);
+  let note = '';
+  if (!entry) {
+    entry = found.local || readLocal(id);
+    if (entry) note = " (read from this machine's local log: its Dataverse row has not landed yet)";
+  }
+  if (entry && entry.mode === 'merge') return planUnmergeCmd(run, dv, entry, id, note, { envs, access });
+  const res = planRevert(dv, entry, { envs, access });
+  run.person = res.plan.identity;
+  const jobFile = path.join(dir('jobs'), `revert-${id}.json`);
+  fs.writeFileSync(jobFile, JSON.stringify(res.raw, null, 2), 'utf8');
+  const { id: planId, file: planFile } = savePlan(res.plan);
+  run.planId = planId;
+  console.log(`\nUndo of plan ${id}${note}:\n`);
+  console.log(summary(res.plan));
+  console.log(`\nPlan ${planId} saved (${planFile}). Undo job: ${jobFile}`);
+  console.log(`Every change, row by row: node "${path.resolve(__filename)}" show ${planId}`);
+  console.log(`To write it: node "${path.resolve(__filename)}" apply ${planId}`);
+  console.log('Nothing has been written. Apply shows a pop-up; only Approve writes.\n');
+  return 0;
+}
+
+function cmdShow(run, deps, id) {
+  run.planId = id;
+  const { record, intact } = loadPlan(id);
+  run.env = record.env;
+  run.person = record.identity;
+  if (!intact) console.log('\n!! This plan file was changed after it was made. It will be refused at apply.\n');
+  console.log('\n' + (record.kind === 'merge' ? merge.mergeDetail(record, { id }) : record.kind === 'unmerge' ? merge.unmergeSummary(record) : detail(record, { id })) + '\n');
+  if (!intact) {
+    events.record(run, { kind: 'refused', code: 'plan_tampered', headline: `Plan ${id} was changed after it was made (seen by show)` });
+    return 1;
+  }
+  return 0;
+}
+
+function cmdApply(run, deps, id) {
+  const { access } = config();
+  run.planId = id;
+  const { record } = loadPlan(id); // a missing plan refuses here, before anything else
+  run.env = record.env;
+  run.person = record.identity; // provisional: apply refuses a different signed-in person
+  refuseIfExposed([storeExposure()], 'written');
+  if (record.kind === 'merge' || record.kind === 'unmerge') {
+    const { intact, file } = loadPlan(id);
+    if (!intact) throw new ApplyRefused('this plan file was changed after it was made. Make a new plan.', 'plan_tampered');
+    return applyMergeCmd(run, deps, id, record, file);
+  }
+  const res = applyPlan(id, { access, connect: (host) => connect(run, deps, 'write', host), confirm: deps.confirm });
+  run.person = res.person || run.person;
+  run.wroteLog = true; // the Write Log entry is this outcome's record (applied, with problems, or cancelled)
+  if (res.outcome === 'cancelled') {
+    console.log(`\nCancelled. Nothing was written.${res.note ? ` (${res.note})` : ''} The plan is kept: apply it again, or make a new one.`);
+  } else {
+    console.log(`\n${res.outcome.toUpperCase()}: ${res.written} written, ${res.failed} not written, ${res.left_out.length} left out.\n`);
+    for (const r of res.rows) console.log(`  ${r.outcome === 'written' ? 'OK ' : '!! '} ${r.name}  ${r.id}${r.outcome === 'written' ? '' : `  ${r.outcome}`}`);
+  }
+  console.log(res.logged.rowOk
+    ? `\nLogged in Dataverse: Dataverse Write Log row "${res.logged.key}".`
+    : `\nNOT logged in Dataverse yet (${res.logged.error || 'unknown error'}). The row is parked on this machine and retried at the next apply here.`);
+  if (res.logged.flushed) console.log(`Also landed ${res.logged.flushed} earlier parked log row(s).`);
+  console.log(`Local copy: ${res.logged.local}\n`);
+  if (!res.logged.rowOk) {
+    events.record(run, { kind: 'parked', code: 'parked', headline: `Write Log row for plan ${id} could not be written: ${res.logged.error || 'unknown error'}` });
+  }
+  return res.outcome === 'applied' ? 0 : 1;
+}
+
+function cmdWhoami(run, deps, env) {
+  const { envs, access } = config();
+  if (!envs[env]) throw new Refusal('usage', 'whoami', [`unknown env "${env}"; one of: ${Object.keys(envs).join(', ')}`], { exitCode: 2 });
+  run.env = env;
+  const dvW = connect(run, deps, 'read', envs[env].host);
+  const me = whoAmI(dvW);
+  run.person = me;
+  const acc = accessFor(resolveAccess(access, dvW, env), me.email, env);
+  console.log(`\n${me.fullname} <${me.email}> in the ${envs[env].name}`);
+  console.log(`  shared-path access: ${acc.level}; rows per approval: ${acc.maxRows === null ? 'no limit' : acc.maxRows}\n`);
+  return 0;
+}
+
+// "--name value" options after the positional arguments.
+function options(args, names) {
+  const pos = [];
+  const opt = {};
+  for (let i = 0; i < args.length; i += 1) {
+    const m = /^--([a-z-]+)$/.exec(args[i]);
+    if (m && names.includes(m[1])) { opt[m[1]] = args[i + 1] === undefined || /^--/.test(args[i + 1]) ? true : args[(i += 1)]; }
+    else if (m) throw new Refusal('usage', 'usage', [`unknown option --${m[1]}`], { exitCode: 2 });
+    else pos.push(args[i]);
+  }
+  return { pos, opt };
+}
+
+function pendingLogCount() {
+  return fs.readdirSync(dir('pending')).filter((f) => f.endsWith('.json')).length;
+}
+
+function toolkitConfig() {
+  try { return readJson(path.join(configDir(), 'toolkit.json')); } catch { return {}; }
+}
+
+function cmdDoctor(run, deps, args = []) {
+  const { envs, access } = config();
+  const { opt } = options(args, ['apps']);
+  let apps = null;
+  if (opt.apps) {
+    apps = String(opt.apps === true ? '' : opt.apps).split(',').map((s) => s.trim()).filter(Boolean);
+    const unknown = apps.filter((a) => !envs[a]);
+    if (!apps.length || unknown.length) throw new Refusal('usage', 'doctor', [`--apps takes app keys separated by commas; one or more of: ${Object.keys(envs).join(', ')}${unknown.length ? ` (unknown: ${unknown.join(', ')})` : ''}`], { exitCode: 2 });
+  }
+  const dvs = {};
+  const conn = (env) => dvs[env] || (dvs[env] = connect(run, deps, 'read', envs[env].host));
+  const result = health.doctor({
+    envs, access, apps, cli: deps.cli, connect: conn, io: deps.io(), pin: toolkitConfig().cli_version || null, guard: deps.guard,
+    pending: () => ({ events: events.pendingCount(), logs: pendingLogCount() }),
+    sendPending: (reached) => {
+      for (const env of reached) {
+        events.flush(deps.eventConnection(envs[env].host), env);
+        if (fs.readdirSync(dir('pending')).some((f) => f.startsWith(`${env}--`))) log.flushPending(deps.writeConnection(envs[env].host), env);
+      }
+    },
+  });
+  run.person = result.person;
+  run.env = result.reached[0] || null;
+  console.log(health.render(result));
+  // "4 x Extra Dataverse connection; 2 x Extra Dataverse hook", not the same label four times.
+  const counts = new Map();
+  for (const c of result.failed) {
+    const key = c.label.replace(/:.*$/, '');
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  const headline = result.failed.length
+    ? `Health check: ${result.failed.length} problem(s): ${[...counts].map(([k, v]) => (v > 1 ? `${v} x ${k}` : k)).join('; ')}`
+    : 'Health check: pass';
+  // A health check is about the MACHINE: filed as env 'machine' (it still goes to the app that answered).
+  events.record(run, { kind: 'health check', code: result.code, headline, env: 'machine' });
+  return result.failed.length ? 1 : 0;
+}
+
+// The env a report belongs to: --env, the plan's, this machine's latest Write Log entry, else the first.
+function reportEnv(envs, opt) {
+  if (opt.env) {
+    if (!envs[opt.env]) throw new Refusal('usage', 'report', [`unknown env "${opt.env}"; one of: ${Object.keys(envs).join(', ')}`], { exitCode: 2 });
+    return opt.env;
+  }
+  if (opt.plan) {
+    try { return loadPlan(opt.plan).record.env; } catch { /* applied or not on this machine */ }
+    const e = readLocal(opt.plan);
+    if (e && envs[e.env]) return e.env;
+  }
+  const latest = recentLocal(1)[0];
+  return latest && envs[latest.env] ? latest.env : Object.keys(envs)[0];
+}
+
+function recentLocal(n) {
+  const logDir = dir('log');
+  const all = [];
+  for (const f of fs.readdirSync(logDir).filter((x) => x.endsWith('.md'))) {
+    try { all.push(...readEntries(path.join(logDir, f))); } catch { /* skip */ }
+  }
+  return all.sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, n);
+}
+
+function recentEvents(n) {
+  try {
+    return fs.readFileSync(path.join(dir('events'), 'events.jsonl'), 'utf8').split('\n').filter(Boolean)
+      .map((l) => JSON.parse(l)).slice(-n).reverse();
+  } catch { return []; }
+}
+
+function cmdReport(run, deps, args) {
+  const { pos, opt } = options(args, ['plan', 'env']);
+  const words = pos.join(' ').trim();
+  if (!words) throw new Refusal('usage', 'report', ['say what went wrong, in the person\'s own words: report "<words>"'], { exitCode: 2 });
+  const { envs } = config();
+  const env = reportEnv(envs, opt);
+  run.env = env;
+  if (opt.plan) run.planId = String(opt.plan);
+  const context = [
+    `Their words: ${words}`, '',
+    'Recent events on this machine (newest first):',
+    ...(recentEvents(5).map((e) => `  ${e.time}  ${e.kind}  ${e.reason_code || ''}  ${e.headline}`)),
+    '', 'Recent writes on this machine (newest first):',
+    ...(recentLocal(3).map((e) => `  ${e.time}  ${e.headline}  ${e.outcome}  plan ${e.plan_id}`)),
+  ].join('\n');
+  const ev = events.record(run, { kind: 'report', code: 'report', words, headline: `Report: "${words.slice(0, 150)}"`, detail: context });
+  run.reported = true; // finish() stays quiet: this command says where the report went itself
+  let number = null;
+  try {
+    const dv = connect(run, deps, 'read', envs[env].host);
+    const sent = events.flush(deps.eventConnection(envs[env].host), env);
+    if (!sent.error) {
+      const hit = (dv.get(`${events.EVENT_SET}?$select=sbrm_number&$filter=${encodeURIComponent(`sbrm_eventid eq '${ev.event_id}'`)}`).value || [])[0];
+      number = hit ? hit.sbrm_number : null;
+    }
+  } catch { /* stays on this machine; said below */ }
+  if (number) {
+    console.log(`\nReported as ${number}. It carries the person's words, the recent runs on this machine and the versions.`);
+    console.log(`Dylan sees it in his review. If it's urgent, message him and mention ${number}.\n`);
+  } else {
+    console.log('\nReport saved on this machine; it is sent (and gets its number) the next time this machine reaches Dataverse.');
+    console.log('If it\'s urgent, message Dylan directly: nothing here can notify him.\n');
+  }
+  return 0;
+}
+
+const LETTER_ENV = { D: 'donorapp', H: 'hgs', R: 'recovery', S: 'soberliving', F: 'fedev' };
+
+// One environment's Write Log and events, in review's shape (createdby resolved to email + name).
+function readEnvRows(dv, env, since) {
+  const users = new Map();
+  const who = (id) => {
+    if (!id) return { email: null, name: 'unknown' };
+    if (!users.has(id)) {
+      try {
+        const u = dv.get(`systemusers(${id})?$select=fullname,internalemailaddress`);
+        users.set(id, { email: String(u.internalemailaddress || '').toLowerCase(), name: u.fullname });
+      } catch { users.set(id, { email: null, name: id }); }
+    }
+    return users.get(id);
+  };
+  const win = encodeURIComponent(`createdon ge ${since}`);
+  const logs = (dv.get(`sbrm_dataversewritelogs?$select=sbrm_planid,sbrm_name,sbrm_outcome,sbrm_written,sbrm_notwritten,sbrm_leftout,_createdby_value,createdon&$filter=${win}`).value || [])
+    .map((r) => ({ env, ...who(r._createdby_value), time: r.createdon, planid: r.sbrm_planid, headline: r.sbrm_name, outcome: r.sbrm_outcome, written: r.sbrm_written, notwritten: r.sbrm_notwritten, leftout: r.sbrm_leftout }));
+  const evFilter = encodeURIComponent(`createdon ge ${since} or sbrm_status eq 'open'`);
+  const evs = (dv.get(`sbrm_dataverseevents?$select=sbrm_number,sbrm_name,sbrm_kind,sbrm_reasoncode,sbrm_signal,sbrm_status,sbrm_words,sbrm_planid,sbrm_versions,sbrm_machine,_createdby_value,createdon&$filter=${evFilter}`).value || [])
+    .map((r) => ({ env, ...who(r._createdby_value), time: r.createdon, number: r.sbrm_number, kind: r.sbrm_kind, code: r.sbrm_reasoncode, signal: !!r.sbrm_signal, status: r.sbrm_status, headline: r.sbrm_name, words: r.sbrm_words, planid: r.sbrm_planid, versions: r.sbrm_versions, machine: r.sbrm_machine }));
+  return { logs, events: evs };
+}
+
+function cmdReview(run, deps, args) {
+  const { opt } = options(args, ['days', 'brief']);
+  const days = opt.days ? Number(opt.days) : 7;
+  if (!Number.isInteger(days) || days < 1) throw new Refusal('usage', 'review', ['--days must be a whole number of days'], { exitCode: 2 });
+  const { envs, access } = config();
+  const now = new Date();
+  // Read far enough back for the silence rule, whatever the window.
+  const since = new Date(now - Math.max(days, 60) * 24 * 3600 * 1000).toISOString();
+  const logs = [];
+  const lists = [];
+  const evs = [];
+  const notes = [];
+  for (const [env, info] of Object.entries(envs)) {
+    try {
+      const dv = connect(run, deps, 'read', info.host);
+      if (!run.env) run.env = env;
+      const got = readEnvRows(dv, env, since);
+      try { lists.push(resolveAccess(access, dv, env)); } catch (e) { notes.push(`Could not read the ${info.name} Write Access list: ${e.message.slice(0, 120)}`); }
+      logs.push(...got.logs);
+      evs.push(...got.events);
+    } catch (e) {
+      notes.push(`Could not read the ${info.name}: ${e.message.slice(0, 160)}`);
+    }
+  }
+  const people = {};
+  for (const r of [...logs, ...evs]) if (r.email) people[r.email] = r.name;
+  const s = review.summarize({ now, days, access: mergeAccessLists(lists), logs, events: evs, people });
+  if (opt.brief) console.log(review.brief(s) + (notes.length ? ` (${notes.length} app(s) could not be read)` : ''));
+  else {
+    console.log('\n' + review.render(s, { generatedBy: run.person ? run.person.fullname : null }));
+    for (const n of notes) console.log(`\n!! ${n}`);
+    console.log('');
+  }
+  return notes.length === Object.keys(envs).length ? 1 : 0;
+}
+
+const RESOLUTIONS = ['fixed', 'not a bug', 'access granted', "won't fix"];
+
+function cmdResolve(run, deps, args) {
+  const { pos, opt } = options(args, ['fixed-in']);
+  const [number, resolution, ...rest] = pos;
+  const note = rest.join(' ').trim();
+  const m = /^([DHRSF])-(\d{4,})$/.exec(String(number || '').toUpperCase());
+  const okResolution = RESOLUTIONS.includes(resolution) || /^duplicate of [DHRSF]-\d{4,}$/i.test(String(resolution || ''));
+  if (!m || !okResolution || !note) {
+    throw new Refusal('usage', 'resolve', [`resolve <number> <resolution> "<note>" [--fixed-in <version>]; number like D-1003; resolution one of: ${RESOLUTIONS.join(', ')}, "duplicate of D-1001"`], { exitCode: 2 });
+  }
+  const { envs, access } = config();
+  const env = LETTER_ENV[m[1]];
+  if (!envs[env]) throw new Refusal('usage', 'resolve', [`${number}: no ${env} in the toolkit's environment list`], { exitCode: 2 });
+  run.env = env;
+  const dv = connect(run, deps, 'write', envs[env].host);
+  const me = whoAmI(dv);
+  run.person = me;
+  if (accessFor(resolveAccess(access, dv, env), me.email, env).level !== 'schema') {
+    throw new Refusal('not_permitted', 'resolve', [`only Dylan resolves (ruled 10/7); ${me.fullname} does not hold schema access in the ${envs[env].name}`], { nothing: 'changed' });
+  }
+  const want = `${m[1]}-${m[2]}`;
+  const hits = dv.get(`${events.EVENT_SET}?$select=sbrm_dataverseeventid,sbrm_name,sbrm_status&$filter=${encodeURIComponent(`sbrm_number eq '${want}'`)}`).value || [];
+  if (hits.length !== 1) throw new Refusal('not_found', 'resolve', [`${want}: ${hits.length ? 'more than one row has that number' : 'no such item'} in the ${envs[env].name}`], { nothing: 'changed' });
+  const id = hits[0].sbrm_dataverseeventid;
+  const now = dv.get(`${events.EVENT_SET}(${id})?$select=sbrm_status,sbrm_name,sbrm_kind,sbrm_machine,_createdby_value,createdon`);
+  if (now.sbrm_status !== 'open') throw new Refusal('not_open', 'resolve', [`${want} is not open (status: ${now.sbrm_status || 'none'})`], { nothing: 'changed' });
+  // A health check describes the machine NOW: resolving one also closes the same person's earlier open
+  // checks on the same machine (the review folds them under it; the pop-up lists every number).
+  const repeats = now.sbrm_kind !== 'health check' ? [] : (dv.get(`${events.EVENT_SET}?$select=sbrm_dataverseeventid,sbrm_number,sbrm_kind,sbrm_machine,_createdby_value,createdon&$filter=${encodeURIComponent("sbrm_status eq 'open'")}`).value || [])
+    .filter((r) => r.sbrm_dataverseeventid !== id && r.sbrm_kind === 'health check' && r._createdby_value === now._createdby_value
+      && (r.sbrm_machine || '') === (now.sbrm_machine || '') && new Date(r.createdon) < new Date(now.createdon))
+    .sort((a, b) => new Date(a.createdon) - new Date(b.createdon));
+  const body = { sbrm_status: 'resolved', sbrm_resolution: resolution.toLowerCase(), sbrm_resolutionnote: note };
+  if (opt['fixed-in'] && opt['fixed-in'] !== true) body.sbrm_fixedinversion = String(opt['fixed-in']);
+  const text = [`Resolve ${want} in the ${envs[env].name}`, '', `  ${now.sbrm_name}`, '', `Resolution: ${body.sbrm_resolution}`, `Note: ${note}`,
+    ...(body.sbrm_fixedinversion ? [`Fixed in: ${body.sbrm_fixedinversion}`] : []),
+    ...(repeats.length ? ['', `Also closes the same machine's earlier health checks: ${repeats.map((r) => r.sbrm_number).join(', ')}`] : [])].join('\n');
+  const answer = deps.confirm({ summaryText: text, detailText: text, title: `SBRM: resolve ${want}?` });
+  if (!answer.approved) { console.log(`\nCancelled. ${want} is still open.\n`); return 1; }
+  dv.update(events.EVENT_SET, id, body, now['@odata.etag']);
+  const back = dv.get(`${events.EVENT_SET}(${id})?$select=sbrm_status,sbrm_resolution`);
+  if (back.sbrm_status !== 'resolved') throw new Error(`${want} did not read back as resolved (status ${back.sbrm_status})`);
+  const also = [];
+  for (const r of repeats) {
+    const cur = dv.get(`${events.EVENT_SET}(${r.sbrm_dataverseeventid})?$select=sbrm_status`);
+    if (cur.sbrm_status !== 'open') continue;
+    dv.update(events.EVENT_SET, r.sbrm_dataverseeventid, { ...body, sbrm_resolutionnote: `${note} (closed with ${want}: same machine, earlier run)` }, cur['@odata.etag']);
+    if (dv.get(`${events.EVENT_SET}(${r.sbrm_dataverseeventid})?$select=sbrm_status`).sbrm_status === 'resolved') also.push(r.sbrm_number);
+  }
+  console.log(`\n${want} resolved: ${back.sbrm_resolution}. Recorded on the item (resolved by ${me.fullname}).${also.length ? ` Also closed: ${also.join(', ')}.` : ''}\n`);
+  return 0;
+}
+
+const USAGE = 'usage: dataverse-write.js check|plan <job.json> | show|apply <plan-id> | revert <plan-id> [env] | whoami <env> | doctor [--apps a,b] | report "<words>" | review [--days N] [--brief] | resolve <number> <resolution> "<note>"';
+
+function dispatch(run, deps, argv) {
+  const [cmd, arg, arg2] = argv;
+  const need = (x) => { if (!x) throw new Refusal('usage', 'usage', [USAGE], { exitCode: 2 }); return x; };
+  switch (cmd) {
+    case 'check': return cmdCheck(run, deps, need(arg));
+    case 'plan': return cmdPlan(run, deps, need(arg));
+    case 'show': return cmdShow(run, deps, need(arg));
+    case 'whoami': return cmdWhoami(run, deps, need(arg));
+    case 'apply': return cmdApply(run, deps, need(arg));
+    case 'revert': return cmdRevert(run, deps, need(arg), arg2);
+    case 'doctor': return cmdDoctor(run, deps, argv.slice(1));
+    case 'report': return cmdReport(run, deps, argv.slice(1));
+    case 'review': return cmdReview(run, deps, argv.slice(1));
+    case 'resolve': return cmdResolve(run, deps, argv.slice(1));
+    default: throw new Refusal('usage', 'usage', [USAGE], { exitCode: 2 });
+  }
+}
+
+// ---- the one place a refusal or crash is printed and recorded ----
+
+function failure(run, e) {
+  let kind = 'refused';
+  let code = e && e.code;
+  let headline;
+  let exitCode = 1;
+  if (e instanceof Refusal) {
+    console.log(`\nREFUSED: ${e.title}. Nothing was ${e.nothing}.\n`);
+    for (const r of e.reasons) console.log(`  ${r}`);
+    console.log('');
+    headline = `Refused (${e.title}): ${e.reasons[0] || ''}`;
+    exitCode = e.exitCode;
+  } else if (e instanceof PlanRefused) {
+    console.log('\nREFUSED: the plan. Nothing was planned.\n');
+    for (const r of e.reasons) console.log(`  ${r}`);
+    console.log('');
+    headline = `Refused: ${e.reasons[0] || ''}`;
+  } else if (e instanceof ApplyRefused) {
+    console.log(`\nREFUSED: ${e.message}\nNothing was written.\n`);
+    headline = `Refused at apply: ${e.message.split('\n')[0]}`;
+  } else if (code === 'access_unreadable') {
+    console.log(`\nREFUSED: ${e.message}\nNothing was written.\n`);
+    headline = `Refused: ${e.message.split('(')[0].trim()}`;
+  } else if (code === 'no_plan') {
+    console.log(`\nREFUSED: ${e.message}\nNothing was written.\n`);
+    headline = `Refused: ${e.message}`;
+  } else if (code === 'cli_missing' || code === 'cli_blocked') {
+    kind = 'setup problem';
+    console.log(`\nERROR: ${e.message}\nNothing was written.\n`);
+    headline = e.message;
+  } else if (e instanceof DataverseError) {
+    kind = 'crash';
+    code = 'dataverse_error';
+    console.log(`\nERROR from Dataverse: ${e.message}\nNothing was written.\n`);
+    headline = `Dataverse error: ${e.message}`;
+  } else {
+    kind = 'crash';
+    code = 'crash';
+    console.log(`\nERROR: ${e && e.message}\nNothing was written.\n`);
+    headline = `Unexpected error: ${e && e.message}`;
+  }
+  const detailText = run.output.join('\n') + (kind === 'crash' && e && e.stack ? `\n\n${e.stack}` : '');
+  events.record(run, { kind, code: code || 'unclassified', headline, detail: detailText });
+  return exitCode;
+}
+
+// Send what is waiting, through the connection this run already proved works. Never changes the
+// outcome: a send failure leaves the events on this machine for the next run.
+function finish(run, deps) {
+  let sent = null;
+  if (run.connected && run.env && events.pendingFor(run.env).length) {
+    try {
+      const { envs } = config();
+      if (envs[run.env]) sent = events.flush(deps.eventConnection(envs[run.env].host), run.env);
+    } catch (e) {
+      sent = { sent: 0, left: 1, error: e.message };
+    }
+  }
+  if (run.events.length && !run.reported) {
+    const landed = sent && !sent.error;
+    console.log(landed
+      ? "(Recorded for Dylan's review.)"
+      : "(Recorded for Dylan's review: saved on this machine, and sent the next time it can reach Dataverse. If it's urgent, message Dylan.)");
+  }
+  return sent;
+}
+
+// Returns the exit code, or a Promise of it when the command is async (merges). Sync commands behave
+// exactly as before; either way every refusal and crash goes through failure() and finish().
+function runCli(argv, deps = DEFAULT_DEPS) {
+  const run = events.newRun(argv);
+  const original = console.log;
+  console.log = (...a) => { run.output.push(a.join(' ')); original(...a); };
+  const done = (code) => {
+    try {
+      finish(run, deps);
+    } finally {
+      console.log = original;
+    }
+    module.exports.lastRun = run;
+    return code;
+  };
+  let result;
+  try {
+    result = dispatch(run, deps, argv);
+  } catch (e) {
+    try { result = failure(run, e); } catch (e2) { console.log = original; throw e2; }
+  }
+  if (result && typeof result.then === 'function') {
+    return result.then((code) => code, (e) => failure(run, e)).then(done, (e) => { console.log = original; throw e; });
+  }
+  return done(result);
+}
+
+if (require.main === module) {
+  Promise.resolve()
+    .then(() => runCli(process.argv.slice(2)))
+    .then((code) => { process.exitCode = code; })
+    .catch((e) => {
+      // Only reachable if recording itself failed (the store cannot be written).
+      console.error(`\nERROR: ${e.message}\nNothing was written. (This could not be recorded either.)\n`);
+      process.exitCode = 1;
+    });
+}
+
+module.exports = { main: runCli, runCli, Refusal, lastRun: null };

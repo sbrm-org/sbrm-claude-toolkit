@@ -2,7 +2,7 @@
 title: SBRM Claude Toolkit
 short-title: SBRM Claude Toolkit README
 description: Distributable Claude Code plugin of skills and commands for SBRM staff
-updated: 2026-09-28
+updated: 2026-10-07
 status: active
 ---
 
@@ -26,6 +26,8 @@ A Claude Code plugin for Santa Barbara Rescue Mission staff. It bundles the skil
 | decision-gate | Put a calibrated yes/no decision model (Jev via the `decision_gate` library from sbrm-org GitHub) in front of a binary decision in SBRM automation: when it fits, the SBRM data rules, install and `decide(job_id, state)`, building a labeled test to set the threshold, and the kill switch |
 | web-research | Layered web search and fetching beyond the built-in tools: Tavily API (paid, if key set) plus free fallbacks (DuckDuckGo search, Jina Reader fetch). Fetches take a "what you're looking for" query and return only the matching passages of a page (focus.py, also usable on any saved or pasted text) |
 | competitor-pay | Competitive pay research for HR: sweeps local nonprofit career pages and job boards for postings with pay, matches them to SBRM's 16 tracked roles, and syncs the good ones to the "Competitor's Pay" SharePoint list HR uses to set floor pay. Needs extra setup (see below) |
+| dataverse | Reading and changing SBRM's Dataverse apps (donor app, HGS, recovery, sober living, F&E Dev) through one approved path: Claude plans the change, you run apply yourself and approve it in a pop-up, and every write is read back, logged and can be reverted. Also: undoing a change, reporting an issue, and the `doctor` health check |
+| dataverse-setup | One-time setup for the Dataverse connection on your machine: Node, the Dataverse CLI, your own Microsoft sign-in, removing any older hand-built connection or guard, and a test read. Run `/dataverse-setup` |
 | wrapture | Zero-code call tracing for Python scripts: which functions ran, in what order, how long each took, and the sqlite3/requests/httpx calls underneath. Also a strict stand-in for unittest.mock in tests. Needs Python >=3.12 and `uv`; runs as a throwaway `uv run --with wrapture` overlay; nothing installed |
 
 ### Commands
@@ -58,6 +60,9 @@ A Claude Code plugin for Santa Barbara Rescue Mission staff. It bundles the skil
 Skills load automatically when relevant; commands are available as `/prompt`, `/write`, etc.
 
 **If updates stop working.** Claude Code keeps its own copy of the marketplace, and if that copy goes stale, new versions never arrive. In Claude Code, type `/plugin`, open **Marketplaces**, choose `sbrm-claude-toolkit`, then **Update marketplace**. Then open **Installed**, choose `sbrm-toolkit`, then **Update now**. Or, in a terminal, run `claude plugin marketplace update sbrm-claude-toolkit` and then `claude plugin update sbrm-toolkit@sbrm-claude-toolkit`. Restart Claude Code afterwards.
+## Extra setup: Dataverse
+The plugin includes five read-only Dataverse connections and a guard that blocks any Dataverse write that does not go through the approved path. The connections show as failing in `/mcp` until your machine is set up: run `/dataverse-setup` once. Reading works for anyone whose Microsoft account can open the app. Writing is a separate permission per person per app, kept in a Write Access table inside each Dataverse environment (not in this repository); ask Dylan Gross.
+
 ## Extra setup: competitor-pay
 Everything else in this plugin works the moment it is installed. `competitor-pay` does not, because it writes to a Microsoft 365 SharePoint list and this repository is public, so the list's address is not committed here.
 

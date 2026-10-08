@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "dataverse-donorapp": { "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/dataverse/mcp/launch.js", "donorapp"] },
+    "dataverse-hgs": { "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/dataverse/mcp/launch.js", "hgs"] },
+    "dataverse-recovery": { "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/dataverse/mcp/launch.js", "recovery"] },
+    "dataverse-soberliving": { "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/dataverse/mcp/launch.js", "soberliving"] },
+    "dataverse-fedev": { "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/dataverse/mcp/launch.js", "fedev"] }
+  }
+}

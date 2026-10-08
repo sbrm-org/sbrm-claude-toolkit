@@ -1,0 +1,6 @@
+{
+  "_about": "Toolkit-wide settings for the Dataverse write path. cli_version: the Dataverse CLI version doctor expects (pinned 1.0.81 on 10/7/26: pin current, update as we see fit in the toolkit. On SBRM Windows machines each new version is a new file ThreatLocker must approve). dev_dirs: folders where the engine itself is developed; the guard lets code there reference the engine's write side, which it refuses everywhere else. Ships EMPTY (no internal paths in the public repo); the developer's staging folder is added when the guard first runs on that machine. This file sits in the plugin folder, which the guard protects, so a session cannot add itself an exemption. default_max_rows: the rows-per-approval ceiling for anyone whose Write Access row leaves Max Rows blank (who may write is read from each environment's Dataverse Write Access table, never from a file here).",
+  "cli_version": "1.0.81",
+  "default_max_rows": 25,
+  "dev_dirs": []
+}
