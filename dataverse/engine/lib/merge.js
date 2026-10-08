@@ -22,7 +22,7 @@
 // attribution, not finances) and nothing else.
 
 const { whoAmI, accessFor, same, PlanRefused } = require('./resolve');
-const { resolveAccess } = require('./access');
+const { resolveAccess, APP_DEFINITION_SETS, TOOLKIT_SETS } = require('./access');
 const { atLeast } = require('./levels');
 const severity = require('./severity');
 const { loadTable, label } = require('./meta');
@@ -549,6 +549,7 @@ async function planUnmerge(dv, entry, { envs, access }) {
   if (!['applied', 'applied with problems'].includes(entry.outcome)) throw new PlanRefused([`that merge's outcome is "${entry.outcome}"; there is nothing to undo`], 'nothing_to_undo');
   const envInfo = envs[entry.env];
   const T = MERGE_TABLES[entry.table];
+  if (!T || !envInfo) throw new PlanRefused([`"${entry.table}" is not a table merges run on (${Object.keys(MERGE_TABLES).join(', ')}); this undo is refused.`], 'not_permitted');
   const identity = whoAmI(dv);
   const acc = mergeAccess(access, identity.email, entry.env, dv);
   if (!acc.merge) throw new PlanRefused([`${identity.fullname} has no merge grant in the ${envInfo.name}; undoing a merge needs the same grant (ask Dylan).`], 'not_permitted');
@@ -593,6 +594,7 @@ async function planUnmerge(dv, entry, { envs, access }) {
     });
   }
   if (!pairs.length) throw new PlanRefused(['nothing to undo:', ...refused.map((x) => `  ${x.name}: ${x.why}`)], 'nothing_to_undo');
+  unmergeRules(dv, entry.table, pairs);
   const total = pairs.reduce((n, p) => n + p.children.length, 0);
   if (total > CHILD_CEILING) throw new PlanRefused([`this undo moves ${total} records back, over the ceiling of ${CHILD_CEILING} per approval`], 'too_big');
   return {
@@ -604,6 +606,31 @@ async function planUnmerge(dv, entry, { envs, access }) {
   };
 }
 
+// What an undo of a merge may touch, checked at plan AND apply (10/7 third pass: the undo was built from a
+// Write Log entry, which anyone with Create on the log table could forge, and applied with no table rules):
+// only the two donor tables merges run on; children only through a REAL merge-cascade relationship of that
+// table (read from metadata now, never from the entry); restored fields only ordinary updatable columns.
+const NEVER_RESTORE = new Set(['statecode', 'statuscode', 'merged', 'masterid', 'ownerid', 'owninguser', 'owningteam', 'owningbusinessunit', 'createdby', 'createdon', 'modifiedby', 'modifiedon']);
+function unmergeRules(dv, tableSet, pairs) {
+  const T = MERGE_TABLES[tableSet];
+  if (!T) throw new PlanRefused([`"${tableSet}" is not a table merges run on (${Object.keys(MERGE_TABLES).join(', ')}); this undo is refused.`], 'not_permitted');
+  const { rels } = childRelationships(dv, T.logical);
+  const okChild = new Set(rels.map((r) => `${r.set}|${r.attr}|${r.nav}`));
+  const table = loadTable(dv, tableSet);
+  const bad = [];
+  for (const p of pairs) {
+    for (const k of p.children || []) {
+      if (!okChild.has(`${k.set}|${k.attr}|${k.nav}`) || APP_DEFINITION_SETS.has(k.set) || TOOLKIT_SETS.has(k.set)) bad.push(`${k.set}.${k.attr} is not a merge child of ${tableSet}`);
+    }
+    for (const c of Object.keys(p.restore || {})) {
+      const a = table && table.attrs.get(c);
+      if (!a || !a.update || NEVER_RESTORE.has(c) || a.attributeOf) bad.push(`${c} is not a field an undo restores`);
+    }
+  }
+  if (bad.length) throw new PlanRefused(['this undo names things a merge never touches, so it is refused:', ...[...new Set(bad)].slice(0, 8).map((b) => `  ${b}`)], 'not_permitted');
+  return T;
+}
+
 function unmergeSummary(plan) {
   const n = plan.pairs.length;
   const out = [`Undo ${n} merge${n === 1 ? '' : 's'} in the ${plan.app}`, ''];
@@ -613,7 +640,9 @@ function unmergeSummary(plan) {
     if (p.children.length) out.push(`    moves back ${movesLine([{ inventory: groupKids(p.children) }])}`);
     const lab = (c) => (p.labels && p.labels[c]) || c;
     const fields = Object.keys(p.restore);
-    if (fields.length) out.push(`    restores on ${p.keep_name}: ${fields.map(lab).join(', ')}`);
+    // The VALUES each field goes back to are shown, not only the field names (10/7 third pass).
+    const shown = (v) => (v === null || v === undefined || v === '' ? '(blank)' : String(v).length > 60 ? `${String(v).slice(0, 60)}...` : String(v));
+    for (const c of fields) out.push(`    on ${p.keep_name}: ${lab(c)} -> ${shown(p.restore[c])}`);
     if (p.children_left.length) out.push(`    leaves ${p.children_left.length} record(s) where they are (moved since the merge)`);
     if (p.fields_left.length) out.push(`    leaves ${p.fields_left.map(lab).join(', ')} as is (edited since the merge)`);
   }
@@ -638,6 +667,10 @@ async function applyUnmerge(plan, deps, { id, file, fs }) {
   const me = whoAmI(dv);
   if (me.systemuserid !== plan.identity.systemuserid) throw new ApplyRefused(`this plan was made by ${plan.identity.fullname}; you are signed in as ${me.fullname}. Nothing was written.`, 'different_person');
   if (!mergeAccess(access, me.email, plan.env, dv).merge) throw new ApplyRefused(`your merge grant in the ${plan.app} has been removed.`, 'access_revoked');
+  // The same rules as at plan, from live metadata, and the reactivation is always exactly "active".
+  try { unmergeRules(dv, plan.table, plan.pairs); } catch (e) { throw new ApplyRefused(e.message, 'not_permitted'); }
+  const active = statusFor(dv, MERGE_TABLES[plan.table].logical, 0);
+  for (const p of plan.pairs) if (p.reactivate) p.reactivate = { statecode: 0, statuscode: active };
 
   // Re-check every step against live data and take each version tag for If-Match.
   const steps = [];

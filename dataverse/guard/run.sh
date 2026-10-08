@@ -41,8 +41,16 @@ else
   REASON="Node was not found (test)"
 fi
 
-# Step 3: fail closed for anything that touches Dataverse.
-if printf '%s' "$INPUT" | grep -qiE 'dataverse|crm[0-9]*\.dynamics\.com|sbrm-dataverse|sbrm-claude-toolkit'; then
+# Step 3: fail closed for anything that touches Dataverse. A Read or Grep is blocked only near the engine's
+# store (the plan signing key); an MCP tool only when its own NAME says Dataverse (1.10.1: the wider hook
+# matcher would otherwise block every file or note that merely mentions the word).
+TOOL="$(printf '%s' "$INPUT" | grep -oE '"tool_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1)"
+case "$TOOL" in
+  *'"Read"'*|*'"Grep"'*) PATTERN='sbrm-dataverse' ;;
+  *'"mcp__'*) INPUT="$TOOL"; PATTERN='dataverse|dynamics|power.?platform|crm' ;;
+  *) PATTERN='dataverse|crm[0-9]*\.dynamics\.com|sbrm-dataverse|sbrm-claude-toolkit' ;;
+esac
+if printf '%s' "$INPUT" | grep -qiE "$PATTERN"; then
   echo "BLOCKED by the SBRM toolkit Dataverse guard: it could not run ($REASON), so anything that touches Dataverse is blocked until it can. Tell the person; the fix is /dataverse-setup (or start Claude Code from a terminal where node works). Do not look for another way." >&2
   exit 2
 fi

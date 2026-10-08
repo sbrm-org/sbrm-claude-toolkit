@@ -196,6 +196,12 @@ function applyPlan(id, deps) {
     const inv = await cascade.inventory(dv, rels, view.rows.map((r) => r.id));
     const stable = (o) => JSON.stringify(Object.keys(o || {}).sort().map((k) => [k, o[k].action, o[k].ids]));
     const changed = view.rows.filter((r) => stable(cascade.forRecord(inv, r.id)) !== stable(r.cascade));
+    // The link kinds that could NOT be checked must be the same ones as at plan (re-verify: a different
+    // unreadable kind with the same count slipped past the severity comparison).
+    const unreadSame = plan.cascade && JSON.stringify(Object.keys(plan.cascade.unreadable || {}).sort()) === JSON.stringify(Object.keys(inv.unreadable || {}).sort());
+    if (!unreadSame && plan.cascade) {
+      throw new ApplyRefused('which linked records could not be checked changed since the plan, so the pop-up would not say what goes unseen. Make a new plan.', 'every_row_moved');
+    }
     if (changed.length || !plan.cascade) {
       throw new ApplyRefused(`the records linked to ${changed.length ? changed.map((r) => r.name).slice(0, 3).join(', ') : 'what is being deleted'} changed since the plan, so the pop-up would not show what goes with them. Make a new plan.`, 'every_row_moved');
     }

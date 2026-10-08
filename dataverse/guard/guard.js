@@ -28,13 +28,52 @@ const fs = require('fs');
 // ---------- 2. MCP read allow-list + the CLI's write verbs (from dataverse-cli-guard.js, 10/1/26) ----------
 
 const READ_TOOLS = new Set(['describe', 'read_query', 'search', 'search_data', 'file_download', 'list_tables', 'describe_table']);
-const MCP_RE = /^mcp__(?:plugin_[^_]*(?:_[^_]+)*?_)?[^_]*dataverse[^_]*__(.+)$/i;
+// mcp__<server>__<tool>: a server whose name mentions Dataverse or the platform it runs on (any prefix: the
+// plugin form, the claude.ai connector form `mcp__claude_ai_Dataverse__`, a hand-added one). 10/7 third pass.
+function mcpParts(tool) {
+  if (!/^mcp__/.test(tool)) return null;
+  const i = tool.lastIndexOf('__');
+  return i > 5 ? { server: tool.slice(5, i), name: tool.slice(i + 2) } : null;
+}
+const DV_SERVER = /dataverse|dynamics|power.?platform|powerapps|power.?automate|\bcrm\b|_crm_|-crm-|donorapp|d365|msdyn/i;
+// The Dataverse MCP server's own write tools, under ANY server name (final re-verify: a server named
+// "donorapp" or "d365" slipped the name test). No other installed server uses these names.
+const DV_WRITE_TOOLS = /^(?:create_record|update_record|delete_record|upsert_record|create_table|update_table|delete_table|upsert_skill|delete_skill|init_file_upload|commit_file_upload|create_records|update_records|delete_records|execute_action|bulk_\w+)$/i;
+// MCP tools that run a shell or code: their command text gets every shell rule.
+const SHELL_MCP = /shell|powershell|terminal|run_command|execute_command|start_process|exec_command|run_script|bash|cmd_tool|interact_with_process/i;
+// Tools whose input is CODE run against a page or a host (a browser's JavaScript, a fetch tool): only these
+// get the "writing HTTP call from another tool" check; a mail, chat or notes tool merely MENTIONING the Web
+// API is not a call (final re-verify false positives).
+const CODE_MCP = /javascript|evaluate|execute_script|run_js|fetch|http_request|web_request|request_url/i;
+// The model-driven app's own client API writes, from a browser tab on the app (no host or method in text).
+const XRM_WRITE = /\bXrm\.WebApi\.(?:createRecord|updateRecord|deleteRecord|execute|executeMultiple|online\.\w+)|\b(?:Xrm\.Page|formContext)\.data\.(?:save|entity\.save|refresh\s*\(\s*true)|\.data\.save\s*\(|Xrm\.Utility\.invokeProcessAction/i;
+
+// The TARGET of a request: the first URL on the line (curl, wget, Invoke-*, requests, fetch all take the
+// URL first), or a relative /api/data path (a script on the app's own origin). A request to BookStack or
+// Graph whose BODY merely mentions the app's URL is not a Dataverse write (final re-verify false positive).
+const URL_RE = /https?:\/\/[^\s"'`)<>]+|(?<![\w.\/])\/api\/data\/v9[^\s"'`)<>]*/gi;
+function targetsDataverse(text) {
+  let elsewhere = false;
+  for (const line of String(text).split(/[\n;|&]/)) {
+    if (!MUTATING_HTTP.test(line)) continue;
+    URL_RE.lastIndex = 0;
+    const m = URL_RE.exec(line);
+    if (!m) continue;
+    if (/\.crm\d*\.dynamics\.com|^\/api\/data\/v9/i.test(m[0])) return true;
+    elsewhere = true; // a write whose target is another service
+  }
+  // A write whose URL is in a variable (`url = "https://x.crm..."` then `requests.patch(url, ...)`): Dataverse
+  // and a write method in the same text, and no write line aimed anywhere else.
+  return !elsewhere && DV_HOST.test(text) && MUTATING_HTTP.test(text);
+}
+// While an approval pop-up is open, no tool may drive the screen, mouse or keyboard (it could press Approve).
+const SCREEN_TOOL = /computer|mouse|keyboard|left_click|right_click|double_click|key_press|type_text|cua\b|screen_control|click|shortcut|hotkey|keystroke|press_key|type-tool|type_tool|drag|scroll-tool|automation/i;
 
 // The CLI as a shell word (dataverse, dataverse.exe, dataverse.cmd, npx @microsoft/dataverse). Its
 // arguments are parsed past its GLOBAL options (`dataverse --help` lists exactly three: --log-level <v>,
 // --log-file, --context <v>), so a write verb cannot hide behind a leading flag; any OTHER leading flag is
 // unknown and fails closed (10/7 re-verify: `dataverse --env x data create` was allowed).
-const CLI_RE = /(?:^|[\s"'`&|;(\/\\])(?:npx\s+(?:-y\s+)?@microsoft\/)?dataverse(?:cli)?(?:\.exe|\.cmd|\.ps1)?["'`]?(?=\s)/gi;
+const CLI_RE = /(?:^|[\s"'`&|;(\/\\])(?:npx\s+(?:-y\s+)?@microsoft\/)?dataverse(?:cli)?(?:@[\w.^~-]+)?(?:\.exe|\.cmd|\.ps1|\.js)?["'`]?(?=\s)/gi;
 const GLOBAL_WITH_VALUE = new Set(['--log-level', '--context']);
 const GLOBAL_FLAG = new Set(['--log-file']);
 
@@ -42,13 +81,91 @@ function cliWords(rest) {
   return (rest.match(/"[^"]*"|'[^']*'|[^\s"';|&<>]+/g) || []).map((w) => w.replace(/^["']|["']$/g, ''));
 }
 
+// Words that run the next word as a command.
+const CMD_WRAPPERS = new Set(['time', 'env', 'sudo', 'nice', 'ionice', 'nohup', 'command', 'exec', 'xargs', 'npx', 'pnpm', 'yarn', 'bunx', 'call', 'start',
+  'timeout', 'gtimeout', 'caffeinate', 'stdbuf', 'watch', 'retry', 'chronic', 'unbuffer', 'dlx', 'x']);
+// Shell grammar that can stand before a command in a loop, a conditional or a block (final re-verify: a
+// bulk update written as `for ...; do dataverse data update ...; done` was read as the command "do").
+const CONTROL_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '{', '(', '((', '&', 'begin', 'process', 'end']);
+const CLI_WORD = /^(?:@microsoft\/)?dataverse(?:cli)?(?:@[\w.^~-]+)?(?:\.exe|\.cmd|\.ps1|\.js)?$/i;
+const base = (w) => String(w || '').replace(/^["']|["']$/g, '').split(/[\\/]/).pop();
+
+// The CLI's arguments when this simple command RUNS the Dataverse CLI (as its command word, past env
+// settings and wrappers like npx/time/xargs, or as the script node runs: the npm shim's bin/dataverse.js),
+// else null. Prose that merely mentions "dataverse" (a commit message, an echo, a job file's reason in a
+// heredoc) is not a CLI run (10/7 review false positives).
+function cliCallArgs(seg) {
+  // `$(which dataverse)` / `` `command -v dataverse` `` run the CLI as surely as its name does.
+  const s = seg.replace(/\$\(\s*(?:which|command\s+-v|where|Get-Command)\s+([^\s)]+)[^)]*\)|`\s*(?:which|command\s+-v)\s+([^\s`]+)\s*`/gi, (m, a, b) => a || b)
+    // PowerShell blocks: `foreach ($x in $y) { dataverse ... }`, `$list | ForEach-Object { dataverse ... }`
+    .replace(/^[\s\S]*?\{\s*/, (m) => (/\b(?:foreach|ForEach-Object|%|if|while|for|try|else)\b[\s\S]*\{\s*$/i.test(m) ? '' : m));
+  let words = cliWords(s);
+  let afterWrapper = false;
+  for (;;) {
+    if (!words.length) return null;
+    const w = words[0];
+    const b0 = base(w).toLowerCase();
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w) || CONTROL_WORDS.has(w)) { words = words.slice(1); continue; }
+    // `(dataverse ...)`, `{dataverse ...`, `!dataverse ...`: the grouping character sits on the word.
+    if (/^[({!]+./.test(w)) { words = [w.replace(/^[({!]+/, ''), ...words.slice(1)]; continue; }
+    // A wrapper's own options and arguments (`timeout 30s`, `xargs -I{} -n1`, `npm exec --`): skipped.
+    if (afterWrapper && (/^-/.test(w) || /^\d+[smhd]?$/.test(w) || w === '--')) { words = words.slice(1); continue; }
+    if (CMD_WRAPPERS.has(b0) || ((b0 === 'npm' || b0 === 'pnpm' || b0 === 'yarn') && ['exec', 'dlx', 'x'].includes((words[1] || '').toLowerCase()))) {
+      words = words.slice(b0 === 'npm' || b0 === 'pnpm' || b0 === 'yarn' ? 2 : 1);
+      afterWrapper = true;
+      continue;
+    }
+    break;
+  }
+  const b = base(words[0]);
+  if (CLI_WORD.test(b) || /^@microsoft\/dataverse/i.test(words[0])) return words.slice(1);
+  if (/^node(?:\.exe)?$/i.test(b) && words[1] && /^dataverse(?:\.js)?$/i.test(base(words[1]))) return words.slice(2);
+  return null;
+}
+
+// Remove heredoc / here-string BODIES (data handed to a command, e.g. a job file's JSON), keeping the
+// command line itself. Used only for the CLI rule: a body run by an interpreter is still read by the others.
+function stripHeredocs(text) {
+  // A body handed to a SHELL is commands, not data: kept (`bash <<EOF ... EOF` runs every line).
+  let out = text.replace(/([^\n]*)<<-?\s*(['"]?)(\w+)\2[^\n]*\n[\s\S]*?\n\s*\3\s*(?=\n|$)/g, (m, before) => {
+    const segs = segments(before);
+    const cmd = firstWord(segs[segs.length - 1] || '');
+    return ['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'pwsh', 'powershell', 'cmd', 'source', '.'].includes(cmd) ? m : m.split('\n')[0];
+  });
+  out = out.replace(/@(['"])\r?\n[\s\S]*?\r?\n\1@/g, '@\'\'@');
+  return out;
+}
+
 function cliVerdict(command) {
+  const stripped = stripHeredocs(command);
+  for (const seg of segments(stripped).filter((s) => !isEngineRun(s))) {
+    // A string handed to a shell (bash -c "...", os.system(...)) is a command too: scan it anywhere.
+    const found = SHELL_WRAPPER.test(seg) ? scanAnywhere(seg) : null;
+    if (found) return found;
+    const args = cliCallArgs(seg);
+    if (args) {
+      const v = judgeCli(args);
+      if (v) return v;
+    }
+  }
+  return null;
+}
+
+function scanAnywhere(text) {
   CLI_RE.lastIndex = 0;
   let m;
-  while ((m = CLI_RE.exec(command)) !== null) {
-    if (/--target\s*$/.test(command.slice(0, m.index + 1))) continue; // `--target dataverse` is an argument
-    const end = command.slice(m.index + m[0].length).search(/[;|&\n]/);
-    const words = cliWords(command.slice(m.index + m[0].length, end < 0 ? undefined : m.index + m[0].length + end));
+  while ((m = CLI_RE.exec(text)) !== null) {
+    if (/--target\s*$/.test(text.slice(0, m.index + 1))) continue; // `--target dataverse` is an argument
+    const end = text.slice(m.index + m[0].length).search(/[;|&\n"']/);
+    const v = judgeCli(cliWords(text.slice(m.index + m[0].length, end < 0 ? undefined : m.index + m[0].length + end)));
+    if (v) return v;
+  }
+  return null;
+}
+
+// The verdict on the CLI's own arguments (past the CLI word): null = a read, else what it would write.
+function judgeCli(words) {
+  {
     let i = 0;
     while (i < words.length && /^-/.test(words[i])) {
       const w = words[i].toLowerCase().split('=')[0];
@@ -57,7 +174,7 @@ function cliVerdict(command) {
       else if (['--version', '-v', '--help', '-h'].includes(w)) { i = -1; break; }
       else return `the Dataverse CLI with the unknown option "${words[i]}"`;
     }
-    if (i < 0 || i >= words.length) continue; // version/help, or the word alone
+    if (i < 0 || i >= words.length) return null; // version/help, or the word alone
     const sub = words[i].toLowerCase();
     const sub2 = (words[i + 1] || '').toLowerCase();
     const after = words.slice(i + 1).join(' ');
@@ -72,7 +189,7 @@ function cliVerdict(command) {
     } else if (sub === 'api') ok = ['list', 'describe', '--help', '-h', ''].includes(sub2);
     else if (sub === 'mcp') ok = sub2 !== 'allow';
     else if (/^[a-z][a-z-]*$/.test(sub)) ok = false; // erp, skill, install, or a verb this list does not know
-    else continue; // not a CLI call (e.g. a path or a word that only contains "dataverse")
+    else return null; // not a CLI call (e.g. a path or a word that only contains "dataverse")
     if (!ok) return `the Dataverse CLI's "${sub}${sub2 ? ' ' + sub2 : ''}"`;
   }
   return null;
@@ -107,7 +224,23 @@ const MUTATING_HTTP = new RegExp([
   '\\brequests?\\.(?:post|patch|put|delete|request)\\s*\\(',
   '\\b(?:axios|got|superagent|httpx)\\.(?:post|patch|put|delete)\\s*\\(',
   '-Body\\b|-InFile\\b',
+  // 10/7 third pass: any client's .post/.patch/.put/.delete (Session(), httpx.Client(), a fetch wrapper),
+  // http.client / requests .request('PATCH', ...), urllib with a body, httpie, wget
+  '\\.(?:post|patch|put|delete)\\s*\\(',
+  '\\.request\\s*\\(\\s*[\'"`](?:POST|PATCH|PUT|DELETE|MERGE)',
+  '\\b(?:urlopen|Request)\\s*\\([^)]*\\bdata\\s*=',
+  '\\bhttps?\\s+(?:POST|PATCH|PUT|DELETE)\\b',
+  '--post-(?:data|file)\\b|--method[=\\s]+["\']?(?:POST|PATCH|PUT|DELETE|MERGE)\\b|\\bopen\\s*\\(\\s*[\'"`](?:POST|PATCH|PUT|DELETE)',
+  // final re-verify: combined curl flags (-sd, -sSd), .NET HttpClient, -CustomMethod, jQuery/axios `type:`
+  '(?:^|\\s)-[a-zA-Z]*d(?:\\s|=|[\'"])',
+  '\\.(?:Post|Patch|Put|Delete|Send)Async\\s*\\(|\\bHttpMethod\\.(?:Post|Patch|Put|Delete)|new\\s+HttpMethod\\s*\\(\\s*[\'"](?:PATCH|MERGE)',
+  '-CustomMethod\\s+["\']?(?:POST|PATCH|PUT|DELETE|MERGE)',
+  '\\b(?:type|verb)\\s*:\\s*["\'`](?:POST|PATCH|PUT|DELETE|MERGE)["\'`]',
 ].join('|'), 'i');
+
+// Other tools that write to Dataverse: the Xrm PowerShell module's record cmdlets and the Power Platform CLI.
+// (`pac auth ...` is a sign-in, not a write; final re-verify false positive.)
+const OTHER_DV_WRITERS = /\b(?:Set|New|Remove|Update|Add|Import|Publish|Merge|Invoke|Approve|Grant|Revoke)-Crm\w*|\bpac\s+(?!auth\b|help\b|org\s+(?:list|who)\b)[^;|&\n]*\b(?:import|create|delete|update|upsert|publish|push|deploy|assign|set|install|upgrade|clone|add|remove|reset)\b|\b(?:CrmServiceClient|ServiceClient|Microsoft\.Xrm\.Tooling)\b[\s\S]{0,400}\.(?:Create|Update|Delete|Execute|Associate|Disassociate)(?:Async)?\s*\(/i;
 
 // The Dataverse CLI called with its arguments as a LIST (Python subprocess, Node execFile/spawn), where the
 // words are quoted and comma-separated, so the shell-shaped CLI rule never matches (10/7 review). Any
@@ -120,8 +253,8 @@ const LIST_WRITE = /['"`](?:--method|-X)['"`]\s*,\s*['"`](?:POST|PATCH|PUT|DELET
 const INJECT = new RegExp(
   '\\bSend[K]eys\\b|\\bApp[A]ctivate\\b|keybd[_]event|\\bSend[I]nput\\b|mouse[_]event|py[a]utogui|'
   + 'py[w]inauto|UI[A]utomation|Auto[H]otkey|\\.a[h]k\\b|WScript\\.[S]hell|Post[M]essage[AW]?\\s*\\(|'
-  + 'System\\s+Events.{0,40}(?:keystroke|click|key\\s+code)|cl[i]click|xdo[t]ool|pyn[p]ut|\\bkeyboard\\.(?:press|write|send|type|press_and_release)\\b|nir[c]md|'
-  + '\\bmouse\\.(?:click|press)\\b|robotjs|nut-tree|\\bautoit\\b', 'i');
+  + 'System\\s+Events[\\s\\S]{0,600}(?:keystroke|click|key\\s+code)|cl[i]click|xdo[t]ool|pyn[p]ut|\\bkeyboard\\.(?:press|write|send|type|press_and_release)\\b|nir[c]md|'
+  + '\\bmouse\\.(?:click|press)\\b|robotjs|nut-tree|\\bautoit\\b|perform\\s+action\\s+["\']?A[X]|\\bAX[P]ress\\b', 'i');
 
 // ---------- 6. code that runs out of sight: decoded or preloaded (10/7 re-verify) ----------
 
@@ -197,7 +330,7 @@ const SHELL_WRAPPER = /\b(?:bash|sh|zsh|dash|cmd(?:\.exe)?|powershell(?:\.exe)?|
 const STORE_ANY = /\.sbrm-dataverse(?![\\/]+jobs(?:[\\/]|\b))/i;
 // Moving the engine's store or config for a run puts plans in a folder the guard does not protect (review);
 // so does pointing the home folder somewhere else (re-verify: USERPROFILE=/HOME= on a run).
-const STORE_MOVE = /\bSBRM_DV_(?:HOME|CONFIG)\b|(?:^|[\s;&|(])(?:USERPROFILE|HOME|HOMEPATH|HOMEDRIVE)=|\$env:(?:USERPROFILE|HOME|HOMEPATH|HOMEDRIVE)\s*=|\bSet-Item\b[^;|&\n]*\benv:|\[Environment\]::SetEnvironmentVariable/i;
+const STORE_MOVE = /\bSBRM_DV_(?:HOME|CONFIG)\b|\bSBRM_DATAVERSE_CLI\b|(?:^|[\s;&|(])(?:USERPROFILE|HOME|HOMEPATH|HOMEDRIVE)=|\$env:(?:USERPROFILE|HOME|HOMEPATH|HOMEDRIVE)\s*=|\bSet-Item\b[^;|&\n]*\benv:|\[Environment\]::SetEnvironmentVariable/i;
 
 // A command that NAMES the store (or works inside it after a cd) may only be one of these reads; anything
 // else (another language's file API, an archive tool, a link maker, an alias) is refused rather than
@@ -205,7 +338,7 @@ const STORE_MOVE = /\bSBRM_DV_(?:HOME|CONFIG)\b|(?:^|[\s;&|(])(?:USERPROFILE|HOM
 const STORE_READ_CMDS = new Set(['cat', 'type', 'ls', 'dir', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'findstr',
   'less', 'more', 'wc', 'stat', 'file', 'md5sum', 'sha1sum', 'sha256sum', 'diff', 'cmp', 'echo', 'printf', 'test', '[',
   'get-content', 'gc', 'get-childitem', 'gci', 'get-item', 'gi', 'test-path', 'select-string', 'sls', 'resolve-path',
-  'get-filehash', 'measure-object', 'cd', 'set-location', 'sl', 'pushd', 'popd', 'find', 'xxd', 'od', 'jq', 'cut']);
+  'get-filehash', 'measure-object', 'cd', 'set-location', 'sl', 'pushd', 'popd', 'find', 'xxd', 'od', 'jq', 'cut', 'mkdir', 'md']);
 const FIND_WRITES = /\s-(?:delete|exec|execdir|ok|okdir|fprint|fprintf|fls)\b/;
 function unquoted(text) {
   let out = '';
@@ -236,6 +369,61 @@ function firstWord(seg) {
   return w.split(/[\\/]/).pop().replace(/\.exe$/i, '').toLowerCase();
 }
 const STORE_NAMED = (s) => STORE_IN_TEXT.test(s) || STORE_ANY.test(s) || /\.sbrm-dataverse[^\s"'`]*\.\./i.test(s);
+
+// The plan signing key (config/plan.key, 1.10.1) must not be READ by a session either: with it a forged plan
+// would verify. Its file, the settings folder, and the store's ROOT (a recursive read or a wildcard there
+// sweeps the key in) are off limits to shell text; only a plain non-recursive listing, or reading the
+// machine's dev exemptions file by name, passes.
+const KEY_NAMED = /\bplan\.key\b/i;
+const STORE_ROOT_OR_CONFIG = /\.sbrm-dataverse(?:[\\/]+(?:config\b[^\s"'`;|&]*|\*[^\s"'`;|&]*)|[\\/]*(?=[\s"'`;|&)]|$))/i;
+function keyVerdict(segs, text = segs.join(' ; ')) {
+  // A listing of the root fed into something that reads each name (`find <store> | xargs cat`).
+  // (A pipe into head/sort/grep only reads the NAMES; these run something per name, or bind names to files.)
+  if (STORE_ROOT_OR_CONFIG.test(text) && /\|\s*(?:xargs|while\b|for\b|parallel|Get-Content|gc\b|%|ForEach-Object|foreach|Select-String|sls\b|Copy-Item|cpi\b)/i.test(text)) {
+    return "feeding the store's root or settings folder into another command (it holds the plan signing key)";
+  }
+  // A recursive read, copy or archive of the home folder or a drive root sweeps the key in (final re-verify:
+  // `grep -r x ~`, `find ~ -exec cat`, `gci $HOME -Recurse | gc`, robocopy / Compress-Archive of home).
+  const flat = text.replace(/\\/g, '/').toLowerCase();
+  const homeTokens = ['~', '~/', '$home', '$env:userprofile', '%userprofile%', HOME.replace(/\\/g, '/').toLowerCase(), '/'];
+  const namesHomeOrRoot = homeTokens.some((t) => new RegExp(`(?:^|[\\s"'=(])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/?(?=[\\s"';|&)]|$)`).test(flat))
+    || /(?:^|[\s"'=(])[a-z]:\/?(?=[\s"';|&)]|$)/.test(flat);
+  if (namesHomeOrRoot && /\s-(?:[a-z]*r\b|-recursive\b)|-recurse\b|\bfind\b|\btree\b|\brobocopy\b|\bxcopy\b|compress-archive|\btar\b|\bzip\b|\b7z\b|\brsync\b|\bcp\s+-[a-z]*r/.test(flat)) {
+    return 'a recursive read or copy of the home folder or a drive root (it would sweep in the plan signing key); name a narrower folder';
+  }
+  // A wildcard or a `..` walking into the store can reach the key without naming it (`conf*/plan*`).
+  if (/\.sbrm-dataverse[\\/]+[^\s"'`;|&]*\.\.[\\/]/i.test(text) || /\.sbrm-dataverse[\\/]+(?!jobs[\\/])[^\s"'`;|&/\\]*[*?]/i.test(text)) {
+    return "a wildcard or a '..' walking through the store's folders (it holds the plan signing key)";
+  }
+  for (const seg of segs) {
+    if (KEY_NAMED.test(seg)) return 'reading the plan signing key';
+    if (!STORE_ROOT_OR_CONFIG.test(seg)) continue;
+    const first = firstWord(seg);
+    // Names only, never contents: a non-recursive listing, or `find` with no action of its own.
+    const listing = (['ls', 'dir', 'get-childitem', 'gci'].includes(first) && !/\s-(?:[a-z]*R|Recurse)\b/i.test(seg) && !/\*/.test(seg))
+      || (first === 'find' && !FIND_WRITES.test(seg))
+      // making the store's folder on a new machine reads nothing (final re-verify false positive)
+      || (['mkdir', 'md'].includes(first) && !/config/i.test(seg));
+    const devFile = STORE_READ_CMDS.has(first) && /config[\\/]+dev_dirs\.json["'`]?(?:\s|$)/i.test(seg) && !/\*/.test(seg)
+      && !STORE_ROOT_OR_CONFIG.test(seg.replace(/[\\/]+config[\\/]+dev_dirs\.json/ig, '/devfile.json'));
+    if (!listing && !devFile) return "reaching into the store's root or settings folder (it holds the plan signing key)";
+  }
+  return null;
+}
+function keyPathVerdict(tool, ti, cwd) {
+  // A Grep with no path searches the session's folder (final re-verify: from the home folder that swept
+  // the key in; Claude Code's Grep does search hidden folders).
+  const p = ti.file_path || ti.path || ti.notebook_path || (tool === 'Grep' ? cwd || '' : '');
+  if (!p) return null;
+  const n = real(p).replace(/\/+$/, '') || '/';
+  const cfg = `${STORE}/config`;
+  if (n === cfg || n.startsWith(`${cfg}/`)) return /\/dev_dirs\.json$/.test(n) && tool === 'Read' ? null : 'reading the plan signing key (the store\'s settings folder)';
+  // Grep searches recursively: the store root, or ANY folder above it (home, the drive root), sweeps it in.
+  if (tool === 'Grep' && (n === STORE || STORE.startsWith(n === '/' || /^[a-z]:$/.test(n) ? `${n.replace(/\/$/, '')}/` : `${n}/`))) {
+    return 'searching a folder that holds the store\'s settings (the plan signing key); search a narrower folder';
+  }
+  return null;
+}
 const INTERPRETERS = new Set(['node', 'python', 'python3', 'py']);
 
 // Every simple command that names the store, or runs after a `cd` into it, must be a plain read
@@ -245,6 +433,9 @@ function storeOrPluginVerdict(segs) {
   let inStore = false;
   for (const seg of segs) {
     const first = firstWord(seg);
+    // An empty piece (between the two characters of && or ||) or a bare `VAR=value` runs nothing
+    // (10/7 third pass: both read as a non-read command and blocked `cd jobs && ls`).
+    if (!first) continue;
     const namesStore = STORE_NAMED(seg);
     const isCd = ['cd', 'set-location', 'sl', 'pushd'].includes(first);
     if (namesStore || inStore) {
@@ -329,16 +520,26 @@ function shellVerdict(text) {
   const segs = segments(text.replace(HARMLESS_REDIRECT, ' ')).filter((s) => !isEngineRun(s));
   const rest = segs.join(' ; ');
   if (HIDDEN_CODE.test(text)) return 'code that runs out of sight (decoded at run time, or preloaded into node)';
+  const key = keyVerdict(segments(text), text);
+  if (key) return key;
   if (PLUGIN_OFF_SHELL.test(rest)) return 'switching the toolkit plugin (and its guard) off';
   const sp = storeOrPluginVerdict(segs);
   if (sp) return sp;
-  const cli = cliVerdict(rest);
+  const cli = cliVerdict(text.replace(HARMLESS_REDIRECT, ' ')); // raw: its heredoc bodies are found by line
   if (cli) return `${cli}, which writes to Dataverse`;
   if (CLI_LIST.test(rest) && LIST_WRITE.test(rest)) return "the Dataverse CLI's write side, called with a list of arguments";
   if (ENGINE_INTERNALS.test(rest)) return "code that reaches the engine's write side directly (it would skip the approval pop-up)";
-  if (DV_HOST.test(rest) && MUTATING_HTTP.test(rest)) return 'a raw writing HTTP call at Dataverse';
+  if (targetsDataverse(text.replace(HARMLESS_REDIRECT, ' '))) return 'a raw writing HTTP call at Dataverse';
+  if (OTHER_DV_WRITERS.test(rest)) return 'another tool that writes to Dataverse (the Xrm PowerShell cmdlets or the Power Platform CLI)';
   if (INJECT.test(rest)) return 'keystroke or click injection (the approval pop-up is the person\'s alone)';
   if (STORE_MOVE.test(text)) return "moving the engine's store or settings for a run (plans must stay where the guard protects them)";
+  // An apply or resolve on a line that also changes PATH or node's own options could be handed a substitute
+  // CLI or preloaded code (final re-verify). A Claude shell keeps no settings between commands, so the same
+  // line is the only place such a change can come from.
+  if (/dataverse-write(?:\.js)?["']?\s+(?:apply|resolve)\b/i.test(text)
+    && /(?:^|[\s;&|(])(?:PATH|Path|NODE_\w+|DYLD_\w+|LD_\w+)=|\$env:(?:PATH|Path|NODE_\w+)|\bexport\s+(?:PATH|NODE_|DYLD_|LD_)|\bset\s+(?:PATH|NODE_)\w*=|\benv\s+(?:-\S+\s+)*\w+=/.test(text)) {
+    return 'changing PATH or node options on the same line as an apply (the engine must run the real Dataverse CLI)';
+  }
   // The path is looked for in the WHOLE line (an engine run can feed a later delete, `show 1 | xargs rm`);
   // the mutating command only outside the engine's own arguments.
   if ((STORE_IN_TEXT.test(text) || STORE_ANY.test(text)) && mutates(rest)) return "changing the engine's own store (plans, log, events)";
@@ -355,6 +556,8 @@ function contentOf(tool, ti) {
   return '';
 }
 
+const CODE_FILE = /\.(?:js|cjs|mjs|ts|py|ps1|psm1|sh|bash|zsh|cmd|bat|rb|pl|php|go|cs|vbs|applescript|scpt)$/i;
+
 function writeVerdict(tool, ti, dirs) {
   const file = ti.file_path || ti.notebook_path || '';
   if (inPlugin(file)) return "changing the toolkit plugin's files";
@@ -366,19 +569,49 @@ function writeVerdict(tool, ti, dirs) {
   if (INJECT.test(text)) return 'writing keystroke or click injection (the approval pop-up is the person\'s alone)';
   if (!inDevDir(file, dirs)) {
     if (ENGINE_INTERNALS.test(text)) return "writing code that reaches the engine's write side directly (it would skip the approval pop-up)";
-    if (DV_HOST.test(text) && MUTATING_HTTP.test(text)) return 'writing a raw writing HTTP call at Dataverse';
+    // Code only (a note describing the Web API is not a call): final re-verify false positive.
+    if (CODE_FILE.test(file) && (targetsDataverse(text) || XRM_WRITE.test(text))) return 'writing a raw writing HTTP call at Dataverse';
+    if (CODE_FILE.test(file) && (KEY_NAMED.test(text) || /\.sbrm-dataverse[\\/]+config/i.test(text))) return 'writing code that reads the plan signing key';
     if (CLI_LIST.test(text) && LIST_WRITE.test(text)) return "writing code that calls the Dataverse CLI's write side";
     // Code only: a note or doc that mentions the variable is not a run (re-verify false positive).
-    if (STORE_MOVE.test(text) && /\.(?:js|cjs|mjs|ts|py|ps1|psm1|sh|bash|cmd|bat|rb|pl)$/i.test(file)) return "writing code that moves the engine's store or settings";
+    if (STORE_MOVE.test(text) && CODE_FILE.test(file)) return "writing code that moves the engine's store or settings";
   }
   return null;
 }
 
-function verdict(input, dirs = devDirs()) {
+// An approval pop-up is open on this machine right now (lib/dialog.js keeps a marker in the store's tmp
+// folder while it waits; one older than 15 minutes is stale and ignored).
+function popupOpen() {
+  try {
+    const d = path.join(HOME, '.sbrm-dataverse', 'tmp');
+    return fs.readdirSync(d).some((f) => f.startsWith('popup-open-') && Date.now() - fs.statSync(path.join(d, f)).mtimeMs < 15 * 60 * 1000);
+  } catch {
+    return false;
+  }
+}
+
+function verdict(input, dirs = devDirs(), { popup = popupOpen } = {}) {
   const tool = String(input.tool_name || '');
   const ti = input.tool_input || {};
-  const mcp = MCP_RE.exec(tool);
-  if (mcp) return READ_TOOLS.has(mcp[1]) ? null : `the Dataverse tool "${mcp[1]}" (only known reads are allowed)`;
+  const mcp = mcpParts(tool);
+  if (mcp && DV_SERVER.test(mcp.server)) return READ_TOOLS.has(mcp.name) ? null : `the Dataverse tool "${mcp.name}" (only known reads are allowed)`;
+  if (mcp && DV_WRITE_TOOLS.test(mcp.name)) return `the tool "${mcp.name}" (a Dataverse write outside the approved path)`;
+  if (SCREEN_TOOL.test(tool) && popup()) return 'driving the screen while an approval pop-up is open (the pop-up is the person\'s alone)';
+  if (mcp) {
+    // Every string the tool was handed, as written (JSON would escape the quotes the rules read).
+    const strings = [];
+    const walk = (v) => { if (typeof v === 'string') strings.push(v); else if (v && typeof v === 'object') Object.values(v).forEach(walk); };
+    walk(ti);
+    const text = strings.join('\n');
+    if (SHELL_MCP.test(mcp.name)) {
+      for (const s of strings) { const v = shellVerdict(s); if (v) return `${v} (through the tool "${mcp.name}")`; }
+    }
+    if (CODE_MCP.test(mcp.name)) {
+      if (targetsDataverse(text)) return 'a writing HTTP call at Dataverse from another tool';
+      if (XRM_WRITE.test(text)) return "a write through the app's own page code (Xrm), which skips the approval pop-up";
+    }
+  }
+  if (tool === 'Read' || tool === 'Grep') return keyPathVerdict(tool, ti, input.cwd);
   if (tool === 'Bash' || tool === 'PowerShell') return shellVerdict(String(ti.command || ''));
   if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(tool)) return writeVerdict(tool, ti, dirs);
   return null;
@@ -532,16 +765,91 @@ function selftest() {
     ['preloaded code', B(J('NODE_OPTIONS="--req', 'uire C:/x/sbrm/x.js" node -e 1')), true],
     ['a doc that mentions the store variable is fine', W('C:/temp/notes.md', 'Tests set SBRM_DV_HOME to a temp folder.'), false],
     ['engine show piped to head is fine', B(`node ${ENG} show 3 | head -20`), false],
+    // 10/7 third adversarial pass (1.10.1): the plan signing key, the CLI by npx/shim, more HTTP spellings,
+    // other Dataverse writers, other tools, the pop-up marker; and the false positives it found
+    ['Read the plan signing key', { tool_name: 'Read', tool_input: { file_path: `${H}/.sbrm-dataverse/config/plan.key` } }, true],
+    ['Read the dev exemptions is fine', { tool_name: 'Read', tool_input: { file_path: `${H}/.sbrm-dataverse/config/dev_dirs.json` } }, false],
+    ['Grep the store root', { tool_name: 'Grep', tool_input: { pattern: '.', path: `${H}/.sbrm-dataverse` } }, true],
+    ['Grep the log folder is fine', { tool_name: 'Grep', tool_input: { pattern: 'applied', path: `${H}/.sbrm-dataverse/log` } }, false],
+    ['cat the key', B(J('cat ~/.sbrm-dataverse/config/plan.', 'key')), true],
+    ['cat a wildcard in config', B('cat ~/.sbrm-dataverse/config/*'), true],
+    ['grep -r the store root', B('grep -r x ~/.sbrm-dataverse'), true],
+    ['find the root into xargs cat', B('find ~/.sbrm-dataverse -type f | xargs cat'), true],
+    ['cd into the store root', B('cd ~/.sbrm-dataverse && grep -r x .'), true],
+    ['list the store root is fine', B('ls ~/.sbrm-dataverse'), false],
+    ['CLI by npx at the pinned version', B(J('npx @microsoft/dataverse@1.0.81 data cre', 'ate contact x')), true],
+    ['CLI by its node shim target', B(J('node "$(npm root -g)/@microsoft/dataverse/bin/dataverse.js" data up', 'date contact 1')), true],
+    ['HTTP: urllib with a body', B(J('python -c "import urllib.request as u; u.urlopen(u.Request(\'https://x.crm.dynamics.com/api/data/v9.2/contacts\', da', 'ta=b\'{}\'))"')), true],
+    ['HTTP: a Session().patch', B(J('python -c "import requests; requests.Session().pat', 'ch(\'https://x.crm.dynamics.com/api/data/v9.2/contacts(1)\', json={})"')), true],
+    ['HTTP: httpie PATCH', B(J('http PAT', 'CH https://x.crm.dynamics.com/api/data/v9.2/contacts(1) name=x')), true],
+    ['HTTP: wget --post-data', B(J('wget --post-da', 'ta=\'{}\' https://x.crm.dynamics.com/api/data/v9.2/contacts')), true],
+    ['Xrm PowerShell cmdlet', B(J('Set-Crm', 'Record -conn $c -EntityLogicalName contact -Id $id -Fields @{x=1}'), 'PowerShell'), true],
+    ['Power Platform CLI import', B(J('pac solution imp', 'ort --path x.zip')), true],
+    ['MCP: a claude.ai Dataverse connector write', { tool_name: J('mcp__claude_ai_Dataverse__create_', 'record') }, true],
+    ['MCP: a claude.ai Dataverse connector read is fine', { tool_name: 'mcp__claude_ai_Dataverse__read_query' }, false],
+    ['browser JavaScript writing at Dataverse', { tool_name: 'mcp__claude-in-chrome__javascript_tool', tool_input: { text: J('fetch("https://x.crm.dynamics.com/api/data/v9.2/contacts(1)", {method: "PAT', 'CH", body: "{}"})') } }, true],
+    ['browser JavaScript reading is fine', { tool_name: 'mcp__claude-in-chrome__javascript_tool', tool_input: { text: 'document.title' } }, false],
+    ['multi-line osascript click', B(J('osascript -e \'tell application "System Events"\' -e \'tell process "x"\' -e \'cli', 'ck button "Approve" of window 1\' -e \'end tell\'')), true],
+    ['heredoc job whose reason says Dataverse is fine', B("cat > ~/.sbrm-dataverse/jobs/fix.json <<'EOF'\n{\"reason\": \"Dataverse contact address fix\"}\nEOF"), false],
+    ['cd into jobs && ls is fine', B('cd ~/.sbrm-dataverse/jobs && ls'), false],
+    ['a variable holding the plugin path, then the engine', B(`TK="${H}/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.10.1"; node "$TK/dataverse/engine/dataverse-write.js" whoami donorapp`), false],
+    ['an echo about dataverse is fine', B('echo "dataverse tools are set up"'), false],
+    ['a commit message about dataverse is fine', B('git commit -m "dataverse setup notes"'), false],
+    ['the key reached relatively from inside the store', B(J('cd ~/.sbrm-dataverse/plans && cat ../config/plan.', 'key')), true],
+    ['a heredoc note whose line starts like a CLI write is data', B("cat > notes.md <<'EOF'\ndataverse data delete is blocked by the guard\nEOF"), false],
+    ['a heredoc handed to bash runs: its CLI write is caught', B(J("bash <<'EOF'\ndataverse data del", "ete contact 1\nEOF")), true],
+    // final re-verify (1.10.1, round 4)
+    ['CLI write inside a for loop', B(J('for id in a b; do dataverse data up', 'date contact $id; done')), true],
+    ['CLI write inside while read', B(J('cat ids.txt | while read id; do dataverse data del', 'ete contact $id; done')), true],
+    ['CLI write inside if/then', B(J('if true; then dataverse data cre', 'ate contact x; fi')), true],
+    ['CLI write in a subshell', B(J('(dataverse data up', 'date contact 1)')), true],
+    ['CLI write in PowerShell foreach', B(J('foreach ($i in $ids) { dataverse data up', 'date contact $i }'), 'PowerShell'), true],
+    ['CLI write in ForEach-Object', B(J('$ids | ForEach-Object { dataverse data del', 'ete contact $_ }'), 'PowerShell'), true],
+    ['CLI write behind timeout', B(J('timeout 30 dataverse data up', 'date contact 1')), true],
+    ['CLI write via npm exec', B(J('npm exec -- dataverse data cre', 'ate contact x')), true],
+    ['CLI write via xargs -I{}', B(J('cat ids | xargs -I{} dataverse data del', 'ete contact {}')), true],
+    ['CLI write via $(which dataverse)', B(J('$(which dataverse) data up', 'date contact 1')), true],
+    ['a read loop over the CLI is fine', B('for t in contacts accounts; do dataverse data query $t --top 1; done'), false],
+    ['Grep with no path from the home folder', { tool_name: 'Grep', tool_input: { pattern: 'x' }, cwd: HOME }, true],
+    ['Grep with no path from a project folder is fine', { tool_name: 'Grep', tool_input: { pattern: 'x' }, cwd: DEV }, false],
+    ['Grep at the drive root', { tool_name: 'Grep', tool_input: { pattern: 'x', path: 'C:/' } }, process.platform === 'win32'],
+    ['grep -r of the home folder', B('grep -r token ~'), true],
+    ['find home and exec', B(J('find ~ -name "*.key" -ex', 'ec cat {} +')), true],
+    ['a wildcard into the store folders', B('cat ~/.sbrm-dataverse/conf*/plan*'), true],
+    ['browser Xrm.WebApi write', { tool_name: 'mcp__claude-in-chrome__javascript_tool', tool_input: { text: J('Xrm.WebApi.update', 'Record("contact", id, {firstname: "x"})') } }, true],
+    ['browser form save', { tool_name: 'mcp__claude-in-chrome__javascript_tool', tool_input: { text: J('Xrm.Page.data.sa', 've()') } }, true],
+    ['a Dataverse write tool on a differently named server', { tool_name: J('mcp__donorapp__update_', 'record') }, true],
+    ['a Dataverse write tool on a server with an unrelated name', { tool_name: J('mcp__orgdata__create_', 'record') }, true],
+    ['an unrelated server\'s own tools are fine', { tool_name: 'mcp__claude_ai_Notion__notion-create-pages' }, false],
+    ['a shell-running MCP running a CLI write', { tool_name: 'mcp__desktop-commander__start_process', tool_input: { command: J('dataverse data up', 'date contact 1') } }, true],
+    ['HTTP: curl -sd at Dataverse', B(J('curl -s', 'd \'{}\' https://x.crm.dynamics.com/api/data/v9.2/contacts')), true],
+    ['HTTP: HttpClient.PatchAsync', B(J('$c.Patch', 'Async("https://x.crm.dynamics.com/api/data/v9.2/contacts(1)", $body)'), 'PowerShell'), true],
+    ['pac application install', B(J('pac application inst', 'all --environment x')), true],
+    ['pac auth create is a sign-in, fine', B('pac auth create --environment https://x.crm.dynamics.com'), false],
+    ['a screen tool click while a pop-up is open', { tool_name: 'mcp__windows-mcp__Click-Tool', tool_input: { loc: [1, 2] } }, false],
+    ['an apply with PATH changed on the line', B(J('PATH=/tmp/shim:$PATH node ', ENG, ' ap', 'ply 1')), true],
+    ['an apply with the CLI override', B(J('SBRM_DATAVERSE_CLI=/tmp/x node ', ENG, ' ap', 'ply 1')), true],
+    ['BookStack update whose body mentions the app URL is fine', B('curl -X PUT https://wiki.sbrmapps.com/api/pages/12 -H "Authorization: Token x" -d \'{"html": "The donor app lives at https://sbrmdonorapp.crm.dynamics.com"}\''), false],
+    ['a Teams post mentioning a curl PATCH is fine', { tool_name: 'mcp__ms365__send-chat-message', tool_input: { body: J('Do not run curl -X PAT', 'CH https://x.crm.dynamics.com/api/data/v9.2/contacts(1)') } }, false],
+    ['a .md note describing requests.patch is fine', W('C:/temp/notes.md', J('requests.pat', 'ch("https://x.crm.dynamics.com/api/data/v9.2/x")')), false],
+    ['a script that reads the plan key', W('C:/temp/k.py', J('open(os.path.expanduser("~/.sbrm-dataverse/config/plan.', 'key")).read()')), true],
+    ['mkdir the store on a new machine is fine', B('mkdir -p ~/.sbrm-dataverse'), false],
+    ['bash -c running the CLI write is still caught', B(J('bash -c "dataverse data del', 'ete contact 1"')), true],
   ];
+  // The pop-up marker: a screen tool is refused only while a pop-up is open (popup injected, not read).
+  const screen = { tool_name: 'mcp__computer-use__left_click', tool_input: { x: 1, y: 2 } };
+  const popupCases = [['screen tool while a pop-up is open', true, true], ['screen tool with no pop-up is fine', false, false]];
   const dirs = [norm(DEV)];
   let fails = 0;
-  for (const [label, input, expectBlocked] of cases) {
-    const v = verdict(input, dirs);
+  const report = (label, v, expectBlocked) => {
     const ok = (v !== null) === expectBlocked;
     if (!ok) fails += 1;
     console.log(`${ok ? 'PASS' : 'FAIL'}  ${expectBlocked ? 'block' : 'allow'}  ${label}${!ok ? `   (got: ${v || 'allowed'})` : ''}`);
-  }
-  console.log(fails ? `\n${fails} of ${cases.length} checks FAILED.` : `\nAll ${cases.length} checks passed.`);
+  };
+  for (const [label, input, expectBlocked] of cases) report(label, verdict(input, dirs, { popup: () => false }), expectBlocked);
+  for (const [label, open, expectBlocked] of popupCases) report(label, verdict(screen, dirs, { popup: () => open }), expectBlocked);
+  const total = cases.length + popupCases.length;
+  console.log(fails ? `\n${fails} of ${total} checks FAILED.` : `\nAll ${total} checks passed.`);
   process.exit(fails ? 1 : 0);
 }
 

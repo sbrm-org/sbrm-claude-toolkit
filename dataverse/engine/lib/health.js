@@ -123,11 +123,12 @@ function doctor(deps) {
         dv = deps.connect(env);
         me = whoAmI(dv);
       } catch (e) {
-        const level = null; // this app did not answer, so its Write Access list cannot be read either
-        // No role in an app is normal for most staff; it fails where they are meant to write, or where
-        // they SAID they use it (`doctor --apps`, gap 3: else a forgotten sign-in reads as "fine").
-        if (deps.apps && deps.apps.includes(env)) add(`Signed in: ${info.name}`, 'fail', `you use the ${info.name} but Dataverse did not answer: ${e.message.slice(0, 160)}`, `${SIGN_IN(info.host)}; if it still does not answer, ask Dylan to check your security role in the ${info.name}`);
-        else if (level && atLeast(level, 'write')) add(`Signed in: ${info.name}`, 'fail', `you have ${level} access here but Dataverse did not answer: ${e.message}`, `${SIGN_IN(info.host)}; if it still does not answer, ask Dylan to check your security role in the ${info.name}`);
+        // This app did not answer, so its Write Access list cannot be read either. No role in an app is
+        // normal for most staff; it FAILS where the person said they use it (`doctor --apps`) or where this
+        // machine has written before (its local log: `deps.used`). 10/7 review: an earlier branch keyed on
+        // the person's level could never run, so a writer's forgotten sign-in read as "fine".
+        const uses = (deps.apps && deps.apps.includes(env)) || (deps.used && deps.used.includes(env));
+        if (uses) add(`Signed in: ${info.name}`, 'fail', `you use the ${info.name} but Dataverse did not answer: ${e.message.slice(0, 160)}`, `${SIGN_IN(info.host)}; if it still does not answer, ask Dylan to check your security role in the ${info.name}`);
         else add(`Signed in: ${info.name}`, 'info', `no answer (fine if you don't use the ${info.name}): ${e.message.slice(0, 120)}`);
         continue;
       }

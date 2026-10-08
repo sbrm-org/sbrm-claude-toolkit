@@ -77,12 +77,21 @@ function realGuard() {
   // A session reaching the write side without the CLI (which would skip the pop-up) must be blocked.
   const lib = path.join(__dirname, 'lib', 'write').replace(/\\/g, '/');
   const probe = JSON.stringify({ tool_name: 'Bash', tool_input: { command: `node -e "const { ${['write', 'Connection'].join('')} } = require('${lib}')"` } });
-  const r = spawnSync(process.execPath, [file], { input: probe, encoding: 'utf8', windowsHide: true });
+  let r = spawnSync(process.execPath, [file], { input: probe, encoding: 'utf8', windowsHide: true });
+  // Then the way the HOOK runs it: `bash run.sh`, with whatever `bash` this machine finds first (1.10.1: on
+  // Windows a WSL bash ahead of Git Bash could not start the launcher, and a hook that cannot start fails
+  // open). Both must block.
+  const launcher = path.join(__dirname, '..', 'guard', 'run.sh');
+  let via = 'node';
+  if (r.status === 2 && fs.existsSync(launcher)) {
+    const h = spawnSync('bash', [launcher], { input: probe, encoding: 'utf8', windowsHide: true, env: { ...process.env, CLAUDE_PLUGIN_ROOT: path.join(__dirname, '..', '..') } });
+    if (h.status !== 2) { r = h; via = 'bash run.sh (as the hook runs it)'; }
+  }
   let hooksOff = null;
   for (const f of [path.join(os.homedir(), '.claude', 'settings.json'), path.join(os.homedir(), '.claude', 'settings.local.json')]) {
     try { if (JSON.parse(fs.readFileSync(f, 'utf8')).disableAllHooks === true) hooksOff = f; } catch { /* absent or unreadable */ }
   }
-  return { present: true, blocksBypass: r.status === 2, detail: `exit ${r.status}`, hooksOff };
+  return { present: true, blocksBypass: r.status === 2, detail: `${via}: exit ${r.status}${r.error ? ` (${r.error.code || r.error.message})` : ''}`, hooksOff };
 }
 
 // doctor's CLI check STARTS the binary (finding it is not enough: ThreatLocker can block a found file).
@@ -367,6 +376,11 @@ function cmdRevert(run, deps, id, envArg) {
     entry = found.local || readLocal(id);
     if (entry) note = " (read from this machine's local log: its Dataverse row has not landed yet)";
   }
+  // The entry must belong to the environment it was read from: an undo plans, checks access and writes in
+  // ONE environment (10/7 final re-verify: a mismatched entry read access from the wrong app's list).
+  if (entry && entry.env !== found.env) {
+    throw new Refusal('not_permitted', 'the undo', [`the log entry for plan ${id} says it ran in "${entry.env}" but was found in "${found.env}"; nothing was planned. Ask Dylan.`]);
+  }
   if (entry && entry.mode === 'merge') return planUnmergeCmd(run, dv, entry, id, note, { envs, access });
   const app = entry && appKind(entry.mode);
   if (app) return planAppRevertCmd(run, dv, entry, id, note, app, { envs, access, warnRows, readEnv: readEnvFor(run, deps, envs) });
@@ -401,12 +415,26 @@ function cmdShow(run, deps, id) {
 }
 
 function cmdApply(run, deps, id) {
+  const { record } = loadPlan(id); // a missing plan refuses here, before anything else
+  const done = inflight(id, record);
+  let out;
+  try { out = applyAny(run, deps, id); } catch (e) { done(); throw e; }
+  return out && typeof out.then === 'function' ? out.then((v) => { done(); return v; }, (e) => { done(); throw e; }) : (done(), out);
+}
+
+function applyAny(run, deps, id) {
   const { access } = config();
   run.planId = id;
-  const { record } = loadPlan(id); // a missing plan refuses here, before anything else
+  const { record } = loadPlan(id);
   run.env = record.env;
   run.person = record.identity; // provisional: apply refuses a different signed-in person
   refuseIfExposed([storeExposure()], 'written');
+  // The server written to is the one the toolkit names for the plan's app, never only the plan's word for
+  // it (10/7 third pass: a plan could say "Donor App" and point at another environment's host).
+  const { envs: knownEnvs } = config();
+  if (!knownEnvs[record.env] || knownEnvs[record.env].host !== record.host || knownEnvs[record.env].name !== record.app) {
+    throw new ApplyRefused(`this plan's app (${record.app || '?'}) and server (${record.host || '?'}) do not match the toolkit's list for "${record.env}". Make a new plan.`, 'plan_tampered');
+  }
   if (record.kind === 'merge' || record.kind === 'unmerge') {
     const { intact, file } = loadPlan(id);
     if (!intact) throw new ApplyRefused('this plan file was changed after it was made. Make a new plan.', 'plan_tampered');
@@ -421,6 +449,30 @@ function cmdApply(run, deps, id) {
   const res = applyPlan(id, { access, connect: (host) => connect(run, deps, 'write', host), confirm: deps.confirm });
   // A delete apply is async (its linked-record re-check reads in parallel); everything else is not.
   return res && typeof res.then === 'function' ? res.then((r) => reportApply(run, id, r)) : reportApply(run, id, res);
+}
+
+// An apply in flight leaves a marker in the store's pending folder until it returns. A marker an hour old
+// means the run was cut off part-way (a command time limit, a closed laptop): the next run of the engine on
+// this machine files it as a signal event, so Dylan sees which plan to check (10/7 third pass: a killed
+// apply left no Write Log entry at all).
+function inflight(id, record) {
+  const file = path.join(dir('pending'), `inflight--${id}.marker`);
+  try { fs.writeFileSync(file, JSON.stringify({ plan_id: id, env: record.env, app: record.app, kind: record.kind, table: record.table, started: new Date().toISOString() }), 'utf8'); } catch { /* best effort */ }
+  return () => { try { fs.rmSync(file, { force: true }); } catch { /* best effort */ } };
+}
+
+function reportInterrupted(run) {
+  let files = [];
+  try { files = fs.readdirSync(dir('pending')).filter((f) => f.startsWith('inflight--')); } catch { return; }
+  for (const f of files) {
+    const p = path.join(dir('pending'), f);
+    try {
+      if (Date.now() - fs.statSync(p).mtimeMs < 6 * 3600 * 1000) continue; // six hours: longer than any apply (schema runs stop at 25 min)
+      const m = JSON.parse(fs.readFileSync(p, 'utf8'));
+      events.record(run, { kind: 'interrupted', code: 'interrupted', env: m.env, headline: `An apply of plan ${m.plan_id} (${m.kind} on ${m.table} in the ${m.app}) was cut off part-way on this machine; check what landed (it may have no Write Log entry)` });
+      fs.rmSync(p, { force: true });
+    } catch { /* leave it for the next run */ }
+  }
 }
 
 function reportApply(run, id, res) {
@@ -472,6 +524,14 @@ function cmdSnapshot(run, deps, args) {
   refuseIfExposed([storeExposure()]);
   const dv = connect(run, deps, 'read', envs[env].host);
   const snap = component.readSnapshot(dv, set, id.toLowerCase());
+  // A flow holding a secret in plain text is never copied to disk (10/7 third pass): the same refusal as
+  // its plan, naming where the secret sits, never its value.
+  if (set === 'workflows' && snap.definition.clientdata) {
+    let cd = null;
+    try { cd = typeof snap.definition.clientdata === 'string' ? JSON.parse(snap.definition.clientdata) : snap.definition.clientdata; } catch { cd = null; }
+    const where = cd ? component.flowSecrets(cd) : [];
+    if (where.length) throw new Refusal('not_permitted', 'snapshot', [`the flow holds a secret in plain text (${where.join(', ')}); move it to a Secret environment variable first. Nothing was saved.`]);
+  }
   const file = path.join(dir('jobs'), `snapshot-${env}-${set}-${snap.id}.json`);
   fs.writeFileSync(file, JSON.stringify({ env, set, ...snap }, null, 2), 'utf8');
   console.log(`\n${snap.name || snap.id} (${set}) in the ${envs[env].name}`);
@@ -515,6 +575,8 @@ function cmdDoctor(run, deps, args = []) {
   const conn = (env) => dvs[env] || (dvs[env] = connect(run, deps, 'read', envs[env].host));
   const result = health.doctor({
     envs, access, apps, cli: deps.cli, connect: conn, io: deps.io(), pin: toolkitConfig().cli_version || null, guard: deps.guard,
+    // Apps this machine has written to (its local log): a no-answer there is a failure, not "fine".
+    used: [...new Set(recentLocal(1000).map((e) => e.env).filter((x) => envs[x]))],
     pending: () => ({ events: events.pendingCount(), logs: pendingLogCount() }),
     sendPending: (reached) => {
       for (const env of reached) {
@@ -785,7 +847,9 @@ function failure(run, e) {
     headline = `Unexpected error: ${e && e.message}`;
   }
   const detailText = run.output.join('\n') + (kind === 'crash' && e && e.stack ? `\n\n${e.stack}` : '');
-  events.record(run, { kind, code: code || 'unclassified', headline, detail: detailText });
+  // `check` is Claude's own file-level lint before a plan: its refusals are not events (10/7 review: four
+  // throwaway checks queued four events for the review). A crash in check is still recorded.
+  if (!(/^check(?:\s|$)/.test(run.command || '') && kind !== 'crash')) events.record(run, { kind, code: code || 'unclassified', headline, detail: detailText });
   return exitCode;
 }
 
@@ -814,6 +878,7 @@ function finish(run, deps) {
 // exactly as before; either way every refusal and crash goes through failure() and finish().
 function runCli(argv, deps = DEFAULT_DEPS) {
   const run = events.newRun(argv);
+  reportInterrupted(run); // an earlier apply on this machine that was cut off part-way
   const original = console.log;
   console.log = (...a) => { run.output.push(a.join(' ')); original(...a); };
   const done = (code) => {
@@ -842,8 +907,10 @@ if (require.main === module) {
   // in a folder the guard does not protect could have been edited (10/7 review). Tests drive runCli()
   // in-process with their own temp store; that path is not this one.
   const verb = process.argv[2];
-  if (['apply', 'resolve'].includes(verb) && (process.env.SBRM_DV_HOME || process.env.SBRM_DV_CONFIG)) {
-    console.log(`\nREFUSED: ${verb} runs only with the engine's own store and settings (SBRM_DV_HOME / SBRM_DV_CONFIG are set). Nothing was written.\n`);
+  // The same for the CLI it writes through (10/7 final re-verify: a substitute "CLI" named by the override
+  // sees every request after the pop-up and could change the server or the body).
+  if (['apply', 'resolve'].includes(verb) && (process.env.SBRM_DV_HOME || process.env.SBRM_DV_CONFIG || process.env.SBRM_DATAVERSE_CLI)) {
+    console.log(`\nREFUSED: ${verb} runs only with the engine's own store, settings and Dataverse CLI (SBRM_DV_HOME / SBRM_DV_CONFIG / SBRM_DATAVERSE_CLI are set). Nothing was written.\n`);
     process.exit(1);
   }
   Promise.resolve()

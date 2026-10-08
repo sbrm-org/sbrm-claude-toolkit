@@ -12,7 +12,7 @@ const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-component-'));
 process.env.SBRM_DV_HOME = path.join(HOME, 'store');
 
 const C = require('../lib/component');
-const { fakeComponentDv, devDv, devEntry, flowCd, REF, IDS, ENVS, ACCESS, FETCH, LAYOUT, FORM, SITEMAP } = require('./fake_component');
+const { fakeComponentDv, devDv, devEntry, flowCd, REF, IDS, ENVS, ACCESS, FETCH, LAYOUT, FORM, SITEMAP, secretFlowCd, PLACEHOLDER_SECRET } = require('./fake_component');
 
 // Donor App Dev's Write Log: the same column change to the same view, applied there first.
 // (built on first use: SWAPPED_LAYOUT is defined below)
@@ -440,10 +440,13 @@ test('severity: create is lasting, delete is admin-only with the typed name, tur
   assert.deepEqual(nonGets(dv), []);
 });
 
-test('own: hands a flow to an active user only', async () => {
-  const dv = dvAs('dev');
+test('own: an admin hands a flow to an active user only, and the pop-up says it will act as them (round 3)', async () => {
+  const d = dvAs('dev');
+  await refused(C.planComponent(d, valid(stateJob(d, 'own', { owner: IDS.dev2 })), ctx()), /takes admin access .* because it changes who owns the flow, and a flow acts as its owner/, 'not_permitted');
+  const dv = dvAs('admin');
   const p = await C.planComponent(dv, valid(stateJob(dv, 'own', { owner: IDS.dev2 })), ctx());
-  assert.match(C.componentSummary(p), /Hand the flow 'Add Soft Credit' in the Donor App over to Dana Martin[\s\S]*Owner: SBRM App Admin -> Dana Martin/);
+  assert.equal(p.need, 'admin');
+  assert.match(C.componentSummary(p), /Hand the flow 'Add Soft Credit' in the Donor App over to Dana Martin[\s\S]*Owner: SBRM App Admin -> Dana Martin\n {2}A flow acts as its owner: from now on it acts as Dana Martin \(its trigger subscription: runas 1\)\./);
   await refused(C.planComponent(dv, valid(stateJob(dv, 'own', { owner: IDS.gone })), ctx()), /Former Staff is a disabled user/);
   await refused(C.planComponent(dv, valid(stateJob(dv, 'own', { owner: IDS.appadmin })), ctx()), /already owned by SBRM App Admin/);
 });
@@ -544,7 +547,7 @@ test('a flow change whose trigger subscription does not re-register is reported,
   dv.staleSubscription = true;
   let slept = 0;
   const { res } = await applied(plan, dv, { sleep: () => { slept += 1; } });
-  assert.match(res.rows[0].outcome, /read-back mismatch: the trigger is not live with the new filter/);
+  assert.match(res.rows[0].outcome, /read-back mismatch: the trigger is not live as the definition says \(msnfp_transaction, filter msnfp_amount,statecode; registered: filter msnfp_amount\)/);
   assert.equal(slept, 9, 'polled ~30 s before saying so');
 });
 
@@ -682,10 +685,12 @@ test('revert on <-> off and own; a created flow is turned off; a created view st
   const offEntry = await appliedEntry(dv, await C.planComponent(dv, valid(stateJob(dv, 'off')), ctx()));
   assert.equal((await C.planComponentRevert(dv, offEntry, ctx())).mode, 'on');
 
-  const ownEntry = await appliedEntry(dv, await C.planComponent(dv, valid(stateJob(dv, 'own', { id: IDS.offflow, name: 'Sync Letters', owner: IDS.dev2 })), ctx()));
-  const ownBack = await C.planComponentRevert(dv, ownEntry, ctx());
+  const owner = fakeComponentDv({ email: 'admin@example.org', d: dv.data }); // an owner change is an admin's (round 3)
+  const ownEntry = await appliedEntry(owner, await C.planComponent(owner, valid(stateJob(owner, 'own', { id: IDS.offflow, name: 'Sync Letters', owner: IDS.dev2 })), ctx()));
+  await refused(C.planComponentRevert(dv, ownEntry, ctx()), /changes who owns the flow/, 'not_permitted');
+  const ownBack = await C.planComponentRevert(owner, ownEntry, ctx());
   assert.equal(ownBack.owner_to.id, IDS.me);
-  await appliedEntry(dv, ownBack);
+  await appliedEntry(owner, ownBack);
   assert.equal(dv.data.workflows[IDS.offflow]._ownerid_value, IDS.me);
 
   const cd = flowCd({ refs: { shared_commondataserviceforapps: REF('sbrm_dataverse_owner2') } });
@@ -929,7 +934,7 @@ test('proven_in: a designer link-entity alias that differs by environment is not
 });
 
 test('a create shows every field its body sets, not only the definition', async () => {
-  const dv = dvAs('dev');
+  const dv = dvAs('admin'); // the fixture form carries an onload script, which is an admin's since round 3
   const view = await C.planComponent(dv, valid(job({ component: { set: 'savedqueries', name: 'Big Donors' }, mode: 'create', solution: 'SBRMAdHocChanges', definition: { fetchxml: FETCH, layoutxml: LAYOUT, returnedtypecode: 'contact' }, intent: { verb: 'create', component: 'view', name: 'Big Donors' } })), ctx());
   assert.match(C.componentSummary(view), /Also sets: querytype 0 \(public view\), returnedtypecode contact/);
   const form = await C.planComponent(dv, valid(job({ component: { set: 'systemforms', name: 'Quick Donor' }, mode: 'create', solution: 'SBRMAdHocChanges', definition: { formxml: FORM, objecttypecode: 'contact', type: 7 }, intent: { verb: 'create', component: 'form', name: 'Quick Donor' } })), ctx());
@@ -964,4 +969,260 @@ test('views, forms, sitemaps and flows on the toolkit\'s own tables need admin',
   // turning such a flow off adds nothing it can do: develop
   f.data.workflows[IDS.flow].clientdata = JSON.stringify(cd);
   assert.equal((await C.planComponent(f, valid(stateJob(f, 'off')), ctx())).need, 'develop');
+});
+
+// ---------- blind review round 3 ----------
+
+const noSecret = (s) => assert.ok(!String(s).includes(PLACEHOLDER_SECRET), 'the secret value is never printed');
+const SECRET_RE = /the flow holds a secret in plain text \(parameter "SecretId \(sbrm_SecretId\)"\); move it to a Secret environment variable first\. Nothing was logged\./;
+
+test('secrets: a flow holding one in plain text is refused for every mode, before anything is stored, without printing it', async () => {
+  for (const [who, mode] of [['dev', 'on'], ['admin', 'own'], ['admin', 'delete']]) {
+    const dv = dvAs(who);
+    const over = mode === 'own' ? { owner: IDS.dev2 } : {};
+    await assert.rejects(C.planComponent(dv, valid(stateJob(dv, mode, { id: IDS.secretflow, name: 'Example Secret Flow', ...over })), ctx()), (e) => {
+      assert.equal(e.code, 'invalid_job');
+      assert.match(e.message, SECRET_RE);
+      noSecret(e.message);
+      return true;
+    });
+    assert.deepEqual(nonGets(dv), []);
+  }
+  // an update that would REMOVE it is refused too: the before would be logged
+  const dv = dvAs('admin');
+  const clean = secretFlowCd({ secret: '' });
+  await assert.rejects(C.planComponent(dv, valid(flowJob(dv, clean, { id: IDS.secretflow, name: 'Example Secret Flow', changed: ['other'] })), ctx()), (e) => SECRET_RE.test(e.message) && !e.message.includes(PLACEHOLDER_SECRET));
+});
+
+test('secrets: a job file carrying one is refused at validation; literal Http credentials and secure parameters count; expressions do not', () => {
+  const cd = flowCd();
+  cd.properties.definition.actions.Call = { runAfter: {}, type: 'Http', description: 'x', inputs: { method: 'GET', uri: 'https://example.invalid/x', headers: { Authorization: 'Bearer PLACEHOLDER-token-0000' } } };
+  const { errors } = C.validateComponentJob(job({ component: { set: 'workflows', id: IDS.flow, name: 'Add Soft Credit' }, mode: 'update', definition: { clientdata: cd }, snapshot_hash: 'a'.repeat(64), intent: { verb: 'update', component: 'flow', name: 'Add Soft Credit', changed: ['actions'] } }), { envs: ENVS });
+  assert.match(errors.join('\n'), /holds a secret in plain text \(step "Call" \(its Authorization header\)\)/);
+  assert.ok(!errors.join('\n').includes('PLACEHOLDER-token'));
+  const p = (params, actions = {}) => C.flowSecrets({ properties: { definition: { parameters: params, actions, triggers: {} } } });
+  assert.deepEqual(p({ 'Api Key': { type: 'String', defaultValue: 'x' } }), ['parameter "Api Key"']);
+  assert.deepEqual(p({ Cred: { type: 'SecureString', defaultValue: 'x' } }), ['parameter "Cred"']);
+  assert.deepEqual(p({ 'Api Key': { type: 'String', defaultValue: '' }, ClientId: { type: 'String', defaultValue: 'abc' }, $authentication: { type: 'SecureObject', defaultValue: {} } }), []);
+  assert.deepEqual(p({}, { H: { type: 'Http', inputs: { authentication: { type: 'Basic', username: 'u', password: 'p' } } } }), ['step "H" (its authentication password)']);
+  assert.deepEqual(p({}, { H: { type: 'Http', inputs: { authentication: { type: 'Basic', username: 'u', password: "@parameters('pw')" } } } }), []);
+});
+
+test('secrets: apply refuses a plan file whose definition was edited to carry one, without printing it', async () => {
+  const dv = dvAs('admin');
+  const cd = flowCd({ refs: { shared_commondataserviceforapps: REF('sbrm_dataverse_owner2') } });
+  cd.properties.definition.actions.Compose_total.inputs = 'changed';
+  const plan = await C.planComponent(dv, valid(flowJob(dv, cd, { changed: ['actions'], id: IDS.offflow, name: 'Sync Letters' })), ctx());
+  const bad = { ...plan, after_definition: { ...plan.after_definition, clientdata: JSON.stringify(secretFlowCd()) } };
+  await assert.rejects(applied(bad, dv, { confirm: () => { throw new Error('no pop-up'); } }), (e) => e.code === 'invalid_job' && SECRET_RE.test(e.message) && !e.message.includes(PLACEHOLDER_SECRET));
+  assert.deepEqual(nonGets(dv), []);
+});
+
+test('power: an Http step, a child flow, a run-time table and a step on someone else\'s connection are admin, with their inputs shown', async () => {
+  const mine = () => flowCd({ refs: { shared_commondataserviceforapps: REF('sbrm_dataverse_owner2') } }); // Sync Letters runs on the person's own connection
+  const cases = [
+    [(cd) => { cd.properties.definition.actions.Call_api = { runAfter: {}, type: 'Http', description: 'Calls the API.', inputs: { method: 'post', uri: 'https://api.example.invalid/v1/x', authentication: { type: 'ManagedServiceIdentity' } } }; }, ['actions'],
+      /step Call_api calls POST api\.example\.invalid directly over HTTP/, /\+ Call_api \[Http\]: POST api\.example\.invalid, auth ManagedServiceIdentity/],
+    [(cd) => { cd.properties.definition.actions.Run_child = { runAfter: {}, type: 'Workflow', description: 'Runs the child.', inputs: { host: { workflowReferenceName: IDS.caller } } }; }, ['actions'],
+      /step Run_child runs another flow \(child flow 11111111-1111-1111-1111-000000000002\)/, /\+ Run_child \[Workflow\]: child flow 11111111/],
+    [(cd) => { cd.properties.definition.actions.Get_donor.inputs.parameters.entityName = "@{concat('con','tacts')}"; }, ['actions'],
+      /step Get_donor picks its table or operation at run time/, /~ Get_donor \[OpenApiConnection\]: table @\{concat/],
+  ];
+  for (const [edit, changed, why, line] of cases) {
+    const dev = dvAs('dev');
+    const cd = mine();
+    edit(cd);
+    await refused(C.planComponent(dev, valid(flowJob(dev, cd, { changed, id: IDS.offflow, name: 'Sync Letters' })), ctx()), why, 'not_permitted');
+    const adm = dvAs('admin');
+    const p = await C.planComponent(adm, valid(flowJob(adm, cd, { changed, id: IDS.offflow, name: 'Sync Letters' })), ctx());
+    assert.match(C.componentSummary(p), line);
+    assert.match(C.componentDetail(p), why);
+  }
+  // changing a step that runs through SBRM App Admin's connection, with no connection change, is admin too
+  const dev = dvAs('dev');
+  const cd = flowCd();
+  cd.properties.definition.actions.Get_donor.inputs.parameters.recordId = "@triggerOutputs()?['body/msnfp_transactionid']";
+  await refused(C.planComponent(dev, valid(flowJob(dev, cd, { changed: ['actions'] })), ctx()), /step Get_donor acts through Microsoft Dataverse, as SBRM App Admin/, 'not_permitted');
+  // and a plain step on the person's own connection stays develop
+  const ok = dvAs('dev');
+  const own = mine();
+  own.properties.definition.actions.Get_donor.inputs.parameters.recordId = 'x';
+  assert.equal((await C.planComponent(ok, valid(flowJob(ok, own, { changed: ['actions'], id: IDS.offflow, name: 'Sync Letters' })), ctx())).need, 'develop');
+});
+
+test('a flow change in "other" (parameters, outputs, settings) is admin, carries a warning, and shows what changed', async () => {
+  const cd = flowCd({ refs: { shared_commondataserviceforapps: REF('sbrm_dataverse_owner2') } });
+  cd.properties.definition.parameters.Region = { type: 'String', defaultValue: 'west' };
+  const dev = dvAs('dev');
+  await refused(C.planComponent(dev, valid(flowJob(dev, cd, { changed: ['other'], id: IDS.offflow, name: 'Sync Letters' })), ctx()), /changes parts of the flow outside its trigger, steps and connections/, 'not_permitted');
+  const adm = dvAs('admin');
+  const p = await C.planComponent(adm, valid(flowJob(adm, cd, { changed: ['other'], id: IDS.offflow, name: 'Sync Letters' })), ctx());
+  assert.ok(p.severity.irreversible.some((x) => /changes parts of the flow 'Sync Letters' outside its trigger, steps and connections/.test(x)));
+  assert.match(C.componentDetail(p), /other \+ .*"Region"/);
+});
+
+test('views: the whole cell is compared, and a script hook on a column is admin and named', async () => {
+  const hooked = LAYOUT.replace('<cell name="fullname" width="300" />', '<cell name="fullname" width="300" imageproviderwebresource="$webresource:sbrm_/icons.js" imageproviderfunctionname="Sbrm.icon" />');
+  const d = C.diffView({ fetchxml: FETCH, layoutxml: LAYOUT }, { fetchxml: FETCH, layoutxml: hooked });
+  assert.deepEqual(d.sections, ['columns'], 'a cell attribute change is a column change, not unseen');
+  assert.deepEqual(C.viewHooks(LAYOUT.replace('width="300"', 'width="300" imageproviderwebresource="$webresource:"')), [], 'the designer\'s empty hook is not a hook');
+  const dev = dvAs('dev');
+  await refused(C.planComponent(dev, valid(viewJob(dev, { layoutxml: hooked })), ctx()), /a view column fullname: imageproviderfunctionname Sbrm\.icon runs a script/, 'not_permitted');
+  const adm = dvAs('admin');
+  const p = await C.planComponent(adm, valid(viewJob(adm, { layoutxml: hooked })), ctx());
+  assert.match(C.componentSummary(p), /Script hook added or changed: column fullname: imageproviderwebresource \$webresource:sbrm_\/icons\.js/);
+  // removing a hook runs nothing: develop
+  const back = dvAs('dev');
+  back.data.savedqueries[IDS.view].layoutxml = hooked;
+  assert.equal((await C.planComponent(back, valid(viewJob(back, { layoutxml: LAYOUT })), ctx())).need, 'develop');
+});
+
+test('forms: a web resource, iframe, custom control or URL control, even one bound to a field, is admin and named', async () => {
+  const cell = (control, extra = '') => FORM.replace('</rows></section>', `<row><cell id="{aaaa0000-0000-0000-0000-000000000001}" showlabel="false">${control}</cell></row></rows></section>`).replace('</form>', `${extra}</form>`);
+  const cases = [
+    [cell('<control id="WebResource_map" classid="{9FDF5F91-88B1-47f4-AD53-C11EFC01A01D}"><parameters><Url>sbrm_/map.html</Url></parameters></control>'), /control WebResource_map \(web resource: sbrm_\/map\.html\)/],
+    [cell('<control id="IFRAME_site" classid="{FD2A7985-3187-444e-908D-6624B21F69C0}"><parameters><Url>https://example.invalid/page</Url></parameters></control>'), /control IFRAME_site \(iframe: https:\/\/example\.invalid\/page\)/],
+    [cell('<control id="emailaddress1b" classid="{4273EDBD-AC1D-40d3-9FB2-095C621B552D}" datafieldname="emailaddress1"><parameters><Url>https://example.invalid/lookup</Url></parameters></control>'), /control emailaddress1b \(URL: https:\/\/example\.invalid\/lookup\)/],
+    [cell('<control id="lastname_pcf" classid="{4273EDBD-AC1D-40d3-9FB2-095C621B552D}" datafieldname="lastname" />', '<controlDescriptions><controlDescription forControl="lastname_pcf"><customControl name="sbrm_Sbrm.Slider" formFactor="0" /></controlDescription></controlDescriptions>'), /control lastname_pcf \(custom control: sbrm_Sbrm\.Slider\)/],
+  ];
+  for (const [formxml, re] of cases) {
+    const dev = dvAs('dev');
+    const s = live(dev, 'systemforms', IDS.form);
+    const j = valid(job({ component: { set: 'systemforms', id: IDS.form, name: 'SBRM Donor: Contact' }, mode: 'update', definition: { formxml }, snapshot_hash: s.hash, intent: { verb: 'update', component: 'form', name: 'SBRM Donor: Contact', changed: C.diffForm({ formxml: FORM }, { formxml }).sections } }));
+    await refused(C.planComponent(dev, j, ctx()), re, 'not_permitted');
+  }
+  // Microsoft's own controls are not custom; and a changed event handler is admin
+  assert.deepEqual(C.formHooks(FORM.replace('</form>', '<controlDescriptions><controlDescription forControl="lastname"><customControl name="MscrmControls.FieldControls.TextBoxControl" /></controlDescription></controlDescriptions></form>')).map((h) => h.label).filter((l) => /control/.test(l)), []);
+  assert.match(C.markupPower('systemforms', { formxml: FORM }, { formxml: FORM.replace('Form.onLoad', 'Form.onLoad2') }).why.join(' '), /it adds or changes on onload: sbrm_contact\.js\.Form\.onLoad2/);
+});
+
+test('sitemaps: a page that opens a URL or web resource instead of a table is admin and named', async () => {
+  const sm = SITEMAP.replace('</Group>', '<SubArea Id="subarea_report" Url="/WebResources/sbrm_/report.html" /></Group>');
+  const dev = dvAs('dev');
+  const j = (dv) => valid(job({ component: { set: 'sitemaps', id: IDS.sitemap, name: 'Donor App' }, mode: 'update', definition: { sitemapxml: sm }, snapshot_hash: live(dv, 'sitemaps', IDS.sitemap).hash, intent: { verb: 'update', component: 'sitemap', name: 'Donor App', changed: ['subareas'] } }));
+  await refused(C.planComponent(dev, j(dev), ctx()), /it adds or changes page subarea_report opens \/WebResources\/sbrm_\/report\.html/, 'not_permitted');
+  const adm = dvAs('admin');
+  assert.match(C.componentSummary(await C.planComponent(adm, j(adm), ctx())), /Added or changed: page subarea_report opens \/WebResources\/sbrm_\/report\.html/);
+});
+
+test('plan_tampered: apply refuses a plan file that sends anything but definition fields (and the create extras)', async () => {
+  const dv = dvAs('dev');
+  const plan = await C.planComponent(dv, valid(viewJob(dv, { layoutxml: SWAPPED_LAYOUT })), ctx());
+  for (const bad of [
+    { ...plan, sent_fields: ['layoutxml', 'ismanaged'], after_definition: { ...plan.after_definition, ismanaged: true } },
+    { ...plan, sent_fields: ['statecode'] },
+    { ...plan, after_definition: { ...plan.after_definition, returnedtypecode: 'account' } },
+  ]) {
+    await assert.rejects(applied(bad, dv, { confirm: () => { throw new Error('no pop-up'); } }), (e) => e.code === 'plan_tampered');
+  }
+  const c = await C.planComponent(dv, valid(job({ component: { set: 'savedqueries', name: 'Big Donors' }, mode: 'create', solution: 'SBRMAdHocChanges', definition: { fetchxml: FETCH, layoutxml: LAYOUT, returnedtypecode: 'contact' }, intent: { verb: 'create', component: 'view', name: 'Big Donors' } })), ctx());
+  await assert.rejects(applied({ ...c, create_extra: { ...c.create_extra, statecode: 1 } }, dv, { confirm: () => { throw new Error('no pop-up'); } }), (e) => e.code === 'plan_tampered' && /the create field "statecode"/.test(e.message));
+  assert.deepEqual(nonGets(dv), []);
+  assert.deepEqual(C.planShapeProblems(plan), []);
+  assert.deepEqual(C.planShapeProblems({ ...plan, sent_fields: ['statecode'] }), ['the field "statecode"'], 'the sent fields are checked themselves, not only through the body');
+});
+
+test('drafts are read AGAIN after the pop-up is approved: one saved while it was open stops the write', async () => {
+  const dv = dvAs('dev');
+  const plan = await C.planComponent(dv, valid(viewJob(dv, { layoutxml: SWAPPED_LAYOUT })), ctx());
+  await assert.rejects(applied(plan, dv, { confirm: () => { dv.data.drafts.savedqueries[IDS.view] = { layoutxml: LAYOUT.replace('300', '250') }; return { approved: true }; } }),
+    (e) => e.code === 'snapshot_moved' && /saved while the pop-up was open/.test(e.message));
+  const v = dvAs('dev');
+  const p2 = await C.planComponent(v, valid(viewJob(v, { layoutxml: SWAPPED_LAYOUT })), ctx());
+  await assert.rejects(applied(p2, v, { confirm: () => { v.data.drafts.systemforms[IDS.form] = { formxml: FORM.replace('Form.onLoad', 'Form.onLoad9') }; return { approved: true }; } }),
+    (e) => e.code === 'severity_grew' && /publishing contact now would publish them too: the form 'SBRM Donor: Contact'/.test(e.message));
+  assert.deepEqual(nonGets(dv), []);
+  assert.deepEqual(nonGets(v), []);
+});
+
+test('read-back: a flow the platform switched off on save, or a subscription with another scope, is not "written"', async () => {
+  const mk = () => {
+    const cd = flowCd();
+    cd.properties.definition.actions.Compose_total.inputs = 'changed';
+    return cd;
+  };
+  const dv = dvAs('dev');
+  const plan = await C.planComponent(dv, valid(flowJob(dv, mk(), { changed: ['actions'] })), ctx());
+  dv.switchOffOnSave = true;
+  const { res } = await applied(plan, dv);
+  assert.match(res.rows[0].outcome, /^read-back mismatch: the flow's state changed on save \(statecode 1 -> 0, statuscode 2 -> 1\)/);
+  const s = dvAs('dev');
+  const p2 = await C.planComponent(s, valid(flowJob(s, mk(), { changed: ['actions'] })), ctx());
+  s.subscriptionScope = 2;
+  const r2 = (await applied(p2, s)).res;
+  assert.match(r2.rows[0].outcome, /the trigger is not live as the definition says .*scope 2 \(the definition says 4\)/);
+});
+
+test('proven_in for flows compares the changed steps\' inputs, not only their names and types', () => {
+  const before = flowCd();
+  const prodAfter = flowCd();
+  prodAfter.properties.definition.actions.Get_donor.inputs.parameters.entityName = 'accounts';
+  const devAfter = flowCd();
+  devAfter.properties.definition.actions.Get_donor.inputs.parameters.entityName = 'leads';
+  const me = { set: 'workflows', name: 'Add Soft Credit', mode: 'update', sections: ['actions'], diff: C.diffFlow(before, prodAfter) };
+  const e = (a) => devEntry({ set: 'workflows', name: 'Add Soft Credit', sections: ['actions'], before: { clientdata: JSON.stringify(before) }, after: { clientdata: JSON.stringify(a) } });
+  assert.equal(C.sameChange(me, e(devAfter)), "its actions differs from this change's");
+  assert.equal(C.sameChange(me, e(prodAfter)), true);
+});
+
+// ---------- blind review round 4 ----------
+
+test('secrets: every place a typed-in credential can sit, in steps AND triggers; expressions and count fields never count', () => {
+  const S = (actions = {}, triggers = {}) => C.flowSecrets({ properties: { definition: { parameters: {}, actions, triggers } } });
+  const http = (inputs) => S({ H: { type: 'Http', inputs } });
+  assert.deepEqual(http({ authentication: { type: 'Raw', value: 'Bearer abc123' } }), ['step "H" (its authentication value)']);
+  assert.deepEqual(http({ authentication: { type: 'ClientCertificate', pfx: 'MIIabc', password: 'pw' } }), ['step "H" (its authentication pfx)', 'step "H" (its authentication password)']);
+  assert.deepEqual(http({ authentication: { type: 'ActiveDirectoryOAuth', tenant: 't', audience: 'a', clientId: 'c', secret: 's3cr3t' } }), ['step "H" (its authentication secret)']);
+  assert.deepEqual(http({ method: 'GET', uri: 'https://x.invalid/api?sv=1&sig=abcDEF&code=zz' }), ['step "H" (its URI query sig)', 'step "H" (its URI query code)']);
+  assert.deepEqual(http({ method: 'GET', uri: "https://x.invalid/api?sig=@{parameters('sig')}" }), [], 'an interpolated expression is not a literal');
+  assert.deepEqual(http({ headers: { 'x-api-key': 'k1', 'Ocp-Apim-Subscription-Key': 'k2', 'Content-Type': 'application/json' } }), ['step "H" (its x-api-key header)', 'step "H" (its Ocp-Apim-Subscription-Key header)']);
+  assert.deepEqual(http({ queries: { apikey: 'k' } }), ['step "H" (its query apikey)']);
+  assert.deepEqual(http({ headers: { Authorization: "Bearer @{parameters('Api Token (sbrm_ApiToken)')}" } }), [], 'text around an @{...} expression is not a literal secret');
+  assert.deepEqual(http({ body: { grant: 'client_credentials', client_secret: 'abc', max_tokens: 500, nested: { password: 'p' } } }), ['step "H" (its body client_secret)', 'step "H" (its body password)']);
+  assert.deepEqual(http({ body: 'grant_type=client_credentials&client_secret=abc' }), ['step "H" (its body client_secret)']);
+  assert.deepEqual(http({ body: '{"apiKey":"abc","max_completion_tokens":800}' }), ['step "H" (its body apiKey)']);
+  assert.deepEqual(http({ body: { client_secret: "@parameters('s')", max_tokens: 4000 } }), []);
+  // a non-HTTP connector step, and a trigger
+  assert.deepEqual(S({ C1: { type: 'OpenApiConnection', inputs: { host: { connectionName: 'k' }, parameters: { 'item/apiKey': 'abc', 'item/name': 'x' } } } }), ['step "C1" (its parameter item/apiKey)']);
+  assert.deepEqual(S({}, { T: { type: 'HttpWebhook', inputs: { subscribe: { method: 'POST' }, headers: { Authorization: 'Basic abc' } } } }), ['trigger "T" (its Authorization header)']);
+});
+
+test('power: outside-facing triggers, connector HTTP operations and older $connections steps are judged like Http steps', async () => {
+  const ra = [{ key: 'shared_sp', owner_id: IDS.me, owner: 'Test Person', display: 'SharePoint' }, { key: 'shared_admin', owner_id: IDS.appadmin, owner: 'SBRM App Admin', display: 'Dataverse' }];
+  const f = (a) => C.actionFacts(a);
+  assert.match(C.stepPower('Send', f({ type: 'OpenApiConnection', inputs: { host: { connectionName: 'shared_sp', operationId: 'HttpRequest' } } }), ra, IDS.me).join(), /sends a raw HTTP request through its connection \(operation HttpRequest\)/);
+  assert.match(C.stepPower('Entra', f({ type: 'OpenApiConnection', inputs: { host: { connectionName: 'shared_sp', operationId: 'InvokeHttp' } } }), ra, IDS.me).join(), /operation InvokeHttp/);
+  const legacy = (key) => ({ type: 'ApiConnection', inputs: { host: { connection: { name: `@parameters('$connections')['${key}']['connectionId']` } }, method: 'get', path: '/x' } });
+  assert.match(C.stepPower('Old', f(legacy('shared_admin')), ra, IDS.me).join(), /step Old acts through Dataverse, as SBRM App Admin/);
+  assert.deepEqual(C.stepPower('Old', f(legacy('shared_sp')), ra, IDS.me), [], 'the person\'s own connection, resolved from $connections');
+  assert.match(C.stepPower('Odd', f({ type: 'ApiConnection', inputs: { host: { connection: { name: "@variables('conn')" } } } }), ra, IDS.me).join(), /cannot match to a connection reference/);
+  assert.match(C.stepPower('Ghost', f({ type: 'OpenApiConnection', inputs: { host: { connectionName: 'shared_nowhere', operationId: 'GetItem' } } }), ra, IDS.me).join(), /connection references do not name/);
+  assert.match(C.triggerPower('manual', f({ type: 'Request', kind: 'Http', inputs: { schema: {} } }), ra, IDS.me).join(), /takes HTTP requests from outside/);
+  assert.deepEqual(C.triggerPower('manual', f({ type: 'Request', kind: 'Button', inputs: { schema: {} } }), ra, IDS.me), [], 'a manual or child-flow trigger is in-platform');
+  assert.match(C.triggerPower('hook', f({ type: 'HttpWebhook', inputs: {} }), ra, IDS.me).join(), /registers a webhook/);
+
+  // in a plan: a new flow with an HTTP request trigger is admin; a changed trigger on App Admin's connection too
+  const cd = flowCd({ refs: { shared_commondataserviceforapps: REF('sbrm_dataverse_owner2') } });
+  cd.properties.definition.triggers = { manual: { type: 'Request', kind: 'Http', inputs: { schema: {} }, description: 'Called by the website.' } };
+  cd.properties.definition.actions.Compose_total.description = 'x';
+  const dev = dvAs('dev');
+  await refused(C.planComponent(dev, valid(job({ component: { set: 'workflows', name: 'Web Hook Flow' }, mode: 'create', solution: 'SBRMAdHocChanges', definition: { clientdata: cd }, intent: { verb: 'create', component: 'flow', name: 'Web Hook Flow' } })), ctx()), /trigger manual takes HTTP requests from outside/, 'not_permitted');
+  const off = dvAs('dev');
+  off.data.workflows[IDS.offflow].clientdata = JSON.stringify(flowCd());
+  const offJob = flowJob(off, flowCd({ filter: 'statecode', note: 'Status only.' }), { changed: ['trigger', 'notes'], id: IDS.offflow, name: 'Sync Letters' });
+  await refused(C.planComponent(off, valid(offJob), ctx()), /trigger When_a_row_is_modified acts through Microsoft Dataverse, as SBRM App Admin/, 'not_permitted');
+});
+
+test('revert refuses a forged or foreign log entry cleanly: unknown set, bad id, no name, another environment', async () => {
+  const dv = dvAs('dev');
+  const entry = await appliedEntry(dv, await C.planComponent(dv, valid(viewJob(dv, { layoutxml: SWAPPED_LAYOUT })), ctx()));
+  const forged = (rowOver, top = {}) => ({ ...entry, ...top, rows: [{ ...entry.rows[0], ...rowOver }] });
+  await refused(C.planComponentRevert(dv, forged({ set: 'roles' }, { component: { ...entry.component, set: 'roles' } }), ctx()), /does not name a component set this engine changes/, 'invalid_job');
+  await refused(C.planComponentRevert(dv, forged({ set: 'systemforms' }), ctx()), /does not name a component set/, 'invalid_job');
+  await refused(C.planComponentRevert(dv, forged({ id: '../../roles' }), ctx()), /no valid component id/, 'invalid_job');
+  await refused(C.planComponentRevert(dv, forged({ name: '', after: { ...entry.rows[0].after, name: null } }), ctx()), /no component name/, 'invalid_job');
+  await refused(C.planComponentRevert(dv, forged({}, { env: 'nowhere' }), ctx()), /names an environment the toolkit does not know/, 'invalid_job');
+  const devCopy = fakeComponentDv({ email: 'dev@example.org', d: dv.data, host: ENVS.fedev.host });
+  await refused(C.planComponentRevert(devCopy, entry, ctx()), /that change was made in the Donor App; this revert was planned against another environment/, 'invalid_job');
+  assert.equal((await C.planComponentRevert(dv, entry, ctx())).mode, 'update', 'the genuine entry still reverts');
 });

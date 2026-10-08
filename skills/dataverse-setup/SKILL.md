@@ -109,7 +109,9 @@ Known starting points on 10/6/26, so you recognise them:
 
 ## Step 4. Done when
 
-1. `doctor` prints "Everything checked is working."
+1. `doctor --apps <the apps they use>` prints "Everything checked is working." (Without `--apps`, an app
+   that does not answer is only flagged where this machine has written before, so a first-day sign-in
+   gap could read as fine.)
 2. One read in each app the person uses, through the toolkit's connection: for example
    `read_query` for the top 1 row of a table they know (contacts in the Donor App). Show them the row
    so they see it is their data. If an app's connection is up but offers no tools at all, that app has
