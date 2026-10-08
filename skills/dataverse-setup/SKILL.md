@@ -29,7 +29,9 @@ can read, and write access is a separate grant from Dylan.
   `node "<toolkit>/dataverse/engine/dataverse-write.js" doctor`.
 - Tell the person what this will do, in a few lines: install one command-line tool, have them sign in
   to the donor app (and any other SBRM app they use) with their own Microsoft account, and tidy up any
-  older Dataverse connection on this Mac. Ask which SBRM apps they use. Most people: the Donor App only.
+  older Dataverse connection on this Mac. The person gets every SBRM app they have privileges for
+  (Dylan, 10/8: "she should have access to all the apps that she has priveleges for"): ask which apps
+  their Dataverse role opens, and if they are not sure, the first health check shows which apps answer.
 
 ## Step 1. Node
 
@@ -42,11 +44,12 @@ can read, and write access is a separate grant from Dylan.
 
 ## Step 2. The health check, first pass
 
-First record the apps they use: `node "<toolkit>/dataverse/engine/dataverse-write.js" apps <keys separated
-by commas>` (keys: donorapp, fedev = Donor App Dev, hgs, recovery, soberliving; most people: `donorapp`,
-plus `fedev` for anyone who builds in Donor App Dev). Every app's connection signs in to it at each start,
-and on a Mac each one without a saved sign-in opened its own browser sign-in (found 10/8: four at
-startup), so the apps they do not use stay switched off. It grants nothing and narrows reads only; `apps
+First record their apps: `node "<toolkit>/dataverse/engine/dataverse-write.js" apps <keys separated
+by commas>` (keys: donorapp, fedev = Donor App Dev, hgs, recovery, soberliving): EVERY app they have
+privileges for, not only the one they work in most. Every app's connection signs in to it at each start,
+and an app without a SAVED sign-in opens a browser sign-in every time (found 10/8 on a Mac: four at
+each start, never saved), so each recorded app gets a saved sign-in below, and only apps they have no
+role in stay switched off. It grants nothing and narrows reads only; `apps
 all` undoes it; running setup again changes it. Then run `doctor`: it checks exactly those apps, and that
 each has a SAVED sign-in on this machine.
 It prints one line per check, `ok` / `FAIL` / `--`, and under every FAIL a `fix:` line
