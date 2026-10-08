@@ -13,7 +13,6 @@ const { DataverseError } = require('./cli');
 
 const { normalize, atLeast } = require('./levels');
 const severity = require('./severity');
-const cascade = require('./cascade');
 
 const LOOKUP_TYPES = new Set(['Lookup', 'Customer', 'Owner']);
 
@@ -194,10 +193,6 @@ function planJob(dv, job, { envs, access, warnRows }) {
   }
   // No cap on how many rows (ruled 10/7: "I dont think placing caps on writes makes sense"); a big change
   // is flagged by its severity instead, below.
-  // Deletes are an admin's (ruled 10/7: "let admin do deletes of all").
-  if (job.mode === 'delete' && !atLeast(acc.level, 'admin')) {
-    throw new PlanRefused([`deleting records takes admin access in the ${envInfo.name}; ${identity.fullname} has ${acc.level}. Ask Dylan.`], 'not_permitted');
-  }
   // The toolkit's own tables (who may write, the Write Log, the events) change only with admin access
   // (10/7): nobody's Claude grants itself access or edits the record of what it did.
   if (TOOLKIT_SETS.has(job.table) && !atLeast(acc.level, 'admin')) {
@@ -211,8 +206,6 @@ function planJob(dv, job, { envs, access, warnRows }) {
 
   const table = loadTable(dv, job.table);
   if (!table) throw new PlanRefused([`there is no table "${job.table}" in the ${envInfo.name}`], 'table_missing');
-  // A delete plan is async (the linked-record inventory reads in parallel): planJob returns a Promise then.
-  if (job.mode === 'delete') return planDelete(dv, job, { envInfo, table, identity, acc, warnRows });
   const { columns, verify, errs } = resolveColumns(table, job);
   if (errs.length) throw new PlanRefused(errs, 'invalid_job');
   const choiceErrs = checkChoices(dv, table, job, columns);
@@ -277,7 +270,11 @@ function planJob(dv, job, { envs, access, warnRows }) {
         if (!(e instanceof DataverseError)) throw e;
         why = `record ${r.id} was not found in ${table.entity.plural.toLowerCase()}`;
       }
-      if (before && hasState && before.statecode !== 0) why = 'the record is inactive';
+      // An inactive record is changed only to make it active again (blind review 10/8: records are made
+      // inactive instead of deleted, so the undo of a deactivation, or a hand-made reactivation, must plan).
+      // Nothing else rides along: reactivate first, then change it.
+      const reactivates = r.body.statecode === 0 && Object.keys(r.body).every((k) => k === 'statecode' || k === 'statuscode');
+      if (before && hasState && before.statecode !== 0 && !reactivates) why = 'the record is inactive (to make it active again, a job sets only statecode 0 and an active statuscode)';
       // A closed-year gift is never modified, and an open one is never moved INTO a closed year.
       if (!why && before && guard && !closedYear.isOpen(before[guard])) why = `this record ${closedYear.why(before[guard])}`;
       if (!why && before && guard && guard in r.body && !closedYear.isOpen(r.body[guard])) why = `the new book date ${closedYear.why(r.body[guard])}`;
@@ -359,101 +356,10 @@ function lowerNoun(label) {
   return String(label || '').split(' ').map((w) => (w.length > 1 && w.slice(1) === w.slice(1).toLowerCase() ? w[0].toLowerCase() + w.slice(1) : w)).join(' ');
 }
 
-// Records (DESIGN.md §10j): a create or update can be reverted, so only its size can make it serious;
-// a delete cannot be taken back by the toolkit at all.
+// Records (DESIGN.md §10j): a create or update can be reverted, so only its size can make it serious.
+// (Records are never deleted, ruled 10/8.)
 function rowsSeverity(mode, n, entity, warnRows) {
-  const noun = lowerNoun(n === 1 ? entity.singular : entity.plural);
-  const irreversible = mode === 'delete'
-    ? [`deletes ${n} ${noun} for good (undo cannot bring ${n === 1 ? 'it' : 'them'} back; the last values are kept in the Write Log)`]
-    : [];
-  return severity.assess({ count: n, noun: lowerNoun(entity.plural), irreversible }, { warnRows });
+  return severity.assess({ count: n, noun: lowerNoun(entity.plural), irreversible: [] }, { warnRows });
 }
 
-// ---------- the admin delete (ruled 10/7: "let admin do deletes of all") ----------
-//
-// Each row names a record by id; the plan reads the WHOLE record as it stands (every column), which the
-// log keeps, so what was deleted can be seen and keyed back by hand. The closed-year guard holds: a gift
-// in a closed fiscal year is never deleted. Undo cannot bring a deleted record back (lib/revert.js).
-async function planDelete(dv, job, { envInfo, table, identity, acc, warnRows }) {
-  const guard = closedYear.guardFor(envInfo, job.table);
-  const rows = [];
-  const refused = [];
-  for (const r of job.rows) {
-    let rec;
-    try {
-      rec = dv.get(`${table.entity.set}(${r.id})`, { formatted: true });
-    } catch (e) {
-      if (!(e instanceof DataverseError)) throw e;
-      refused.push({ name: r.name, id: r.id, why: `record ${r.id} was not found in ${table.entity.plural.toLowerCase()}` });
-      continue;
-    }
-    if (guard && !closedYear.isOpen(rec[guard])) {
-      refused.push({ name: r.name, id: r.id, why: `this record ${closedYear.why(rec[guard])}` });
-      continue;
-    }
-    const recordName = rec[table.entity.primaryName] || null;
-    const warnings = r.warning ? [r.warning] : [];
-    if (recordName && recordName.trim().toLowerCase() !== r.name.toLowerCase()) {
-      warnings.push(`the job calls this row "${r.name}", but the record is named "${recordName}"`);
-    }
-    const before = Object.fromEntries(Object.entries(rec).filter(([k]) => !k.includes('@')));
-    rows.push({ name: r.name, record_name: recordName, id: r.id, body: null, before, changes: [], warnings });
-  }
-  // What the deletes do to OTHER records (lib/cascade.js): Restrict blocks a record (left out here, since
-  // Dataverse would refuse it); Cascade and RemoveLink are shown, counted and logged with every id.
-  const rels = cascade.deleteRelationships(dv, table.entity.logical);
-  let inv = await cascade.inventory(dv, rels, rows.map((r) => r.id));
-  const blocked = new Map();
-  for (const c of Object.values(inv.found)) {
-    if (c.action !== 'Restrict') continue;
-    for (const [pid, kids] of Object.entries(c.by)) blocked.set(pid, `${kids.length} linked ${String(kids.length === 1 ? c.singular : c.label).toLowerCase()} block deleting it (Dataverse refuses while they exist)`);
-  }
-  const standing = rows.filter((r) => !blocked.has(r.id));
-  for (const r of rows) if (blocked.has(r.id)) refused.push({ name: r.name, id: r.id, why: blocked.get(r.id) });
-  if (!standing.length) throw new PlanRefused(['every row was refused:', ...refused.map((x) => `  ${x.name}: ${x.why}`)], 'every_row_refused');
-  if (standing.length !== rows.length) inv = await cascade.inventory(dv, rels, standing.map((r) => r.id));
-  for (const r of standing) r.cascade = cascade.forRecord(inv, r.id);
-  return {
-    contract: job.contract,
-    kind: job.kind,
-    env: job.env,
-    host: envInfo.host,
-    app: envInfo.name,
-    table: job.table,
-    mode: 'delete',
-    source: job.source,
-    reason: job.reason,
-    intent: job.intent,
-    identity,
-    access: acc.level,
-    cli_version: dv.cliVersion || null,
-    labels: { singular: table.entity.singular, plural: table.entity.plural, primary_id: table.entity.primaryId },
-    columns: {},
-    verify: [],
-    amount_field: null,
-    amount_total: null,
-    closed_year_column: guard,
-    severity: deleteSeverity(standing.length, table.entity, inv, warnRows),
-    typed: severity.typedPhrase(standing.map((r) => r.record_name || r.name || r.id)),
-    cascade: { relationships: rels.length, key: cascade.inventoryKey(inv), unreadable: inv.unreadable },
-    rows: standing,
-    refused,
-  };
-}
-
-// A delete's severity counts what it takes WITH it (DESIGN.md §10j, review 10/7).
-function deleteSeverity(n, entity, inv, warnRows) {
-  const noun = lowerNoun(n === 1 ? entity.singular : entity.plural);
-  const gone = cascade.countsLine(inv, 'Cascade');
-  const unlinked = cascade.countsLine(inv, 'RemoveLink');
-  const irreversible = [`deletes ${n} ${noun} for good (undo cannot bring ${n === 1 ? 'it' : 'them'} back; the last values are kept in the Write Log)`];
-  if (gone.total) irreversible.push(`also deletes the records linked to ${n === 1 ? 'it' : 'them'}: ${gone.text} (and anything those delete in turn)`);
-  if (unlinked.total) irreversible.push(`unlinks ${unlinked.text}: they stay, with that link blank`);
-  const dropped = cascade.countsLine(inv, 'Unlink');
-  if (dropped.total) irreversible.push(`removes ${dropped.text} (the many-to-many associations go with ${n === 1 ? 'it' : 'them'})`);
-  const unread = Object.keys(inv.unreadable);
-  if (unread.length) irreversible.push(`${unread.length} kind(s) of linked record could not be checked (${unread.slice(0, 3).join(', ')}${unread.length > 3 ? ', ...' : ''}), so what they lose is not listed`);
-  return severity.assess({ count: n + gone.total + unlinked.total + dropped.total, noun: 'records', irreversible }, { warnRows });
-}
-
-module.exports = { planJob, whoAmI, accessFor, same, display, money, deleteSeverity, PlanRefused };
+module.exports = { planJob, whoAmI, accessFor, same, display, money, PlanRefused };

@@ -12,7 +12,7 @@
 //          Reads only.
 //   apply  re-checks the live hash, the level and the severity, shows the pop-up, then ONE write: a PATCH
 //          with If-Match (update, on, off, own), a POST into the named solution (create) or a DELETE
-//          (admin, typed name). Views, forms and sitemaps are then published (only that table or sitemap,
+//          (admin). Views, forms and sitemaps are then published (only that table or sitemap,
 //          never PublishAllXml). The definition is read back and parse-compared; a flow's trigger
 //          subscription is checked when the flow is on.
 //   log    the entry carries the full definition before AND after (DESIGN.md §10e: the log IS the restore
@@ -1590,10 +1590,7 @@ function describe(dv, { mode, set, name, table, id, live, written, unproven, car
     power: [...new Set(power)],
     unproven: unproven || null,
   };
-  // What the person types to approve a delete: the component's LIVE name, or its id when it has none
-  // (blind review 10/7: a blank name made the phrase null, and a null phrase is no typed step at all).
-  const typed = mode === 'delete' ? (severity.typedPhrase([name]) || id) : null;
-  return { facts, diff, flow, typed };
+  return { facts, diff, flow };
 }
 
 // ---------- plan ----------
@@ -1616,7 +1613,7 @@ function entryFor(plan, { time, planId, person, outcome, rows }) {
     time, plan_id: planId, person, env: plan.env, app: plan.app,
     table: `${plan.component.set}${plan.component.table ? ` (${plan.component.table})` : ''}`.slice(0, 100),
     // sections: what the change changed, so a later `proven_in` can be checked as the SAME change (lib/proven.js).
-    mode: 'component', action: plan.mode, component: plan.component, sections: plan.diff.sections, source: plan.source, reason: plan.reason, approval: 'dialog',
+    mode: 'component', action: plan.mode, component: plan.component, sections: plan.diff.sections, source: plan.source, reason: plan.reason, approval: 'prompt',
     left_out: [], headline: title(plan), outcome, rows, reverts_plan_id: plan.reverts_plan_id || null,
   };
 }
@@ -1741,7 +1738,7 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
 
   // The change as the engine sees it: the diff, who a flow runs as, the drafts it would touch.
   const createExtra = job.mode === 'create' ? Object.fromEntries(Object.entries(job.definition).filter(([k]) => !spec.fields.includes(k))) : null;
-  const { facts, diff, flow, typed } = describe(dv, {
+  const { facts, diff, flow } = describe(dv, {
     mode: job.mode, set, name: live ? live.name : job.component.name, table, id: live ? live.id : null, live, written: after, carried, extra: createExtra,
     me: identity.systemuserid,
   });
@@ -1787,7 +1784,6 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
     create_extra: createExtra,
     solution, owner_to: ownerTo, diff, flow,
     publish: ['update', 'create'].includes(job.mode) ? (set === 'sitemaps' ? { sitemaps: [`{${live.id}}`] } : set === 'workflows' ? null : { entities: [table] }) : null,
-    typed,
     proven_in: job.proven_in || null,
     reverts_plan_id: revertOf || null,
   };
@@ -1839,7 +1835,6 @@ function componentSummary(plan) {
     const ra = plan.flow && plan.flow.trigger_runas;
     out.push(`  A flow acts as its owner: from now on it acts as ${plan.owner_to.name}${ra && ra.length ? ` (its trigger subscription: runas ${[...new Set(ra)].join(', ')})` : ' (it has no trigger subscription now)'}.`);
   }
-  if (plan.mode === 'delete') out.push(`  To approve, type its name exactly: ${plan.typed}`);
   if (plan.publish) out.push(`  Published after the change (${plan.publish.entities ? `the ${plan.component.table} table only` : 'this sitemap only'}).`);
   out.push('', `  ${undoLine(plan)}`, '', `Reason given: ${plan.reason}`);
   return out.join('\n');
@@ -2035,7 +2030,7 @@ async function applyComponent(plan, deps, { id, file, fs }) {
 
   // Everything the person approves is worked out AGAIN here, from the live re-read and the definition this
   // apply will write, never from the plan's own account of itself (blind review 10/7): the diff, who a flow
-  // runs as, the drafts it touches, the level it needs, the warnings and the typed delete phrase. Only the
+  // runs as, the drafts it touches, the level it needs, and the warnings. Only the
   // dev-copy line is carried from the plan (apply has no connection to the dev copy).
   const body = bodyFor(plan);
   const written = plan.mode === 'update' ? { ...live.definition, ...body } : plan.mode === 'create' ? plan.after_definition : null;
@@ -2071,9 +2066,9 @@ async function applyComponent(plan, deps, { id, file, fs }) {
 
   const view = {
     ...plan, component: { ...plan.component, name: d.facts.name }, severity: sevNow, facts: d.facts, diff: d.diff, flow: d.flow,
-    need: need.level, need_why: need.why, access: acc.level, typed: d.typed,
+    need: need.level, need_why: need.why, access: acc.level,
   };
-  const answer = confirm({ summaryText: componentSummary(view), detailText: componentDetail(view, { id }), title: `SBRM: approve this app change in the ${plan.app}?`, typed: d.typed });
+  const answer = confirm({ summaryText: componentSummary(view), detailText: componentDetail(view, { id }), title: `SBRM: approve this app change in the ${plan.app}?` });
   const base = entryFor(view, { time: now.toISOString(), planId: id, person: me, outcome: 'cancelled', rows: [] });
   if (!answer.approved) return { entry: { ...base, outcome: 'cancelled', note: answer.note || null, rows: [] }, outcome: 'cancelled', person: me, dv, written: 0, rows: [], left_out: [] };
 
@@ -2081,10 +2076,10 @@ async function applyComponent(plan, deps, { id, file, fs }) {
   // minutes, and an edit saved in the maker portal meanwhile would be overwritten (the target's) or published
   // along with this change (the table's) without the person having seen it.
   const again = draftState(dv, set, plan.mode, live ? live.id : null, d.facts.table);
-  if (again.target.length) throw new ApplyRefused(`${draftRefusal(live.name)} (saved while the pop-up was open). Nothing was written.`, 'snapshot_moved');
+  if (again.target.length) throw new ApplyRefused(`${draftRefusal(live.name)} (saved while the approval was waiting). Nothing was written.`, 'snapshot_moved');
   const newDrafts = again.others.map((x) => x.name).filter((n) => !d.facts.other_drafts.includes(n));
   if (newDrafts.length) {
-    throw new ApplyRefused(`unpublished edits were saved while the pop-up was open, and publishing ${d.facts.table} now would publish them too: ${names(newDrafts)}. Nothing was written; make a new plan.`, 'severity_grew');
+    throw new ApplyRefused(`unpublished edits were saved while the approval was waiting, and publishing ${d.facts.table} now would publish them too: ${names(newDrafts)}. Nothing was written; make a new plan.`, 'severity_grew');
   }
 
   // The one write, then publish (views, forms, sitemaps), then the read-back.

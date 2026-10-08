@@ -483,7 +483,7 @@ test('apply: dependency order, the provisioning wait, publish of the touched com
   let shown = null;
   const r = await apply(p, dv, { confirm: (x) => { shown = x; return { approved: true }; } });
   assert.equal(r.outcome, 'applied', JSON.stringify(r.rows.map((x) => x.outcome)));
-  assert.equal(shown.typed, null, 'nothing is deleted, so nothing is typed');
+  assert.equal(shown.typed, undefined, 'no typed name (ruled 10/8)');
   assert.match(shown.title, /approve this app change in the Donor App Dev/);
   assert.deepEqual(writes(dv).map((c) => `${c.method} ${c.path}`), [
     'POST solutions', 'POST EntityDefinitions',
@@ -574,19 +574,19 @@ test('apply: a read-back that still misses after the retry is "read-back mismatc
   assert.match(r.rows[0].outcome, /^read-back mismatch: option 338300000 does not read 'Tiny'/);
 });
 
-test('apply: deletes need the typed phrase (the object\'s display name; several = "delete N")', async () => {
+test('apply: a delete runs on the approval alone (no typed name, ruled 10/8)', async () => {
   const dv = fakeSchemaDv();
   const p = await plan(dv, job({ columns: [{ action: 'delete', table: 'sbrm_widget', column: 'sbrm_notes' }] }));
   let typed;
   const r = await apply(p, dv, { confirm: (x) => { typed = x.typed; return { approved: true }; } });
-  assert.equal(typed, 'Notes');
+  assert.equal(typed, undefined, 'no typed name (ruled 10/8)');
   assert.equal(r.outcome, 'applied');
   assert.equal(dv.data.attrs.sbrm_widget.sbrm_notes, undefined);
   assert.equal(r.rows[0].before.LogicalName, 'sbrm_notes', 'the full definition before is logged');
   const dv2 = fakeSchemaDv();
   const p2 = await plan(dv2, job({ columns: [{ action: 'delete', table: 'sbrm_widget', column: 'sbrm_notes' }, { action: 'delete', table: 'sbrm_widget', column: 'sbrm_code' }] }));
   await apply(p2, dv2, { confirm: (x) => { typed = x.typed; return { approved: false }; } });
-  assert.equal(typed, 'delete 2');
+  assert.equal(typed, undefined, 'no typed name (ruled 10/8)');
 });
 
 test('apply re-checks identity, age and level before anything is written', async () => {
@@ -696,7 +696,7 @@ test('relationships: many-to-many create, and an admin delete of a lookup relati
   assert.equal((await apply(p, dv)).outcome, 'applied');
   const d = await plan(dv, job({ relationships: [{ action: 'delete', schema_name: 'sbrm_contact_sbrm_widget_ContactId' }] }));
   assert.match(schemaSummary(d), /DELETE the relationship sbrm_contact_sbrm_widget_ContactId and its lookup column sbrm_contactid on sbrm_widget, with the links in 1 rows/);
-  const r = await apply(d, dv, { confirm: (x) => { assert.equal(x.typed, 'sbrm_contact_sbrm_widget_ContactId'); return { approved: true }; } });
+  const r = await apply(d, dv, { confirm: (x) => { assert.equal(x.typed, undefined, 'no typed name (ruled 10/8)'); return { approved: true }; } });
   assert.equal(r.outcome, 'applied');
   assert.equal(dv.data.attrs.sbrm_widget.sbrm_contactid, undefined);
 });
@@ -836,18 +836,18 @@ test('review 1: a step whose label does not match its request is refused as tamp
   assert.deepEqual(writes(dv), []);
 });
 
-test('review 1 + 6: the typed phrase comes from the delete requests and live names, never blank', async () => {
+test('review 1 + 6: a delete with blank labels still applies from the live names; no typed name (ruled 10/8)', async () => {
   const dv = fakeSchemaDv();
   const p = await plan(dv, DEL_NOTES());
   let typed;
   await apply({ ...p, steps: p.steps.map((s) => ({ ...s, display: '', name: '' })) }, dv, { confirm: (x) => { typed = x.typed; return { approved: false }; } });
-  assert.equal(typed, 'Notes', 'from the live column, not the plan label');
+  assert.equal(typed, undefined, 'no typed name (ruled 10/8)');
   const dv2 = fakeSchemaDv();
   dv2.data.attrs.sbrm_widget.sbrm_notes.DisplayName = { LocalizedLabels: [{ Label: '', LanguageCode: 1033 }], UserLocalizedLabel: { Label: '', LanguageCode: 1033 } };
   const p2 = await plan(dv2, DEL_NOTES());
   assert.equal(p2.steps[0].display, 'sbrm_notes');
   await apply(p2, dv2, { confirm: (x) => { typed = x.typed; return { approved: false }; } });
-  assert.equal(typed, 'sbrm_notes', 'a blank display name falls back to the logical name');
+  assert.equal(typed, undefined, 'no typed name (ruled 10/8)');
 });
 
 test('review 2: a delete that takes MORE at apply than at plan is refused (severity_grew), with the counts', async () => {
@@ -887,7 +887,7 @@ test('review 3: a table delete logs the WHOLE table: columns, keys, relationship
   assert.ok(Array.isArray(b.Keys));
   assert.deepEqual(b.ManyToOneRelationships.map((r) => r.SchemaName), ['sbrm_contact_sbrm_widget_ContactId']);
   assert.deepEqual(b.OptionSets.sbrm_size.Options.map((o) => o.Value), [338300000, 338300001]);
-  const r = await apply(p, dv, { confirm: (x) => { assert.equal(x.typed, 'Widget'); return { approved: true }; } });
+  const r = await apply(p, dv, { confirm: (x) => { assert.equal(x.typed, undefined, 'no typed name (ruled 10/8)'); return { approved: true }; } });
   assert.equal(r.outcome, 'applied');
   assert.equal(r.entry.rows[0].before.Attributes.length, 7, 'the log row carries it');
 });
@@ -984,7 +984,7 @@ test('re-verify 1: a PUT body that changes more than the plan shows is refused (
   assert.deepEqual(writes(dv), []);
   // A body changing a field the pop-up never lists (outside the shown fields) is refused too.
   const hidden = { ...p, steps: [{ ...s, body: { ...s.body, IsSecured: true } }] };
-  assert.match((await refused(apply(hidden, dv, { confirm: noPopup }), ApplyRefused)).message, /its request changes more than the pop-up would show/);
+  assert.match((await refused(apply(hidden, dv, { confirm: noPopup }), ApplyRefused)).message, /its request changes more than the plan would show/);
 });
 
 test('re-verify 1: stored lines and "old -> new" must match what the requests do; the pop-up shows the rendered ones', async () => {

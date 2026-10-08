@@ -13,7 +13,7 @@ reads everything live, and refuses (never repairs) anything not exactly right. S
   difference, so the sentence you tell the person and the file always agree
 
 Who may run which kind is the person's level in that app (`whoami <env>`): write for `rows` (and `merge`
-with a merge grant), develop for `schema` and `component`, admin for every delete.
+with a merge grant), develop for `schema` and `component`, admin for deleting an app part (records are never deleted).
 
 ## Records: `kind: "rows"`
 
@@ -26,14 +26,14 @@ with a merge grant), develop for `schema` and `component`, admin for every delet
   ] }
 ```
 
-- `table` is the entity SET name (plural, lowercase). `mode`: `create`, `update` or `delete`.
-- Each row: `name` (the record's human name), `id` (update and delete), `body` (create and update): plain
+- `table` is the entity SET name (plural, lowercase). `mode`: `create` or `update`.
+- Each row: `name` (the record's human name), `id` (update), `body` (create and update): plain
   columns by logical name, lookups as `"<NavigationProperty>@odata.bind": "/<set>(<guid>)"` (null clears).
 - Optional: `verify` (columns to read back; every written column is read back anyway), `amount_field`
   (+ `intent.amount_total`), per create row `dup_filter` (one OData filter; a match leaves the row out).
-- **Delete** (admin): rows carry `name` and `id` only, `intent.verb` is `"delete"` and `intent.fields` is
-  `[]`. The plan reads each whole record (kept in the Write Log); the pop-up asks for the record's name
-  (or `delete N`) to be typed. A closed-fiscal-year gift is never deleted. Undo cannot bring it back.
+- **Records are never deleted, only made inactive** (ruled 10/8): an `update` with `"statecode": 1` and the
+  table's inactive `"statuscode"` (read its status options first). The plan headline says "Mark N ...
+  inactive"; undo makes them active again. A `delete` mode is refused at `check`.
 
 ## Merges: `kind: "merge"` (donor app accounts and contacts)
 
@@ -113,7 +113,7 @@ It prints the `snapshot_hash` and saves the current definition to `~/.sbrm-datav
 - `mode`: `update`, `create` (with `solution` = an unmanaged SBRM solution's unique name; a new view needs
   `returnedtypecode`, `fetchxml` and `layoutxml`, a new form `objecttypecode` and `formxml`, a new flow
   `clientdata`), and for flows only `on`, `off` and `own` (with `owner` = the new owner's systemuser id;
-  admin, since a flow acts as its owner); `delete` is admin, typed name, and never a flow that is On.
+  admin, since a flow acts as its owner); `delete` is admin, and never a flow that is On.
   Every mode except `create` needs the `snapshot_hash` from `snapshot`.
 - `definition` holds only what changes: flows `clientdata` (+ `description`), views `fetchxml` /
   `layoutxml`, forms `formxml`, sitemaps `sitemapxml`. Every field a form names must exist on the table.
@@ -136,5 +136,5 @@ It prints the `snapshot_hash` and saves the current definition to `~/.sbrm-datav
 `Before you approve:` lines, when there are any: **Large change** (over 50 rows, pairs or objects),
 **Can't be fully undone** (merges, deletes, a live flow's steps, turning a flow On), **Lasting** (a new
 table, column, view, form or flow stays until an admin deletes it), **Not tried in Donor App Dev first**
-(a change to something live in the Donor App without `proven_in`). Tell the person every line before
-asking; the pop-up shows the same lines. If the change grows between plan and apply, apply refuses.
+(a change to something live in the Donor App without `proven_in`). Mention each in a few words before
+the apply; Claude Code's prompt shows them again. If the change grows between plan and apply, apply refuses.

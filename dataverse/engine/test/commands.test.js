@@ -179,6 +179,20 @@ test('resolve: cancel leaves it open; a second resolve of a closed item is refus
   assert.equal(again.run.events[0].reason_code, 'not_open');
 });
 
+test('resolve: with no approval injected it needs its own ticket (1.11.0, the guard mints resolve-<number>)', () => {
+  const ticket = require('../lib/ticket');
+  const dv = fakeDv();
+  const row = openReport(dv);
+  const bare = deps(dv, { confirm: undefined });
+  const first = go(['resolve', row.sbrm_number, 'fixed', 'x'], bare);
+  assert.equal(first.code, 1);
+  assert.equal(first.run.events[0].reason_code, 'no_approval');
+  assert.equal(row.sbrm_status, 'open');
+  ticket.mint(`resolve-${row.sbrm_number}`);
+  assert.equal(go(['resolve', row.sbrm_number, 'fixed', 'x'], bare).code, 0);
+  assert.equal(row.sbrm_status, 'resolved');
+});
+
 test('resolve: only schema access may resolve (staff cannot close anything, ruled 10/7)', () => {
   const dv = fakeDv();
   const row = openReport(dv);

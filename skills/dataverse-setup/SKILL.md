@@ -100,6 +100,16 @@ longer match anything once the old connection is gone; remove those lines too. T
 named `mcp__plugin_sbrm-toolkit_dataverse-<app>__<tool>`, so the first read through them may ask the
 person to allow it once.
 
+**Then update what Claude REMEMBERS about the old setup** (found 10/8 on the first staff Mac: after the
+cleanup, that person's Claude kept reaching for the removed connection because its own notes still named
+it). With their OK, look in the person's Claude memory and instruction files: `~/.claude/CLAUDE.md`,
+every `~/.claude/projects/*/memory/*.md` and `MEMORY.md`, and a `CLAUDE.md` in the folders they work in.
+Find anything naming the old connection (`dataverse-donorapp` without the `plugin_sbrm-toolkit_` prefix,
+`mcp__dataverse-`, the old guard's file name) or describing the hand-built setup. Show them each place
+and the change, then replace it with one line: "Dataverse goes through the SBRM toolkit: its
+`mcp__plugin_sbrm-toolkit_dataverse-<app>` connections for reading, its dataverse skill for changes. The
+older hand-built connection and guard were removed (<date>)." Change nothing else in those files.
+
 Then **restart Claude Code** (hooks and connections load at start) and run `doctor` again.
 
 Known starting points on 10/6/26, so you recognise them:
@@ -117,9 +127,10 @@ Known starting points on 10/6/26, so you recognise them:
    so they see it is their data. If an app's connection is up but offers no tools at all, that app has
    not allowed the toolkit's connection yet (an admin setting in that environment): tell Dylan.
 3. Tell them where they stand: **reading works now. Writing is a separate permission that Dylan grants
-   per person per app**; if they will need it, they message him and he adds them to that app's Write Access list. The first time they
-   approve a write, a small window will pop up on this Mac listing exactly what will change, with
-   Cancel and Approve; nothing is written until they click Approve.
+   per person per app**; if they will need it, they message him and he adds them to that app's Write Access list. When they write,
+   Claude tells them what will change and every warning, and then Claude Code itself asks them to
+   approve the command; nothing is written until they choose Yes there. That prompt only appears in a
+   permission mode that asks, so a session in "bypass permissions" cannot write.
 
 ## If something goes wrong
 

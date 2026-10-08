@@ -144,16 +144,18 @@ test('the guard check: missing, not blocking, or hooks switched off all fail; a 
   const g = (x) => doctor(base({ guard: () => x }));
   assert.equal(g({ present: true, blocksBypass: true, hooksOff: null }).code, 'health_passed');
   assert.match(g({ present: false }).failed[0].detail, /missing from this install/);
-  assert.match(g({ present: true, blocksBypass: false, detail: 'exit 0' }).failed[0].detail, /did not block a test bypass of the pop-up \(exit 0\)/);
+  assert.match(g({ present: true, blocksBypass: false, detail: 'exit 0' }).failed[0].detail, /did not block a test bypass of the approval \(exit 0\)/);
   assert.match(g({ present: true, blocksBypass: true, hooksOff: '/h/.claude/settings.json' }).failed[0].detail, /hooks are switched off in/);
 });
 
-test('the real guard beside the engine blocks a bypass of the pop-up and lets apply through (the check doctor runs)', () => {
+test('the real guard beside the engine blocks a bypass of the approval; plan passes; an apply in a mode that does not ask is refused (the checks doctor runs)', () => {
   const { spawnSync } = require('child_process');
   const file = path.join(__dirname, '..', '..', 'guard', 'guard.js');
   const v = ['ap', 'ply'].join('');
-  const r = spawnSync(process.execPath, [file], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: `node C:/x/dataverse-write.js ${v} 1` } }), encoding: 'utf8' });
-  assert.equal(r.status, 0, 'apply always shows the pop-up, so the session may run it');
+  // 1.11.0: an apply is never simply let through: in a mode that does not ask it is refused (and outside the
+  // plugin, or not a plan id, it is refused anyway). The "ask" path is tested in guard_launcher.test.js.
+  const r = spawnSync(process.execPath, [file], { input: JSON.stringify({ tool_name: 'Bash', permission_mode: 'bypassPermissions', tool_input: { command: `node C:/x/dataverse-write.js ${v} 20000101-000000-00000000` } }), encoding: 'utf8' });
+  assert.equal(r.status, 2);
   const w = ['write', 'Connection'].join('');
   const bypass = spawnSync(process.execPath, [file], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: `node -e "const { ${w} } = require('C:/x/lib/write')"` } }), encoding: 'utf8' });
   assert.equal(bypass.status, 2);

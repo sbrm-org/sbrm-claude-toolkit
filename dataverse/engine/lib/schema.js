@@ -10,7 +10,7 @@
 //   plan    READS ONLY. Lists only what is missing or differs, so a re-plan of an applied job plans nothing
 //           and a stopped apply is finished by approving the same job again (the earlier table builder's resumability).
 //   apply   re-checks everything the plan read (any move refuses the whole apply: the step order was
-//           worked out against it), shows the pop-up (deletes need their name typed, ruled 10/7), runs the
+//           worked out against it), takes the approval (Claude Code prompt + ticket, 1.11.0), runs the
 //           steps in dependency order, STOPS at the first failure (the earlier Python write path), publishes
 //           only the touched components, reads every written object back with one 45 s retry.
 //   revert  settings changes go back by PUT of the logged definition; creates stay (only an admin delete
@@ -947,7 +947,7 @@ function fingerprint(dv, probes) {
 //
 // 10/7 blind review: apply used to trust plan fields (`admin_only`, a step's `action`, its display name).
 // A plan file is hash-checked by the CLI, but if that were ever bypassed, apply must still not be talked
-// into less than the steps do. So the level, the typed delete phrase and the severity at apply are all
+// into less than the steps do. So the level and the severity at apply are both
 // re-derived HERE from each step's method, path and body, plus live reads.
 
 const T_PATH = /^EntityDefinitions\(LogicalName='([a-z0-9_]+)'\)/;
@@ -1382,7 +1382,7 @@ function renderSteps(dv, steps, { publisher }) {
         const fields = Object.fromEntries(SHOWN_FIELDS.filter((f) => now[f] !== sent[f]).map((f) => [f, sent[f]]));
         const type = live['@odata.type'] || 'Microsoft.Dynamics.CRM.EntityMetadata';
         // The body must be the live definition with exactly the shown fields changed, nothing else.
-        const bad = canonical(applyFields(putBody(live, type), fields)) !== canonical(b) ? 'its request changes more than the pop-up would show' : null;
+        const bad = canonical(applyFields(putBody(live, type), fields)) !== canonical(b) ? 'its request changes more than the plan would show' : null;
         const changes = diffFields(live, fields);
         const up = changes.find((x) => x.field === 'RequiredLevel' && x.new === 'ApplicationRequired');
         if (up) {
@@ -1866,7 +1866,7 @@ async function planSchema(dv, job, { envs, access, warnRows, readEnv, now = new 
       if (!info) why = x.target.global ? `there is no global choice ${x.target.global}` : `there is no column ${x.target.column} on ${x.target.table}`;
       else if (info.not_choice) why = `${x.target.table}.${x.target.column} is ${info.type}, not a choice; options are changed on choice columns only`;
       else if (info.managed) forbidden.push(`the choice ${tkey} is managed (shipped by someone else); its options are not changed here`);
-      else if (!x.target.global && info.global) why = `${x.target.table}.${x.target.column} uses the global choice ${info.name}; name it as {"global": "${info.name}"} so the pop-up says every column sharing it changes`;
+      else if (!x.target.global && info.global) why = `${x.target.table}.${x.target.column} uses the global choice ${info.name}; name it as {"global": "${info.name}"} so the plan says every column sharing it changes`;
       if (why) invalid.push(why);
       working.set(tkey, info && !why && !info.managed ? { info, options: info.options.map((v) => ({ ...v })), first: true } : null);
     }
@@ -2182,7 +2182,7 @@ async function runStep(dv, plan, s, sleep) {
       return { note: 'the create timed out on this computer, but the table landed' };
     }
     if (!(await waitForTable(dv, s.logical.table, sleep))) {
-      throw new Error('the table was created but was not ready for columns after 5 minutes. Approve the same job again in a few minutes (a new plan lists only what is missing).');
+      throw new Error('the table was created but was not ready for columns after 5 minutes. Plan and approve the same job again in a few minutes (a new plan lists only what is missing).');
     }
     return { note };
   }
@@ -2328,7 +2328,7 @@ function severityNow(dv, plan) {
 function entryBase(plan, { time, id, me }) {
   return {
     time, plan_id: id, person: me, env: plan.env, app: plan.app, table: String(plan.table || '').slice(0, 100), mode: 'schema',
-    source: plan.source, reason: plan.reason, approval: 'dialog', left_out: plan.refused, headline: schemaHeadline(plan),
+    source: plan.source, reason: plan.reason, approval: 'prompt', left_out: plan.refused, headline: schemaHeadline(plan),
     solution: plan.solution.uniquename, reverts_plan_id: plan.reverts_plan_id || null,
   };
 }
@@ -2345,8 +2345,8 @@ function rowOf(s) {
 async function applySchema(plan, deps, { id, file, fs }) {
   const { access, connect, confirm, now = new Date(), sleep = realSleep, clock = Date.now } = deps;
   if (now - new Date(plan.created) > MAX_AGE_MS) throw new ApplyRefused('this plan is more than 24 hours old. Make a new plan.', 'stale_plan');
-  // Every step's labels must say what its request does: the level, the typed phrase and the severity
-  // below are worked out from the requests, and the pop-up prints the labels.
+  // Every step's labels must say what its request does: the level and the severity below are worked out
+  // from the requests, and the plan prints the labels.
   const odd = plan.steps.filter((s) => stepKind(s) !== `${s.object}.${s.action}`);
   if (odd.length) throw new ApplyRefused(`this plan's steps do not match what they would send (${odd.map((s) => `${s.method} ${String(s.path).slice(0, 60)}`).join('; ')}). Nothing was written. Make a new plan.`, 'plan_tampered');
   const dv = connect(plan.host);
@@ -2409,15 +2409,13 @@ async function applySchema(plan, deps, { id, file, fs }) {
     throw new ApplyRefused(['the data changed since the plan, so nothing was written:', ...dupes.map((d) => `  ${d}`)].join('\n'), 'snapshot_moved');
   }
 
-  // The pop-up shows the live severity and the live delete lines; the typed phrase is the deleted objects'
-  // names as read now (never blank: a logical or schema name stands in).
+  // The approval covers the live severity and the live delete lines, read now.
   const view = {
     ...plan, severity: sevNow,
     steps: plan.steps.map((s, i) => (facts.has(s) ? { ...s, line: facts.get(s).line, display: facts.get(s).name }
       : { ...s, line: rendered[i].line, changes: rendered[i].changes !== undefined ? rendered[i].changes : s.changes })),
   };
-  const typed = facts.size ? severity.typedPhrase([...facts.values()].map((f) => f.name)) : null;
-  const answer = confirm({ summaryText: schemaSummary(view), detailText: schemaDetail(view, { id }), title: `SBRM: approve this app change in the ${plan.app}?`, typed });
+  const answer = confirm({ summaryText: schemaSummary(view), detailText: schemaDetail(view, { id }), title: `SBRM: approve this app change in the ${plan.app}?` });
   const base = entryBase(plan, { time: now.toISOString(), id, me });
   if (!answer.approved) return { entry: { ...base, outcome: 'cancelled', note: answer.note || null, rows: [] }, outcome: 'cancelled', person: me, dv };
 

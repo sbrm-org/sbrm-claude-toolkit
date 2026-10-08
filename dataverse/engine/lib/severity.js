@@ -49,12 +49,4 @@ function grew(planned, now) {
   return false;
 }
 
-// What the person types into the pop-up to approve a DELETE (ruled 10/7: admin may delete, with the
-// object's name typed). One thing: its name, exactly as shown. Several: "delete N".
-function typedPhrase(names) {
-  const list = (names || []).map((n) => String(n || '').trim()).filter(Boolean);
-  if (!list.length) return null;
-  return list.length === 1 ? list[0] : `delete ${list.length}`;
-}
-
-module.exports = { assess, block, grew, plural, typedPhrase, DEFAULT_WARN_ROWS };
+module.exports = { assess, block, grew, plural, DEFAULT_WARN_ROWS };

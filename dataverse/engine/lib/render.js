@@ -25,7 +25,6 @@ function isDeactivation(plan) {
 function headline(plan) {
   const n = plan.rows.length;
   if (plan.mode === 'create') return `Add ${n} ${noun(plan, n)} to the ${plan.app}`;
-  if (plan.mode === 'delete') return `DELETE ${n} ${noun(plan, n)} from the ${plan.app}`;
   if (isDeactivation(plan)) return `Mark ${n} ${noun(plan, n)} inactive in the ${plan.app}`;
   return `Update ${n} ${noun(plan, n)} in the ${plan.app}`;
 }
@@ -62,10 +61,6 @@ function money(n) {
 // always shown, never only in detail.
 function summary(plan) {
   const out = [...severity.block(plan.severity), headline(plan), ''];
-  if (plan.mode === 'delete') {
-    for (const r of plan.rows.slice(0, 10)) out.push(`  ${r.record_name || r.name}`);
-    if (plan.rows.length > 10) out.push(`  ...and ${plan.rows.length - 10} more (Show every change)`);
-  }
   for (const l of summaryLines(plan)) out.push(`  ${l}`);
   if (plan.amount_total !== null && plan.amount_total !== undefined) out.push('', `Total amount: ${money(plan.amount_total)}`);
   const warns = plan.rows.flatMap((r) => r.warnings.map((w) => `${r.name}: ${w}`));

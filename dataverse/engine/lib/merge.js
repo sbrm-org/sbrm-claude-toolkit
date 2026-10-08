@@ -429,7 +429,7 @@ async function recheckPair(dv, plan, p, rels, firstForKeep) {
   }
   const inv = await takeInventory(dv, rels, p.duplicate_id);
   if (inventoryKey(inv.found) !== inventoryKey(p.inventory)) {
-    return `the duplicate's linked records changed since the plan (${childCount(p.inventory)} then, ${childCount(inv.found)} now), so the pop-up would not show what moves`;
+    return `the duplicate's linked records changed since the plan (${childCount(p.inventory)} then, ${childCount(inv.found)} now), so the plan would not show what moves`;
   }
   return null;
 }
@@ -492,7 +492,7 @@ async function applyMerge(plan, deps, { id, file, fs }) {
   const answer = confirm({ summaryText: mergeSummary(view), detailText: mergeDetail(view, { id }), title: `SBRM: approve these merges in the ${plan.app}?` });
   const base = {
     time: now.toISOString(), plan_id: id, person: me, env: plan.env, app: plan.app, table: plan.table, mode: 'merge',
-    source: plan.source, reason: plan.reason, approval: 'dialog', left_out: view.refused, headline: mergeHeadline(view),
+    source: plan.source, reason: plan.reason, approval: 'prompt', left_out: view.refused, headline: mergeHeadline(view),
   };
   if (!answer.approved) return { entry: { ...base, outcome: 'cancelled', note: answer.note || null, rows: [] }, outcome: 'cancelled', person: me, dv };
 
@@ -702,7 +702,7 @@ async function applyUnmerge(plan, deps, { id, file, fs }) {
   const answer = confirm({ summaryText: unmergeSummary(view), detailText: unmergeSummary(view), title: `SBRM: undo these merges in the ${plan.app}?` });
   const base = {
     time: now.toISOString(), plan_id: id, person: me, env: plan.env, app: plan.app, table: plan.table, mode: 'unmerge',
-    source: plan.source, reason: plan.reason, approval: 'dialog', left_out: view.refused, headline: unmergeSummary(view).split('\n')[0],
+    source: plan.source, reason: plan.reason, approval: 'prompt', left_out: view.refused, headline: unmergeSummary(view).split('\n')[0],
     reverts_plan_id: plan.reverts_plan_id,
   };
   if (!answer.approved) return { entry: { ...base, outcome: 'cancelled', rows: [] }, outcome: 'cancelled', person: me, dv, written: 0, rows: [], left_out: view.refused };

@@ -156,6 +156,18 @@ test('create revert: the new record is marked inactive (state + the inactive sta
   assert.ok(writes(dv).every((c) => c.method !== 'DELETE'));
 });
 
+test('records are made inactive, never deleted (ruled 10/8), so a deactivation must UNDO: the record is active again', () => {
+  const dv = fakeDv();
+  const { id: orig } = applied({ mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { statecode: 1, statuscode: 2 } }] }, dv);
+  assert.equal(dv.data.contacts[IDS.jane].statecode, 1);
+  const { id, plan } = revertOf(orig, dv);
+  assert.deepEqual(plan.rows[0].body, { statecode: 0, statuscode: 1 });
+  assert.deepEqual(plan.refused, []);
+  run(id, dv);
+  assert.equal(dv.data.contacts[IDS.jane].statecode, 0);
+  assert.equal(dv.data.contacts[IDS.jane].statuscode, 1);
+});
+
 test('a created record edited since is left out too', () => {
   const dv = fakeDv();
   const { id: orig, res } = applied({ mode: 'create', rows: [{ name: 'New One', body: { lastname: 'One' } }] }, dv);
