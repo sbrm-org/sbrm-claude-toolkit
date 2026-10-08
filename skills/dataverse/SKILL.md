@@ -16,7 +16,10 @@ description: >
 # Dataverse changes (SBRM shared write path)
 
 Reads still go through the read-only Dataverse connections; this
-skill is only for CHANGES.
+skill is only for CHANGES. Use only the toolkit's own connections (tools named
+`mcp__plugin_sbrm-toolkit_dataverse-<app>__...`). If your notes or memory name another Dataverse
+connection (an older hand-built `dataverse-donorapp`, say), it was removed: don't look for it, and offer
+`/dataverse-setup` to bring the notes up to date.
 
 ## Who may do what
 
