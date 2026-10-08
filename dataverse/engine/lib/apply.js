@@ -61,7 +61,7 @@ function recheck(dv, plan, row, today = new Date()) {
       .map((k) => `${(plan.verify.find((v) => v.read_key === k) || {}).label || k}: ${row.before[k]} -> ${now[k]}`);
     if (moved.length) return { why: `changed since the plan (${moved.join('; ')})` };
     if (!now['@odata.etag']) return { why: 'no version tag came back, so the write could not be protected' };
-    if (col && !closedYear.isOpen(now[col], today)) return { why: `this record ${closedYear.why(now[col], today)}` };
+    if (col && !closedYear.isOpen(now[col], today) && !closedYear.lateEntry(now[col], now.createdon, row.body, col, today)) return { why: `this record ${closedYear.why(now[col], today)}` };
     if (col && col in row.body && !closedYear.isOpen(row.body[col], today)) return { why: `the new book date ${closedYear.why(row.body[col], today)}` };
     return { etag: now['@odata.etag'] };
   }

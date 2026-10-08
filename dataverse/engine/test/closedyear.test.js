@@ -3,7 +3,7 @@
 // Node engine and the Python jobs can never disagree about which gifts are closed.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { closedThrough, bookDay, isOpen, why, guardFor } = require('../lib/closedyear');
+const { closedThrough, bookDay, isOpen, why, guardFor, lateEntry, lateEntryNote } = require('../lib/closedyear');
 
 const day = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d, 12); };
 
@@ -33,6 +33,19 @@ test('the refusal says why in plain words', () => {
   assert.equal(why('2025-09-14T07:00:00Z', day('2026-10-07')),
     'is in a closed fiscal year (book date 9/14/2025, FY25; closed through 9/30/2025). Closed-year gifts are never modified');
   assert.match(why(null), /has no book date/);
+});
+
+test('late entry: case for case with audited_fy.late_entry_fix (Dylan 10/8/26)', () => {
+  const t = day('2026-10-08');
+  const col = 'msnfp_bookdate';
+  const move = { [col]: '2026-09-18T07:00:00Z' };
+  assert.equal(lateEntry('2020-09-18T07:00:00Z', '2026-10-08T17:48:24Z', move, col, t), true, 'the 858 case');
+  assert.equal(lateEntry('2025-09-26T07:00:00Z', '2025-12-01T08:00:00Z', move, col, t), true, 'created at the lock');
+  assert.equal(lateEntry('2025-09-26T07:00:00Z', '2025-12-01T07:59:59Z', move, col, t), false, 'created Nov 30 Pacific');
+  assert.equal(lateEntry('2020-09-18T07:00:00Z', '2026-10-08T17:48:24Z', { ...move, msnfp_amount: 1 }, col, t), false, 'another column');
+  assert.equal(lateEntry('2020-09-18T07:00:00Z', '2026-10-08T17:48:24Z', { [col]: '2024-09-18T07:00:00Z' }, col, t), false, 'new date closed');
+  assert.equal(lateEntry('2020-09-18T07:00:00Z', null, move, col, t), false, 'no created date');
+  assert.match(lateEntryNote('2020-09-18T07:00:00Z', '2026-10-08T17:48:24Z'), /^book date moves out of closed FY20: entered 10\/8\/2026, after that year locked/);
 });
 
 test('only tables listed in envs.json are guarded', () => {

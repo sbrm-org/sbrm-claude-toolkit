@@ -285,9 +285,17 @@ function fakeDv({ email = 'dgross@example.org', dupHits = [], userId = IDS.me, i
         const rec = (data[m[1]] || {})[m[2]];
         if (!rec) throw notFound();
         const out = { '@odata.etag': tag(m[1], m[2]) };
-        for (const k of m[3].split(',')) {
+        const cols = m[3].split(',');
+        for (const k of cols) {
           out[k] = rec[k] === undefined ? null : rec[k];
           if (opts.formatted && k === 'statuscode') out['statuscode@OData.Community.Display.V1.FormattedValue'] = rec[k] === 1 ? 'Active' : 'Inactive';
+        }
+        // As Dataverse does (seen live 10/8): selecting any address part returns address1_composite UNASKED,
+        // built only from the parts selected; selecting the composite itself builds it from every part.
+        if (cols.some((k) => k.startsWith('address1_'))) {
+          const all = cols.includes('address1_composite');
+          const part = (k) => ((all || cols.includes(k)) && rec[k]) || '';
+          out.address1_composite = [part('address1_line1'), part('address1_city')].filter(Boolean).join('\n');
         }
         return out;
       }
