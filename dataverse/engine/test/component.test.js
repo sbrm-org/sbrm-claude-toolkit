@@ -1226,3 +1226,14 @@ test('revert refuses a forged or foreign log entry cleanly: unknown set, bad id,
   await refused(C.planComponentRevert(devCopy, entry, ctx()), /that change was made in the Donor App; this revert was planned against another environment/, 'invalid_job');
   assert.equal((await C.planComponentRevert(dv, entry, ctx())).mode, 'update', 'the genuine entry still reverts');
 });
+
+// Live 10/8: Dataverse drops a null-valued key when it saves a flow (`templateName: null` came back absent),
+// so the create read back as a mismatch. A null key and an absent key are the same stored flow; a null
+// inside an array is a value and still counts.
+test('flow definitions: a null-valued key equals an absent key; array nulls still count', () => {
+  const cd = (props) => JSON.stringify({ properties: { connectionReferences: {}, definition: { triggers: { manual: { type: 'Request' } }, actions: {} }, ...props }, schemaVersion: '1.0.0.0' });
+  const row = (clientdata) => ({ workflowid: 'a0beabfa-36c3-f111-aaaf-70a8a5afce12', name: 'Test', clientdata, description: null });
+  assert.equal(C.snapshot('workflows', row(cd({ templateName: null }))).hash, C.snapshot('workflows', row(cd({}))).hash);
+  assert.notEqual(C.snapshot('workflows', row(cd({ list: [null] }))).hash, C.snapshot('workflows', row(cd({ list: [] }))).hash);
+  assert.notEqual(C.snapshot('workflows', row(cd({ templateName: 'x' }))).hash, C.snapshot('workflows', row(cd({}))).hash);
+});
