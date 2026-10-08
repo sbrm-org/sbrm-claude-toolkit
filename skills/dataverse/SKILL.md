@@ -53,7 +53,9 @@ Verify the path on first use and say it in full whenever you hand the person a c
    name and id, the body, a one-sentence `reason` in plain words, and an `intent` that states exactly what
    you are changing. App changes: `kind: "schema"` (tables, columns, relationships, keys, choices) or
    `kind: "component"` (a view, form, sitemap or flow), see below. Save it in `~/.sbrm-dataverse/jobs/`,
-   never in a git folder (Recovery job files there are refused).
+   never in a git folder (Recovery job files there are refused), with your file-writing tool, not a
+   shell command: the guard blocks a shell line that writes into that folder, so `plan` goes in a
+   command of its own.
 3. **Run `plan <job.json>`.** Planning only reads; nothing changes. If it refuses, or rows were left
    out, tell the person which and why and stop there. The engine checks your `intent` against the job
    and refuses the plan if they disagree.
