@@ -122,17 +122,60 @@ function inDevDir(p, dirs) {
   return dirs.some((d) => n === d || n.startsWith(d.replace(/\/$/, '') + '/'));
 }
 
+// ---------- what in a shell line is data, not a command (false positives found 10/7) ----------
+
+// A redirect that cannot change a file: an fd duplicate (2>&1, >&2) or a null sink (/dev/null, $null, NUL).
+// `>` counts as a write in SHELL_MUTATE, so these are dropped first; a redirect to any real file still counts.
+const HARMLESS_REDIRECT = /(?:&|\*)?\d*>{1,2}\s*(?:&\s*\d+|(?:\/dev\/null|\$null|nul)(?![\w.\/\\-]))/gi;
+
+// The line split on its unquoted separators (; & | newline) into simple commands.
+function segments(text) {
+  const out = [];
+  let cur = '';
+  let q = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (q) {
+      cur += c;
+      if (c === '\\' && q === '"' && i + 1 < text.length) cur += text[++i];
+      else if (c === q) q = null;
+    } else if (c === '"' || c === "'") {
+      q = c;
+      cur += c;
+    } else if (c === ';' || c === '&' || c === '|' || c === '\n') {
+      out.push(cur);
+      cur = '';
+    } else cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+
+// A plain run of THIS plugin's engine CLI: `node <plugin>/dataverse/engine/dataverse-write.js <args>`. Its
+// arguments are data (a `report` carries the person's words verbatim, which may say "move" or "the Dataverse
+// skill"), so the text rules skip it. Not plain, so still checked: command substitution, a redirect, an
+// option before the script (`--require`), or an engine copy outside the plugin folder.
+function isEngineRun(seg) {
+  if (/\$\(|`|<\(|>/.test(seg)) return false;
+  const words = (seg.match(/"[^"]*"|'[^']*'|[^\s"']+/g) || []).map((w) => w.replace(/^["']|["']$/g, ''));
+  if (words.length < 2 || !/(?:^|[\\/])node(?:\.exe)?$/i.test(words[0])) return false;
+  return /[\\/]dataverse[\\/]engine[\\/]dataverse-write\.js$/i.test(words[1]) && inPlugin(words[1]);
+}
+
 // ---------- the verdict ----------
 
 function shellVerdict(text) {
-  const cli = cliVerdict(text);
+  const rest = segments(text.replace(HARMLESS_REDIRECT, ' ')).filter((s) => !isEngineRun(s)).join(' ; ');
+  const cli = cliVerdict(rest);
   if (cli) return `${cli}, which writes to Dataverse`;
-  if (ENGINE_INTERNALS.test(text)) return "code that reaches the engine's write side directly (it would skip the approval pop-up)";
-  if (DV_HOST.test(text) && MUTATING_HTTP.test(text)) return 'a raw writing HTTP call at Dataverse';
-  if (INJECT.test(text)) return 'keystroke or click injection (the approval pop-up is the person\'s alone)';
-  if (STORE_IN_TEXT.test(text) && SHELL_MUTATE.test(text)) return "changing the engine's own store (plans, log, events)";
-  if (PLUGIN_IN_TEXT.test(text) && SHELL_MUTATE.test(text)) return "changing the toolkit plugin's files";
-  if (HOOKS_OFF.test(text)) return 'switching hooks off';
+  if (ENGINE_INTERNALS.test(rest)) return "code that reaches the engine's write side directly (it would skip the approval pop-up)";
+  if (DV_HOST.test(rest) && MUTATING_HTTP.test(rest)) return 'a raw writing HTTP call at Dataverse';
+  if (INJECT.test(rest)) return 'keystroke or click injection (the approval pop-up is the person\'s alone)';
+  // The path is looked for in the WHOLE line (an engine run can feed a later delete, `show 1 | xargs rm`);
+  // the mutating command only outside the engine's own arguments.
+  if (STORE_IN_TEXT.test(text) && SHELL_MUTATE.test(rest)) return "changing the engine's own store (plans, log, events)";
+  if (PLUGIN_IN_TEXT.test(text) && SHELL_MUTATE.test(rest)) return "changing the toolkit plugin's files";
+  if (HOOKS_OFF.test(rest)) return 'switching hooks off';
   return null;
 }
 
@@ -235,6 +278,23 @@ function selftest() {
     ['other MCP passes', { tool_name: 'mcp__ms365__list-mail-messages' }, false],
     ['Read passes', { tool_name: 'Read', tool_input: { file_path: `${H}/.sbrm-dataverse/plans/1.json` } }, false],
     ['git commit mentioning the engine', B('git commit -m "engine: merge undo, tests"'), false],
+    // False positives found 10/7 (a stderr redirect read as a write; the person's own words read as commands)
+    ['engine doctor with 2>&1', B(`node ${ENG} doctor 2>&1`), false],
+    ['list the plugin, then doctor with 2>&1', B(`ls ${ENG} && node ${ENG} doctor 2>&1`), false],
+    ['read the plugin with 2>/dev/null', B(`cat ${ENG} 2>/dev/null | head`), false],
+    ['read the store with 2>/dev/null', B('cat ~/.sbrm-dataverse/log/person@example.org.md 2>/dev/null'), false],
+    ['engine doctor with 2>$null (PowerShell)', B(`node ${ENG} doctor 2>$null`, 'PowerShell'), false],
+    ['report in the person\'s words (move, copy, del)', B(`node ${ENG} report "I tried to move the gift and copy the old one; it froze, so I hit del" --plan 1`), false],
+    ['report in the person\'s words (names the Dataverse skill)', B(`node ${ENG} report "the Dataverse skill isn't working | dataverse install failed"`), false],
+    ['a real redirect into the plugin', B(`node ${ENG} doctor > ~/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.9.0/dataverse/toolkit.json`), true],
+    ['a stderr redirect into the store', B('node x.js 2> ~/.sbrm-dataverse/log/person@example.org.md'), true],
+    ['a redirect to a file that only starts like a null sink', B('cd ~/.sbrm-dataverse/plans && echo x > null.json'), true],
+    ['a redirect between store files',B('cat ~/.sbrm-dataverse/plans/1.json >> ~/.sbrm-dataverse/plans/2.json'), true],
+    ['report, then a delete in the plugin', B(`node ${ENG} report "x"; ${J('r', 'm')} -rf ~/.claude/plugins/cache/sbrm-claude-toolkit`), true],
+    ['report hiding a delete in $( )', B(`node ${ENG} report "$(${J('r', 'm')} -rf ~/.claude/plugins/cache/sbrm-claude-toolkit)"`), true],
+    ['engine output piped into a delete', B(`node ${ENG} show 1 | xargs ${J('r', 'm')}`), true],
+    ['a look-alike engine outside the plugin', B(`node /tmp/dataverse/engine/dataverse-write.js ${J('r', 'm')} ~/.claude/plugins/cache/sbrm-claude-toolkit/x`), true],
+    ['report, then a CLI write verb', B(`node ${ENG} report "x" && ${J('dataverse data ', 'up', 'date contact 1')}`), true],
   ];
   const dirs = [norm(DEV)];
   let fails = 0;
