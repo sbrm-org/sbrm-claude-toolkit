@@ -20,7 +20,7 @@ const crypto = require('crypto');
 const store = require('./store');
 const { request, resolveCli, DataverseError } = require('./cli');
 
-const ENGINE_VERSION = '2026.10.08.3'; // 1.11.0: Claude Code's prompt + ticket replace the pop-up; no record deletes
+const ENGINE_VERSION = '2026.10.08.4'; // 1.11.1: a machine connects only to the apps it chose (apps.json)
 const EVENT_SET = 'sbrm_dataverseevents';
 
 // DESIGN.md §7 D2: signal (listed in the review, opens an issue) or routine (counted by reason).

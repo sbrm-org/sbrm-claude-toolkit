@@ -19,7 +19,8 @@ Reads still go through the read-only Dataverse connections; this
 skill is only for CHANGES. Use only the toolkit's own connections (tools named
 `mcp__plugin_sbrm-toolkit_dataverse-<app>__...`). If your notes or memory name another Dataverse
 connection (an older hand-built `dataverse-donorapp`, say), it was removed: don't look for it, and offer
-`/dataverse-setup` to bring the notes up to date.
+`/dataverse-setup` to bring the notes up to date. An app's connection with no tools is switched off on
+this machine (the person did not choose it in setup): to use that app, run `/dataverse-setup` again.
 
 ## Who may do what
 

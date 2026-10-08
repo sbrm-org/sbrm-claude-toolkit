@@ -597,10 +597,16 @@ function cmdDoctor(run, deps, args = []) {
   }
   const dvs = {};
   const conn = (env) => dvs[env] || (dvs[env] = connect(run, deps, 'read', envs[env].host));
+  // Apps this machine has written to (its local log): a no-answer there is a failure, not "fine".
+  const used = [...new Set(recentLocal(1000).map((e) => e.env).filter((x) => envs[x]))];
+  // A machine that chose its apps (lib/apps.js, 1.11.1) is checked in those apps only, plus any it has
+  // written to or that --apps names: each app checked is a sign-in, and on a Mac every one can pop up.
+  const chosen = require('./lib/apps').read();
+  if (chosen && !apps) apps = chosen.filter((a) => envs[a]);
+  const checkEnvs = chosen ? Object.fromEntries(Object.entries(envs).filter(([k]) => chosen.includes(k) || used.includes(k) || (apps || []).includes(k))) : envs;
   const result = health.doctor({
-    envs, access, apps, cli: deps.cli, connect: conn, io: deps.io(), pin: toolkitConfig().cli_version || null, guard: deps.guard,
-    // Apps this machine has written to (its local log): a no-answer there is a failure, not "fine".
-    used: [...new Set(recentLocal(1000).map((e) => e.env).filter((x) => envs[x]))],
+    envs: checkEnvs, access, apps, cli: deps.cli, connect: conn, io: deps.io(), pin: toolkitConfig().cli_version || null, guard: deps.guard,
+    used,
     pending: () => ({ events: events.pendingCount(), logs: pendingLogCount() }),
     sendPending: (reached) => {
       for (const env of reached) {
@@ -753,6 +759,31 @@ function cmdReview(run, deps, args) {
   return notes.length === Object.keys(envs).length ? 1 : 0;
 }
 
+// `apps` shows, `apps donorapp,fedev` sets, `apps all` clears which apps this machine opens a read
+// connection to (lib/apps.js, 1.11.1). Narrows reads only; grants nothing. Takes effect at the next start.
+function cmdApps(run, deps, args) {
+  const { envs } = config();
+  const appsLib = require('./lib/apps');
+  const arg = (args[0] || '').trim();
+  if (!arg) {
+    const now = appsLib.read();
+    console.log(`\nRead connections on this machine: ${now ? now.map((a) => envs[a] ? envs[a].name : a).join(', ') : 'every app'}.\n`);
+    return 0;
+  }
+  if (arg === 'all') {
+    appsLib.clear();
+    console.log('\nThis machine will connect to every app. Quit Claude Code completely and reopen it for this to take effect.\n');
+    return 0;
+  }
+  const list = [...new Set(arg.split(',').map((s) => s.trim()).filter(Boolean))];
+  const unknown = list.filter((a) => !envs[a]);
+  if (!list.length || unknown.length) throw new Refusal('usage', 'apps', [`apps <keys separated by commas> | all; one or more of: ${Object.keys(envs).join(', ')}${unknown.length ? ` (unknown: ${unknown.join(', ')})` : ''}`], { exitCode: 2, nothing: 'changed' });
+  appsLib.write(list);
+  console.log(`\nThis machine will connect to: ${list.map((a) => envs[a].name).join(', ')}. The other apps' connections stay switched off (nothing signs in to them).`
+    + '\nQuit Claude Code completely and reopen it for this to take effect.\n');
+  return 0;
+}
+
 const RESOLUTIONS = ['fixed', 'not a bug', 'access granted', "won't fix"];
 
 function cmdResolve(run, deps, args) {
@@ -808,7 +839,7 @@ function cmdResolve(run, deps, args) {
   return 0;
 }
 
-const USAGE = 'usage: dataverse-write.js check|plan <job.json> | show <plan-id> | apply <plan-id> [<plan-id> ...] | revert <plan-id> [env] | whoami <env> | snapshot <env> <set> <id> | doctor [--apps a,b] | report "<words>" | review [--days N] [--brief] | resolve <number> <resolution> "<note>"';
+const USAGE = 'usage: dataverse-write.js check|plan <job.json> | show <plan-id> | apply <plan-id> [<plan-id> ...] | revert <plan-id> [env] | whoami <env> | snapshot <env> <set> <id> | doctor [--apps a,b] | report "<words>" | review [--days N] [--brief] | resolve <number> <resolution> "<note>" | apps [a,b | all]';
 
 function dispatch(run, deps, argv) {
   const [cmd, arg, arg2] = argv;
@@ -825,6 +856,7 @@ function dispatch(run, deps, argv) {
     case 'report': return cmdReport(run, deps, argv.slice(1));
     case 'review': return cmdReview(run, deps, argv.slice(1));
     case 'resolve': return cmdResolve(run, deps, argv.slice(1));
+    case 'apps': return cmdApps(run, deps, argv.slice(1));
     default: throw new Refusal('usage', 'usage', [USAGE], { exitCode: 2 });
   }
 }

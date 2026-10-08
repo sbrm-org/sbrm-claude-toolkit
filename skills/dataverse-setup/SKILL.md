@@ -110,7 +110,15 @@ and the change, then replace it with one line: "Dataverse goes through the SBRM 
 `mcp__plugin_sbrm-toolkit_dataverse-<app>` connections for reading, its dataverse skill for changes. The
 older hand-built connection and guard were removed (<date>)." Change nothing else in those files.
 
-Then **restart Claude Code** (hooks and connections load at start) and run `doctor` again.
+**Then set which apps this machine connects to**, from the apps they said they use:
+`node "<toolkit>/dataverse/engine/dataverse-write.js" apps <keys separated by commas>` (keys: donorapp,
+fedev = Donor App Dev, hgs, recovery, soberliving; most people: `donorapp`, plus `fedev` for anyone who
+builds in Donor App Dev). Every app's connection signs in to it at each start, and on a Mac each can be its
+own sign-in pop-up (found 10/8: four at startup), so the others stay switched off. It grants nothing and
+narrows reads only; `apps all` undoes it; running setup again changes it.
+
+Then **quit Claude Code completely and reopen it** (hooks and connections load at start) and run
+`doctor` again.
 
 Known starting points on 10/6/26, so you recognise them:
 - a `dataverse-donorapp` connection at local scope plus `~/.claude/hooks/dataverse-readonly-guard.sh`;
