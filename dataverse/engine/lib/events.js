@@ -20,7 +20,7 @@ const crypto = require('crypto');
 const store = require('./store');
 const { request, resolveCli, DataverseError } = require('./cli');
 
-const ENGINE_VERSION = '2026.10.08'; // 1.10.1: signed plans, third and fourth adversarial passes
+const ENGINE_VERSION = '2026.10.08.2'; // 1.10.2: CLI paths without a leading "/" (macOS), flow null keys
 const EVENT_SET = 'sbrm_dataverseevents';
 
 // DESIGN.md §7 D2: signal (listed in the review, opens an issue) or routine (counted by reason).

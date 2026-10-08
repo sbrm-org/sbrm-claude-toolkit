@@ -220,9 +220,17 @@ function bindsAny(el, fields) {
 
 // A definition field as compared and hashed: clientdata as parsed JSON, XML as its parsed tree (attribute
 // order, quote style, entity spelling and whitespace between tags do not count), text as text, blank as null.
+// In clientdata a null-valued key counts as absent: Dataverse drops it on save (live 10/8, `templateName:
+// null` read back absent), so both are the same stored flow. A null inside an array is a value and stays.
+function dropNullKeys(x) {
+  if (Array.isArray(x)) return x.map(dropNullKeys);
+  if (!x || typeof x !== 'object') return x;
+  return Object.fromEntries(Object.entries(x).filter(([, v]) => v !== null).map(([k, v]) => [k, dropNullKeys(v)]));
+}
+
 function normField(set, field, v) {
   if (blank(v)) return null;
-  if (field === SETS[set].json) return typeof v === 'string' ? JSON.parse(v) : v;
+  if (field === SETS[set].json) return dropNullKeys(typeof v === 'string' ? JSON.parse(v) : v);
   if (has(SETS[set].xml, field)) return parseXml(v);
   return String(v);
 }

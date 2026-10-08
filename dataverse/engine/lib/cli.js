@@ -91,8 +91,15 @@ function launchError(binary, err) {
 // One Web API call through the CLI. Returns parsed JSON ({} for an empty body).
 // Raises on an OData `error` payload: returned as data it masquerades as a record
 // (writing.md, the 8/17/26 trap where a bad $select refused every row as "inactive").
+// The --path handed to the CLI: never a leading "/" (Daian's Mac, 10/8: macOS CLI 1.0.81 reads "/api/..."
+// as an absolute file URL and refuses every call; the slashless form works on macOS and Windows).
+function cliPath(apiPath) {
+  const p = String(apiPath).replace(/^\/+/, '');
+  return p.startsWith('api/') ? p : 'api/data/v9.2/' + p;
+}
+
 function request(cli, host, apiPath, { method = 'GET', headers = [], bodyFile = null } = {}) {
-  if (!apiPath.startsWith('/')) apiPath = '/api/data/v9.2/' + apiPath;
+  apiPath = cliPath(apiPath);
   const args = ['api', 'request', '--target', 'dataverse', '--environment', host,
     '--path', apiPath, '--method', method];
   for (const h of headers) args.push('--header', h);
@@ -120,7 +127,7 @@ const FORMATTED = 'Prefer: odata.include-annotations="OData.Community.Display.V1
 
 // One GET without blocking (spawn, not spawnSync), parsed exactly as request() parses.
 function getAsync(cli, host, apiPath) {
-  if (!apiPath.startsWith('/')) apiPath = '/api/data/v9.2/' + apiPath;
+  apiPath = cliPath(apiPath);
   const args = ['api', 'request', '--target', 'dataverse', '--environment', host, '--path', apiPath, '--method', 'GET'];
   return new Promise((resolve) => {
     let out = '';
@@ -173,4 +180,4 @@ function readConnection(host, cli = resolveCli()) {
   };
 }
 
-module.exports = { resolveCli, readConnection, request, getMany, launchError, DataverseError, FORMATTED, platformDir };
+module.exports = { resolveCli, readConnection, request, getMany, cliPath, launchError, DataverseError, FORMATTED, platformDir };
