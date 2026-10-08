@@ -113,12 +113,15 @@ test('names that do not match need a person\'s confirmation', async () => {
   assert.match(ok.out, /names differ, confirmed: 'Zeta Corp' \(Zeta is Acme's old trade name, per the donor team\)/);
 });
 
-test('merging needs its own grant (ruled 10/7): write alone is not enough; schema implies it', async () => {
-  const writer = await go(['plan', jobFile([ACME])], deps(fakeDv({ email: 'writer@example.org' })));
-  assert.equal(writer.code, 1);
-  assert.equal(writer.run.events[0].reason_code, 'not_permitted');
-  assert.match(writer.out, /has no merge grant in the Donor App/);
+test('merging needs its own grant (ruled 10/7): write or develop alone is not enough; admin implies it', async () => {
+  for (const email of ['writer@example.org', 'dev@example.org']) {
+    const r = await go(['plan', jobFile([ACME])], deps(fakeDv({ email })));
+    assert.equal(r.code, 1, email);
+    assert.equal(r.run.events[0].reason_code, 'not_permitted');
+    assert.match(r.out, /has no merge grant in the Donor App/);
+  }
   await planned(fakeDv({ email: 'merger@example.org' }));
+  await planned(fakeDv({ email: 'dgross@example.org' }));
 });
 
 test('the 500-children ceiling per approval', async () => {
@@ -140,7 +143,9 @@ test('apply: one Merge, read back, and the log keeps BOTH records in full and ev
   let shown = null;
   const r = await go(['apply', run.planId], deps(dv, { confirm: (x) => { shown = x; return { approved: true }; } }));
   assert.equal(r.code, 0, r.out);
-  assert.match(shown.summaryText, /^Merge 1 duplicate account into 1/);
+  // A merge always heads with its severity (DESIGN.md §10j): it cannot be fully undone.
+  assert.match(shown.summaryText, /^Before you approve:\n  ! Can't be fully undone: this merge moves linked records onto the kept record/);
+  assert.match(shown.summaryText, /^Merge 1 duplicate account into 1/m);
   const dup = dv.data.accounts[IDS.acme2];
   assert.deepEqual([dup.merged, dup._masterid_value, dup.statecode], [true, IDS.acme, 1]);
   assert.equal(dv.data.msnfp_transactions[IDS.t1]._msnfp_customerid_value, IDS.acme, 'the closed-year gift moved too (ruled 10/7)');

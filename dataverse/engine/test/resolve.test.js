@@ -6,7 +6,7 @@ const { planJob, same, PlanRefused } = require('../lib/resolve');
 const { fakeDv, IDS, ENVS, ACCESS } = require('./fake');
 
 function job(raw) {
-  const fields = [...new Set(raw.rows.flatMap((r) => Object.keys(r.body)))].sort();
+  const fields = [...new Set(raw.rows.flatMap((r) => Object.keys(r.body || {})))].sort();
   const full = {
     contract: 'sbrm-dv-job/1', kind: 'rows', env: 'donorapp', table: 'contacts', source: 'test', reason: 'Test.',
     intent: { verb: raw.mode, count: raw.rows.length, table: raw.table || 'contacts', fields },
@@ -41,10 +41,51 @@ test('read access is refused before anything is resolved', () => {
   assert.ok(!dv.calls.some((c) => c.path.startsWith('EntityDefinitions')), 'no metadata read for a refused person');
 });
 
-test('per-person max_rows', () => {
+// No caps (ruled 10/7: "I dont think placing caps on writes makes sense"); severity instead (§10j).
+test('no row cap: a big change plans, and over warn_rows it is flagged Large, first thing in the summary', () => {
+  const { summary } = require('../lib/render');
   const dv = fakeDv({ email: 'writer@example.org' });
-  const rows = [IDS.jane, IDS.bob, IDS.inactive].map((id, i) => ({ name: `R${i}`, id, body: { address1_city: 'X' } }));
-  refused(() => planJob(dv, job({ mode: 'update', rows }), { envs: ENVS, access: ACCESS }), /3 rows is over your limit of 2/);
+  const rows = [IDS.jane, IDS.bob].map((id, i) => ({ name: `R${i}`, id, body: { address1_city: `X${i}` } }));
+  const small = planJob(dv, job({ mode: 'update', rows }), { envs: ENVS, access: ACCESS, warnRows: 2 });
+  assert.equal(small.severity.large, false, '2 rows at warn_rows 2 is not large');
+  assert.deepEqual(small.severity.lines, []);
+  assert.ok(!/Before you approve/.test(summary(small)), 'a routine change has no warning block');
+  const big = planJob(dv, job({ mode: 'update', rows }), { envs: ENVS, access: ACCESS, warnRows: 1 });
+  assert.equal(big.rows.length, 2, 'nothing refused for size');
+  assert.deepEqual(big.severity.lines, ['Large change: 2 contacts.']);
+  assert.match(summary(big), /^Before you approve:\n  ! Large change: 2 contacts\.\n/);
+});
+
+test('deletes are an admin\'s (ruled 10/7): write and develop are refused before anything is read', () => {
+  const del = job({ mode: 'delete', rows: [{ name: 'Jane Example', id: IDS.jane }] });
+  for (const email of ['writer@example.org', 'dev@example.org']) {
+    const dv = fakeDv({ email });
+    refused(() => planJob(dv, del, { envs: ENVS, access: ACCESS }), /deleting records takes admin access/);
+    assert.ok(!dv.calls.some((c) => c.path.startsWith('contacts(')), 'the record is not read for a refused person');
+  }
+});
+
+test('an admin delete plans from the WHOLE record, is "Can\'t be fully undone", and names what to type', async () => {
+  const { summary } = require('../lib/render');
+  const dv = fakeDv({ email: 'dgross@example.org' });
+  const plan = await planJob(dv, job({ mode: 'delete', rows: [{ name: 'Jane Example', id: IDS.jane }, { name: 'Ina Active', id: IDS.inactive }] }), { envs: ENVS, access: ACCESS, warnRows: 50 });
+  assert.equal(plan.mode, 'delete');
+  assert.equal(plan.rows[0].before.address1_line1, '12 Old Rd', 'every column is kept, for the log');
+  assert.equal(plan.typed, 'delete 2');
+  assert.match(plan.severity.lines[0], /^Can't be fully undone: deletes 2 contacts for good/);
+  assert.match(summary(plan), /DELETE 2 contacts from the Donor App/);
+  assert.ok(dv.calls.every((c) => c.method === 'GET'), 'planning a delete only reads');
+  const one = await planJob(dv, job({ mode: 'delete', rows: [{ name: 'Jane Example', id: IDS.jane }] }), { envs: ENVS, access: ACCESS });
+  assert.equal(one.typed, 'Jane Example', 'one record: its name is typed');
+});
+
+test('an admin delete never touches a closed-year gift', async () => {
+  const dv = fakeDv({ email: 'dgross@example.org' });
+  const envs = { donorapp: { ...ENVS.donorapp, closed_year: { msnfp_transactions: 'msnfp_bookdate' } } };
+  const del = job({ mode: 'delete', table: 'msnfp_transactions', rows: [{ name: 'TRN-1', id: IDS.t1 }, { name: 'TRN-2', id: IDS.t2 }] });
+  const plan = await planJob(dv, del, { envs, access: ACCESS });
+  assert.deepEqual(plan.rows.map((r) => r.name), ['TRN-2']);
+  assert.match(plan.refused[0].why, /closed/);
 });
 
 test('unknown table, unknown column, computed column, read-only column refused', () => {

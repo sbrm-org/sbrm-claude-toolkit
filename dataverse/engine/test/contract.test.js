@@ -48,10 +48,20 @@ test('unknown keys are refused, top-level and per row', () => {
 
 test('wrong contract, steps, delete, unknown env all refused', () => {
   has(v(updateJob({ contract: 'sbrm-dv-job/2' })), /"contract" must be exactly/);
-  has(v(updateJob({ kind: 'steps' })), /not in v1/);
-  has(v(updateJob({ mode: 'delete' })), /there is no delete/);
+  has(v(updateJob({ kind: 'steps' })), /"kind": "steps" is retired/);
+  has(v(updateJob({ mode: 'merge' })), /"mode" must be "create", "update" or "delete"/);
   has(v(updateJob({ env: 'prod' })), /"env" must be one of: donorapp/);
   has(v(updateJob({ table: 'Contacts' })), /"table" must be an entity set name/);
+});
+
+test('a delete job (admin, checked at plan) names records by id and carries no body, verify or amount', () => {
+  const del = (over = {}) => updateJob({ mode: 'delete', intent: { verb: 'delete', count: 1, table: 'contacts', fields: [] }, rows: [{ name: 'Jane Example', id: '11111111-1111-1111-1111-111111111111' }], ...over });
+  assert.deepEqual(v(del()).errors, []);
+  has(v(del({ rows: [{ name: 'Jane Example', id: '11111111-1111-1111-1111-111111111111', body: { x: 1 } }] })), /a delete row has no "body"/);
+  has(v(del({ rows: [{ name: 'Jane Example' }] })), /"id" must be the target record's GUID/);
+  has(v(del({ verify: ['firstname'] })), /"verify" is for creates and updates/);
+  has(v(del({ amount_field: 'creditlimit' })), /"amount_field" is for creates and updates/);
+  has(v(del({ intent: { verb: 'update', count: 1, table: 'contacts', fields: [] } })), /intent does not match/);
 });
 
 test('reason is required and one line', () => {

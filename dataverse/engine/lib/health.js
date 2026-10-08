@@ -11,6 +11,32 @@
 const path = require('path');
 const { whoAmI, accessFor } = require('./resolve');
 const { resolveAccess } = require('./access');
+const { atLeast, PLAIN } = require('./levels');
+
+// What a person's OWN Dataverse role must hold for `develop` to work (DESIGN.md §10g): the toolkit level
+// never grants a Dataverse privilege, it only opens a door the role must already walk through. Names read
+// live from RetrieveUserPrivileges in Donor App Dev, 10/7/26. Deleting needs the prvDelete* set too.
+const DEVELOP_PRIVILEGES = [
+  'prvCreateEntity', 'prvWriteEntity', 'prvCreateAttribute', 'prvWriteAttribute', 'prvCreateRelationship',
+  'prvCreateOptionSet', 'prvWriteOptionSet', 'prvCreateCustomization', 'prvWriteCustomization',
+  'prvCreateSystemForm', 'prvWriteSystemForm', 'prvCreateWorkflow', 'prvWriteWorkflow',
+  'prvPublishCustomization', 'prvWriteSolution', 'prvCreateSolution',
+];
+const ADMIN_PRIVILEGES = ['prvDeleteEntity', 'prvDeleteAttribute', 'prvDeleteRelationship', 'prvDeleteOptionSet', 'prvDeleteSystemForm', 'prvDeleteWorkflow', 'prvCreateEntityKey'];
+
+// The privileges `level` needs that this person's roles lack in this app, or null when it could not be read.
+function missingPrivileges(dv, userId, level) {
+  if (!atLeast(level, 'develop')) return [];
+  let held;
+  try {
+    const r = dv.get(`systemusers(${userId})/Microsoft.Dynamics.CRM.RetrieveUserPrivileges()`);
+    held = new Set((r.RolePrivileges || []).map((p) => p.PrivilegeName));
+  } catch {
+    return null;
+  }
+  const need = atLeast(level, 'admin') ? [...DEVELOP_PRIVILEGES, ...ADMIN_PRIVILEGES] : DEVELOP_PRIVILEGES;
+  return need.filter((p) => !held.has(p));
+}
 
 const DATAVERSE = /dataverse|crm\.dynamics\.com/i;
 // Anything the toolkit plugin itself ships carries one of these; everything else is foreign (D4a).
@@ -101,7 +127,7 @@ function doctor(deps) {
         // No role in an app is normal for most staff; it fails where they are meant to write, or where
         // they SAID they use it (`doctor --apps`, gap 3: else a forgotten sign-in reads as "fine").
         if (deps.apps && deps.apps.includes(env)) add(`Signed in: ${info.name}`, 'fail', `you use the ${info.name} but Dataverse did not answer: ${e.message.slice(0, 160)}`, `${SIGN_IN(info.host)}; if it still does not answer, ask Dylan to check your security role in the ${info.name}`);
-        else if (level === 'write' || level === 'schema') add(`Signed in: ${info.name}`, 'fail', `you have ${level} access here but Dataverse did not answer: ${e.message}`, `${SIGN_IN(info.host)}; if it still does not answer, ask Dylan to check your security role in the ${info.name}`);
+        else if (level && atLeast(level, 'write')) add(`Signed in: ${info.name}`, 'fail', `you have ${level} access here but Dataverse did not answer: ${e.message}`, `${SIGN_IN(info.host)}; if it still does not answer, ask Dylan to check your security role in the ${info.name}`);
         else add(`Signed in: ${info.name}`, 'info', `no answer (fine if you don't use the ${info.name}): ${e.message.slice(0, 120)}`);
         continue;
       }
@@ -113,9 +139,15 @@ function doctor(deps) {
       } catch (e) {
         // The Write Access list cannot be read here: writes in this app are refused (fail closed).
         add(`Access list: ${info.name}`, deps.apps && deps.apps.includes(env) ? 'fail' : 'info', e.message, `ask Dylan: your role cannot read the Write Access list in the ${info.name}`);
-        acc = { level: 'read', maxRows: null };
+        acc = { level: 'read' };
       }
-      add(`Signed in: ${info.name}`, 'ok', `${me.fullname}; shared-path access ${acc.level}${acc.level === 'read' ? '' : `, up to ${acc.maxRows === null ? 'any number of' : acc.maxRows} rows per approval`}`);
+      add(`Signed in: ${info.name}`, 'ok', `${me.fullname}; shared-path access ${acc.level} (${PLAIN[acc.level]})`);
+      // A develop or admin grant the person's own role cannot use (§10g): caught here, before a first
+      // refused step halfway through a build.
+      const missing = missingPrivileges(dv, me.systemuserid, acc.level);
+      if (missing === null) add(`App development: ${info.name}`, 'info', 'could not read your role\'s privileges, so whether you can customize this app was not checked');
+      else if (missing.length) add(`App development: ${info.name}`, 'fail', `${acc.level} is granted in the toolkit, but your Dataverse role cannot customize this app (missing ${missing.slice(0, 6).join(', ')}${missing.length > 6 ? `, and ${missing.length - 6} more` : ''})`, `ask Dylan: your security role in the ${info.name} needs System Customizer (or the toolkit grant lowered)`);
+      else if (atLeast(acc.level, 'develop')) add(`App development: ${info.name}`, 'ok', 'your role can customize this app');
       for (const [set, label] of [['sbrm_dataversewritelogs', 'Write Log'], ['sbrm_dataverseevents', 'event table']]) {
         try {
           dv.get(`${set}?$top=1&$select=createdon`);
@@ -178,4 +210,4 @@ function render(result) {
   return ['', 'Dataverse health check', '', ...lines, '', verdict, ''].join('\n');
 }
 
-module.exports = { doctor, render, scanDrift, isToolkit };
+module.exports = { doctor, render, scanDrift, isToolkit, missingPrivileges, DEVELOP_PRIVILEGES, ADMIN_PRIVILEGES };

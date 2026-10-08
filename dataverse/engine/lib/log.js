@@ -63,8 +63,11 @@ function entryText(entry) {
       if (r.closed_year_children) out.push(`   - closed-year gifts that changed donor: ${r.closed_year_children}`);
       if (r.name_override) out.push(`   - names differ, confirmed: ${r.name_override}`);
     }
+    if (entry.mode === 'delete') out.push('   - deleted; every column as it stood is in the JSON block below');
+    // An old value is shown whenever the change carries one (record updates, and app changes of kind
+    // schema / component, DESIGN.md §10e).
     for (const c of r.changes || []) {
-      out.push(entry.mode === 'update' ? `   - ${c.label}: ${clip(c.old_text)} -> ${clip(c.new_text)}` : `   - ${c.label}: ${clip(c.new_text)}`);
+      out.push(entry.mode === 'update' || c.old_text !== undefined ? `   - ${c.label}: ${clip(c.old_text)} -> ${clip(c.new_text)}` : `   - ${c.label}: ${clip(c.new_text)}`);
     }
   });
   for (const x of entry.left_out) out.push(`- Left out: ${x.name}: ${x.why}`);

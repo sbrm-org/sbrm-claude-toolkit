@@ -61,14 +61,17 @@ function validateJob(raw, { envs }) {
 
   for (const k of Object.keys(raw)) if (!TOP_KEYS.has(k)) err(`unknown top-level key "${k}"`);
   if (raw.contract !== CONTRACT) err(`"contract" must be exactly "${CONTRACT}"`);
-  if (raw.kind === 'steps') err('"kind": "steps" is not in v1 of the shared contract (CONTRACT.md §2b); schema jobs stay on dataverse_write.py');
-  else if (raw.kind !== 'rows') err('"kind" must be "rows"');
+  if (raw.kind === 'steps') err('"kind": "steps" is retired (DESIGN.md §10e): app changes are "kind": "schema" (tables, columns, relationships, keys, options) or "kind": "component" (views, forms, sitemaps, flows)');
+  else if (raw.kind !== 'rows') err('"kind" must be "rows", "merge", "schema" or "component"');
   if (typeof raw.env !== 'string' || !Object.prototype.hasOwnProperty.call(envs, raw.env)) {
     err(`"env" must be one of: ${Object.keys(envs).join(', ')}`);
   }
   if (typeof raw.table !== 'string' || !IDENT.test(raw.table)) err('"table" must be an entity set name (plural, lowercase), e.g. "contacts"');
-  if (raw.mode === 'delete') err('there is no delete (CONTRACT.md §8)');
-  else if (raw.mode !== 'create' && raw.mode !== 'update') err('"mode" must be "create" or "update"');
+  // delete: an admin's, checked at plan (ruled 10/7: "let admin do deletes of all").
+  if (!['create', 'update', 'delete'].includes(raw.mode)) err('"mode" must be "create", "update" or "delete"');
+  const isDelete = raw.mode === 'delete';
+  if (isDelete && raw.amount_field) err('"amount_field" is for creates and updates');
+  if (isDelete && raw.verify) err('"verify" is for creates and updates (a delete is read back by checking the record is gone)');
   if (typeof raw.source !== 'string' || !raw.source.trim()) err('"source" is required (script path, or "claude-session")');
   if (typeof raw.reason !== 'string' || !raw.reason.trim()) err('"reason" is required: one plain sentence on why');
   else if (raw.reason.length > MAX_REASON) err(`"reason" is over ${MAX_REASON} characters; one sentence`);
@@ -99,7 +102,7 @@ function validateJob(raw, { envs }) {
       else if (row.name.length > MAX_NAME) err(`${at}: "name" is over ${MAX_NAME} characters`);
       const who = typeof row.name === 'string' && row.name.trim() ? `${at} (${row.name})` : at;
 
-      if (raw.mode === 'update') {
+      if (raw.mode === 'update' || isDelete) {
         if (typeof row.id !== 'string' || !GUID.test(row.id)) err(`${who}: "id" must be the target record's GUID`);
         else {
           const id = row.id.toLowerCase();
@@ -111,7 +114,9 @@ function validateJob(raw, { envs }) {
         if (row.id !== undefined && row.id !== null) err(`${who}: a create row must not carry an "id"`);
       }
 
-      if (!isPlainObject(row.body) || Object.keys(row.body).length === 0) {
+      if (isDelete) {
+        if (row.body !== undefined && row.body !== null) err(`${who}: a delete row has no "body" (it names the record by "id")`);
+      } else if (!isPlainObject(row.body) || Object.keys(row.body).length === 0) {
         err(`${who}: "body" must be a non-empty object`);
       } else {
         const attrsViaNav = new Set();

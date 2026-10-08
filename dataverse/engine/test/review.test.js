@@ -110,3 +110,15 @@ test('someone granted write with no activity yet shows by the name on their acce
   const s = summarize({ now: NOW, days: 7, access: { people: { 'new@example.org': { envs: { donorapp: 'write' }, name: 'New Person' } } }, logs: [], events: [], people: {} });
   assert.match(render(s), /New Person\s+never\s+not set up/);
 });
+
+test('the Access section lists each granted person by level, old schema read as admin, merge shown', () => {
+  const s = summarize({ ...week(), access: { people: {
+    ...ACCESS.people,
+    'dmartinez@example.org': { envs: { donorapp: 'write', fedev: 'develop', hgs: 'read' }, merge: { donorapp: true }, name: 'Dana Martin' },
+  } } });
+  const out = render(s);
+  assert.match(out, /\nAccess\n/);
+  assert.match(out, /Dylan Gross +admin: donorapp/);
+  assert.match(out, /Dana Martin +write \+ merge: donorapp; develop: fedev/);
+  assert.ok(!/Dana Martin.*hgs/.test(out), 'read is not listed');
+});

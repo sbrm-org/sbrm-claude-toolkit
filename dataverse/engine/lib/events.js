@@ -20,20 +20,24 @@ const crypto = require('crypto');
 const store = require('./store');
 const { request, resolveCli, DataverseError } = require('./cli');
 
-const ENGINE_VERSION = '2026.10.07';
+const ENGINE_VERSION = '2026.10.07.2'; // 1.10.0: levels develop/admin, app development, admin deletes, severity
 const EVENT_SET = 'sbrm_dataverseevents';
 
 // DESIGN.md §7 D2: signal (listed in the review, opens an issue) or routine (counted by reason).
 // A code that is NOT in this table counts as signal: nothing is hidden by accident.
 const SIGNAL = {
   // someone is stuck, or something is broken
-  access_read: true, access_revoked: true, over_cap: true, plan_tampered: true, different_person: true,
+  access_read: true, access_revoked: true, plan_tampered: true, different_person: true,
   no_identity: true, crash: true, engine_bug: true, cli_missing: true, dataverse_error: true,
   parked: true, report: true, health_failed: true, drift: true, not_permitted: true, cli_blocked: true, access_unreadable: true,
+  too_big: true, // a job over what one apply can carry or log in full (not an access cap; there is none since 10/7)
   // the gate doing its job (counted, never listed)
   invalid_job: false, intent_mismatch: false, every_row_refused: false, every_row_moved: false,
   stale_plan: false, no_plan: false, nothing_to_undo: false, table_missing: false,
   client_info_exposed: false, usage: false, health_passed: false, not_found: false, not_open: false,
+  // app development (DESIGN.md §10): a definition that moved since the person's read; a change that grew
+  // between plan and apply; nothing left to change (a re-plan of an applied schema job)
+  snapshot_moved: false, severity_grew: false, nothing_to_change: false,
 };
 
 function isSignal(code) {

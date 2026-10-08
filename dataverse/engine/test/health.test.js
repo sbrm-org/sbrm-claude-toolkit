@@ -186,3 +186,34 @@ test('drift makes the run a drift event (signal) and is named in the output', ()
   assert.match(out, /FAIL {2}Extra Dataverse connection: dataverse-donorapp \(local scope, home folder\)/);
   assert.match(out, /An extra Dataverse connection or hook is on this machine/);
 });
+
+// App development (DESIGN.md §10g): a develop/admin grant the person's own Dataverse role cannot use is
+// caught by doctor, before a first refused step halfway through a build.
+test('develop or admin with a role that cannot customize: fails, names what is missing and who fixes it', () => {
+  const dv = fakeDv({ email: 'dev@example.org' });
+  dv.privileges = ['prvReadEntity'];
+  const r = doctor(base({ connect: () => dv }));
+  const line = r.failed.find((c) => c.label === 'App development: Donor App');
+  assert.ok(line, 'the app-development line fails');
+  assert.match(line.detail, /develop is granted in the toolkit, but your Dataverse role cannot customize this app \(missing prvCreateEntity/);
+  assert.match(line.fix, /System Customizer/);
+});
+
+test('a writer gets no app-development line; a developer who can customize gets ok; unreadable privileges are info', () => {
+  const w = doctor(base({ connect: () => fakeDv({ email: 'writer@example.org' }) }));
+  assert.ok(!w.checks.some((c) => /^App development/.test(c.label)), 'write does not need customizing');
+  const d = doctor(base({ connect: () => fakeDv({ email: 'dev@example.org' }) }));
+  assert.equal(d.checks.find((c) => c.label === 'App development: Donor App').status, 'ok');
+  const broken = fakeDv({ email: 'dev@example.org' });
+  const get = broken.get;
+  broken.get = (p, o) => { if (/RetrieveUserPrivileges/.test(p)) throw new Error('no'); return get(p, o); };
+  assert.equal(doctor(base({ connect: () => broken })).checks.find((c) => c.label === 'App development: Donor App').status, 'info');
+});
+
+test('an admin also needs the delete privileges', () => {
+  const dv = fakeDv({ email: 'dgross@example.org' });
+  const { DEVELOP_PRIVILEGES } = require('../lib/health');
+  dv.privileges = [...DEVELOP_PRIVILEGES];
+  const line = doctor(base({ connect: () => dv })).failed.find((c) => c.label === 'App development: Donor App');
+  assert.match(line.detail, /admin is granted.*missing prvDeleteEntity/);
+});

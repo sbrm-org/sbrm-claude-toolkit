@@ -5,7 +5,8 @@
 //
 //   update -> every column the write changed goes back to its logged `before` value
 //   create -> the record is marked inactive (statecode 1 + the table's first inactive status),
-//             never deleted (there is no delete, §8)
+//             never deleted (only an admin's own delete job removes a record, ruled 10/7)
+//   delete -> cannot be undone (the record is gone; its last values are in the log entry)
 //
 // RULED 10/7/26 (Dylan): a record is LEFT OUT if any column being undone has changed since the
 // original write (someone edited it after us; undoing would wipe their edit without them knowing).
@@ -18,6 +19,7 @@ const { validateJob, BIND_KEY } = require('./contract');
 const { planJob, same, PlanRefused } = require('./resolve');
 const { loadTable, refTable } = require('./meta');
 const { LOG_SET } = require('./log');
+const severity = require('./severity');
 
 const UNDOABLE = new Set(['applied', 'applied with problems']);
 
@@ -74,6 +76,9 @@ function buildJob(dv, entry) {
     throw new PlanRefused([`undoing a merge is not built yet. The Write Log entry for plan ${entry.plan_id} holds both records in full as they were and every record the merge moved, so a rebuild is possible; ask Dylan.`], 'not_built');
   }
   if (!UNDOABLE.has(entry.outcome)) throw new PlanRefused([`that plan's outcome is "${entry.outcome}"; there is nothing to undo`], 'nothing_to_undo');
+  if (entry.mode === 'delete') {
+    throw new PlanRefused([`a delete cannot be undone by the toolkit. Every column of each deleted record, as it stood, is in the Write Log entry for plan ${entry.plan_id}; a record can be keyed back from there by hand (it gets a new id).`], 'nothing_to_undo');
+  }
   if (entry.mode !== 'update' && entry.mode !== 'create') throw new PlanRefused([`cannot undo a ${entry.mode}`], 'nothing_to_undo');
   const table = loadTable(dv, entry.table);
   if (!table) throw new PlanRefused([`there is no table "${entry.table}" any more`], 'table_missing');
@@ -131,13 +136,13 @@ function buildJob(dv, entry) {
 
 // The whole revert: build the job, plan it, leave out every record whose undone columns moved.
 // Returns { plan, raw } (plan not yet saved).
-function planRevert(dv, entry, { envs, access }) {
+function planRevert(dv, entry, { envs, access, warnRows }) {
   const { raw, skipped, expect } = buildJob(dv, entry);
   const { errors, job } = validateJob(raw, { envs });
   if (errors.length) throw new PlanRefused(['the undo job is not valid (an engine bug; nothing was planned):', ...errors], 'engine_bug');
   let plan;
   try {
-    plan = planJob(dv, job, { envs, access });
+    plan = planJob(dv, job, { envs, access, warnRows });
   } catch (e) {
     if (e instanceof PlanRefused && skipped.length) e.reasons.push(...skipped.map((s) => `  ${s.name}: ${s.why}`));
     throw e;
@@ -161,7 +166,9 @@ function planRevert(dv, entry, { envs, access }) {
   if (!keep.length) {
     throw new PlanRefused(['every record changed since the original write (or was already undone); nothing to undo:', ...refused.map((x) => `  ${x.name}: ${x.why}`)], 'every_row_moved');
   }
-  return { plan: { ...plan, rows: keep, refused, reverts_plan_id: entry.plan_id }, raw };
+  // The severity of the undo as it will be approved (fewer rows than the original plan if some moved).
+  const sev = plan.severity && severity.assess({ count: keep.length, noun: plan.severity.noun }, { warnRows: plan.severity.warn_rows });
+  return { plan: { ...plan, rows: keep, refused, severity: sev, reverts_plan_id: entry.plan_id }, raw };
 }
 
 module.exports = { planRevert, buildJob, findEntry, parseEntry, inactiveStatus };
