@@ -11,16 +11,43 @@ description: >
   "write to Dataverse", "mark inactive", "deactivate", "delete these records", "add a column", "new table", "change
   the view", "edit the form", "fix the flow", "turn the flow off", "undo that change", "revert", "the
   Dataverse tools aren't working", "is my Dataverse set up right", "report a problem with the donor app tools".
+  Also covers READING MANY ROWS into a file with the engine's read-only `query` (hundreds or thousands of
+  records): "pull every donor who", "export the list of", "all gifts in batch", "read hundreds of rows",
+  "compare these cards against the donor records", "how many contacts have".
 ---
 
 # Dataverse changes (SBRM shared write path)
 
 Reads still go through the read-only Dataverse connections; this
-skill is only for CHANGES. Use only the toolkit's own connections (tools named
+skill is for CHANGES, plus one read: `query`, for many rows at once (below). Use only the toolkit's own connections (tools named
 `mcp__plugin_sbrm-toolkit_dataverse-<app>__...`). If your notes or memory name another Dataverse
 connection (an older hand-built `dataverse-donorapp`, say), it was removed: don't look for it, and offer
 `/dataverse-setup` to bring the notes up to date. An app's connection with no tools is switched off on
 this machine (the person did not choose it in setup): to use that app, run `/dataverse-setup` again.
+
+## Reading many rows: `query` (read-only)
+
+For a question about a few records, use the read connection's tools as usual. When the work needs **more
+than a few dozen rows** (every gift in a batch, every donor matching something, a comparison across hundreds
+of records), do NOT page the read tool into the conversation: run the engine's `query`, which reads the whole
+table (or a filter of it) into a file, then process that file with a script.
+
+`node "<toolkit>/dataverse/engine/dataverse-write.js" query <app> <table set> --select col,col --filter "<OData filter>" [--orderby "col desc"] [--expand "nav($select=col)"] [--max N] [--csv] [--name label]`
+
+- `<table set>` is the plural set name (`contacts`, `accounts`, `msnfp_transactions`); `--select` takes
+  logical column names (the describe tool lists them). Lookups read as `_<column>_value`. Put the filter in
+  `--filter` exactly as OData (`statecode eq 0 and createdon ge 2026-01-01`); the engine encodes it.
+- It follows the pages itself (up to `--max`, default 50,000) and adds each choice/lookup's display text as
+  `<column>@label`. It prints only the row count, the columns and the file path; never paste the rows into
+  the chat. JSON is `{ "meta": {...}, "rows": [...] }`; `--csv` writes a spreadsheet-ready file instead.
+- Then write a small script (Python or Node) that reads the file and does the comparison or count, and tell
+  the person the answer, not the rows.
+- Files go to the `sbrm-reads` folder in the person's home folder and are **deleted after 7 days**. Never
+  copy one into OneDrive, SharePoint, a git folder, Teams or an email: they can hold client records (Recovery
+  is HIPAA). The engine refuses to write there if that folder is inside git or OneDrive.
+- It sees exactly what the person's own Dataverse role lets them see, like every read. It cannot write.
+- A misspelt column or filter comes back as a refusal with Dataverse's message; fix the query and run it
+  again. It is not something to report.
 
 ## Who may do what
 
@@ -75,7 +102,7 @@ Verify the path on first use and say it in full whenever you hand the person a c
    drives the screen, mouse or keyboard (the guard refuses them). Never try to answer it, and never write
    some other way if they say No: ask what they want instead. If the guard says the session is in a mode where Claude Code does not
    ask, tell the person to switch modes (shift+tab) and run the apply again. Run applies from the main
-   conversation, never from a subagent (the guard refuses those). An approval lasts three minutes: if
+   conversation, never from a subagent (the guard refuses those). An approval lasts ten minutes: if
    the engine says it expired, run the same apply again and they approve it again. If apply refuses because the
    change grew or moved since the plan, plan it again and go back to step 4.
 6. **After the apply, read the output back to them**: what was written, anything that was not, and
@@ -153,6 +180,15 @@ Nothing here can notify Dylan. If it's urgent, tell them to message him and ment
 say plainly that nothing was changed, that it was recorded on this machine and reaches Dylan the next
 time the machine connects, and that if they need it today they should message him directly. Never
 work around a failure by writing some other way.
+
+**When the guard blocks a call** (the message starts "BLOCKED by the SBRM toolkit Dataverse guard" and
+gives a block id): if the call was trying to change Dataverse, the toolkit or its store, or to answer a
+permission prompt, the block is right. Say so plainly and make the change the normal way. If it changed
+none of those (a read, a search, a document, a script of your own), the block is a mistake: run the
+`report --blocked <id> "<one plain sentence>"` line the message gives, as its own command, WITHOUT asking
+first, then tell the person in one line that it was reported, with the number. The sentence is yours and
+is filed as yours, so keep it to what you were doing, in plain words; don't paste the command (the guard
+already attached it). One report per block: a repeat says "already reported".
 
 **After the tools work again, run `doctor`** so what was waiting gets sent and the record of the
 failure reaches Dylan.

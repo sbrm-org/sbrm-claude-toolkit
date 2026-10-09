@@ -19,6 +19,9 @@
 // Everything else passes: reads, `check`, `plan`, `show`, `apply`, `resolve`, `revert` (it only plans),
 // `doctor`, `report`, `review`, `whoami`, the read connections.
 //
+// Every block is recorded on this machine and gives a block id the person's Claude can report (1.11.6,
+// engine/lib/blocks.js, DESIGN.md §11).
+//
 // Fails CLOSED: an unreadable tool call is blocked. Self-test: node guard.js --selftest
 // Trigger strings below are spelled with character classes so this file does not trip other guards.
 
@@ -1038,13 +1041,36 @@ function verdict(input, dirs = devDirs(), { popup = popupOpen } = {}) {
   return null;
 }
 
-function block(what) {
-  process.stderr.write(
-    `BLOCKED by the SBRM toolkit Dataverse guard: ${what}. `
+// Each block is recorded on this machine (1.11.6, engine/lib/blocks.js): the call as seen, the rule, the
+// folder, the version, queued for Dylan's review as a routine count. The message then gives the block id and
+// the one command that reports it, which the person's Claude runs ON ITS OWN when it judges the block wrong
+// (Dylan 10/9: reports should go in automatically when a hook blocks a legitimate action and Claude notices).
+// Recording is best effort: a failure leaves a plain block. Not recorded: doctor's own probes
+// (SBRM_GUARD_PROBE=1 on this process, set by the engine) and a call the guard could not parse.
+function recordBlock(input, what) {
+  if (!input || process.env.SBRM_GUARD_PROBE === '1') return null;
+  try { return require('../engine/lib/blocks').record(input, what); } catch { return null; }
+}
+
+function blockMessage(what, rec) {
+  let msg = `BLOCKED by the SBRM toolkit Dataverse guard: ${what}. `
     + 'A change to Dataverse goes through the shared write path: Claude plans it, runs `apply` on its own '
     + 'line, and the person approves it when Claude Code asks. Tell the person what you were trying '
-    + 'to do. Do not look for another way, and do not edit or remove this hook.\n',
-  );
+    + 'to do. Do not look for another way, and do not edit or remove this hook.\n';
+  if (rec) {
+    const engine = path.join(__dirname, '..', 'engine', 'dataverse-write.js').replace(/\\/g, '/');
+    msg += `Block ${rec.block_id} is recorded on this machine. If this call changes nothing in Dataverse, the `
+      + 'toolkit or its store and answers no permission prompt (a read, a search, a document, a script of your '
+      + 'own), the block is probably a mistake. Report it yourself, without asking first, as a command of its own:\n'
+      + `node "${engine}" report --blocked ${rec.block_id} "<one plain sentence: what you were doing>"\n`
+      + 'Describe it in words only; the blocked call is already attached. Then tell the person in one line '
+      + 'that it was reported, with the number it prints.\n';
+  }
+  return msg;
+}
+
+function block(what, input = null) {
+  process.stderr.write(blockMessage(what, recordBlock(input, what)));
   process.exit(2);
 }
 
@@ -1364,15 +1390,15 @@ if (require.main === module) {
       let input;
       try { input = JSON.parse(raw); } catch { block('an unreadable tool call (the guard could not parse it, so it failed closed)'); }
       const ap = approvalVerdict(input);
-      if (ap && ap.block) block(ap.block);
+      if (ap && ap.block) block(ap.block, input);
       if (ap && ap.ask) {
-        try { askPerson(ap.ask); } catch (e) { block(`an apply the guard could not prepare an approval for (${e.message})`); }
+        try { askPerson(ap.ask); } catch (e) { block(`an apply the guard could not prepare an approval for (${e.message})`, input); }
       }
       const what = verdict(input);
-      if (what) block(what);
+      if (what) block(what, input);
       process.exit(0);
     });
   }
 }
 
-module.exports = { verdict, shellVerdict, writeVerdict, cliVerdict, approvalVerdict, approvalCommand };
+module.exports = { verdict, shellVerdict, writeVerdict, cliVerdict, approvalVerdict, approvalCommand, blockMessage };

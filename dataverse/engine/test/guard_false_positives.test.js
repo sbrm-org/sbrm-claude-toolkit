@@ -235,7 +235,8 @@ test('the hook\'s message carries the rule and the matched token', (t) => {
   if (!fs.existsSync(BASH)) { t.skip('no bash at ' + BASH); return; }
   const RUN = path.join(__dirname, '..', '..', 'guard', 'run.sh');
   const input = sh(J('[System.Windows.Forms.', SK, ']::SendWait("y")'));
-  const r = spawnSync(BASH, [RUN], { input: JSON.stringify(input), encoding: 'utf8' });
+  const scratch = fs.mkdtempSync(path.join(require('os').tmpdir(), 'sbrmdv-fp-')); // blocks are recorded (1.11.6)
+  const r = spawnSync(BASH, [RUN], { input: JSON.stringify(input), encoding: 'utf8', env: { ...process.env, SBRM_DV_HOME: scratch } });
   assert.equal(r.status, 2);
   assert.match(r.stderr, new RegExp(`\\[rule: injection; matched: "${SK}\\]::SendWait" in a call that sends input\\]`));
 });

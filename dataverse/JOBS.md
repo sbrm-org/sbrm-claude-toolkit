@@ -29,6 +29,8 @@ with a merge grant), develop for `schema` and `component`, admin for deleting an
 - `table` is the entity SET name (plural, lowercase). `mode`: `create` or `update`.
 - Each row: `name` (the record's human name), `id` (update), `body` (create and update): plain
   columns by logical name, lookups as `"<NavigationProperty>@odata.bind": "/<set>(<guid>)"` (null clears).
+- `intent.fields` lists every column the rows set. A lookup may be named by its column (`msnfp_appealid`)
+  or its key (`msnfp_AppealId@odata.bind`); either agrees (1.11.7).
 - Optional: `verify` (columns to read back; every written column is read back anyway), `amount_field`
   (+ `intent.amount_total`), per create row `dup_filter` (one OData filter; a match leaves the row out).
 - **Records are never deleted, only made inactive** (ruled 10/8): an `update` with `"statecode": 1` and the

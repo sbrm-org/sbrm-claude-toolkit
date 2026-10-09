@@ -9,7 +9,9 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const LAUNCH = path.join(__dirname, '..', '..', 'mcp', 'launch.js');
-const run = (args, env = {}, input = '') => spawnSync(process.execPath, [LAUNCH, ...args], { input, encoding: 'utf8', env: { ...process.env, ...env } });
+// A failed start is RECORDED in the store from 1.11.6: every spawned launcher gets a throwaway one.
+const SCRATCH = fs.mkdtempSync(path.join(require('os').tmpdir(), 'sbrmdv-mcp-'));
+const run = (args, env = {}, input = '') => spawnSync(process.execPath, [LAUNCH, ...args], { input, encoding: 'utf8', env: { ...process.env, SBRM_DV_HOME: SCRATCH, ...env } });
 
 test('signed in or not, read from real `auth list` output (gap 1: fail fast, never hang)', () => {
   const { hasProfile } = require('../../mcp/launch');
@@ -41,7 +43,7 @@ test('it hands the session to the CLI as `mcp <host>`, stdio straight through', 
   fs.writeFileSync(script, "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{process.stdout.write(JSON.stringify({args:process.argv.slice(2),stdin:s}));});");
   if (process.platform === 'win32') fs.writeFileSync(fake, `@"${process.execPath}" "${script}" %*\r\n`);
   else { fs.writeFileSync(fake, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`); fs.chmodSync(fake, 0o755); }
-  const r = spawnSync(process.execPath, [LAUNCH, 'hgs'], { input: '{"jsonrpc":"2.0","id":1,"method":"initialize"}', encoding: 'utf8', shell: false, env: { ...process.env, SBRM_DATAVERSE_CLI: fake } });
+  const r = spawnSync(process.execPath, [LAUNCH, 'hgs'], { input: '{"jsonrpc":"2.0","id":1,"method":"initialize"}', encoding: 'utf8', shell: false, env: { ...process.env, SBRM_DV_HOME: SCRATCH, SBRM_DATAVERSE_CLI: fake } });
   if (process.platform === 'win32' && r.status !== 0 && /EINVAL|spawn/.test(r.stderr)) {
     t.skip('a .cmd stand-in cannot be spawned without a shell on Windows; proven live instead (10/7) and on Mac');
     return;

@@ -120,6 +120,37 @@ test('intent must match the rows exactly (DESIGN.md 6b.1)', () => {
   has(v(updateJob({ intent: undefined })), /"intent" is required/);
 });
 
+// 1.11.7: a lookup is SET through its navigation property ("msnfp_AppealId@odata.bind"; a lookup that can point
+// at more than one table carries the target, "msnfp_CustomerId_contact@odata.bind"), and Claude names the COLUMN
+// in the intent. The same column, so they agree. Three of the first five intent refusals were only this
+// (D-1026, D-1037, D-1050, read from the event table 10/9); the shapes below are theirs.
+test('intent: a lookup named by its column agrees with the row\'s @odata.bind key; anything else still has to match', () => {
+  const G = '/msnfp_appeals(11111111-1111-1111-1111-111111111111)';
+  const job = (fields, body) => updateJob({
+    table: 'msnfp_transactions',
+    intent: { verb: 'update', count: 1, table: 'msnfp_transactions', fields },
+    rows: [{ name: 'Gift 1', id: IDS.jane, body }],
+  });
+  const ok = (j) => assert.deepEqual(v(j).errors, []);
+  // D-1050: the column names, lowercase
+  ok(job(['msnfp_appealid', 'msnfp_designationid', 'msnfp_packageid'],
+    { 'msnfp_AppealId@odata.bind': G, 'msnfp_DesignationId@odata.bind': G, 'msnfp_PackageId@odata.bind': G }));
+  // D-1037: a lookup with a target (the column without it)
+  ok(job(['msnfp_customerid'], { 'msnfp_CustomerId_contact@odata.bind': G }));
+  // D-1026: the navigation properties without the annotation, mixed with plain columns
+  ok(job(['msnfp_amount', 'msnfp_AppealId', 'msnfp_CustomerId_account', 'sbrm_addsoftcredittf'],
+    { msnfp_amount: 5, 'msnfp_AppealId@odata.bind': G, 'msnfp_CustomerId_account@odata.bind': G, sbrm_addsoftcredittf: true }));
+  // the exact key still works
+  ok(job(['msnfp_AppealId@odata.bind'], { 'msnfp_AppealId@odata.bind': G }));
+  // still refused: a field the rows do not set, a lookup the intent leaves out, a different column, and a plain
+  // column's name is never stretched into another plain column
+  has(v(job(['msnfp_appealid', 'msnfp_amount'], { 'msnfp_AppealId@odata.bind': G })), /fields say \[msnfp_appealid, msnfp_amount\]/);
+  has(v(job(['msnfp_amount'], { msnfp_amount: 5, 'msnfp_AppealId@odata.bind': G })), /fields say \[msnfp_amount\]/);
+  has(v(job(['msnfp_packageid'], { 'msnfp_AppealId@odata.bind': G })), /fields say \[msnfp_packageid\]/);
+  has(v(job(['msnfp_customer'], { 'msnfp_CustomerId_contact@odata.bind': G })), /fields say \[msnfp_customer\]/);
+  has(v(job(['address1'], { address1_city: 'x' })), /fields say \[address1\]/);
+});
+
 test('intent amount_total must equal the computed total to the cent', () => {
   const j = createJob();
   j.intent.amount_total = 50.01;

@@ -154,13 +154,18 @@ test('the real guard beside the engine blocks a bypass of the approval; plan pas
   const v = ['ap', 'ply'].join('');
   // 1.11.0: an apply is never simply let through: in a mode that does not ask it is refused (and outside the
   // plugin, or not a plan id, it is refused anyway). The "ask" path is tested in guard_launcher.test.js.
-  const r = spawnSync(process.execPath, [file], { input: JSON.stringify({ tool_name: 'Bash', permission_mode: 'bypassPermissions', tool_input: { command: `node C:/x/dataverse-write.js ${v} 20000101-000000-00000000` } }), encoding: 'utf8' });
+  // As doctor runs them (1.11.6): marked as probes, in a throwaway store, and a probe leaves no block record.
+  const fs = require('fs');
+  const scratch = fs.mkdtempSync(path.join(require('os').tmpdir(), 'sbrmdv-health-'));
+  const env = { ...process.env, SBRM_DV_HOME: scratch, SBRM_GUARD_PROBE: '1' };
+  const r = spawnSync(process.execPath, [file], { input: JSON.stringify({ tool_name: 'Bash', permission_mode: 'bypassPermissions', tool_input: { command: `node C:/x/dataverse-write.js ${v} 20000101-000000-00000000` } }), encoding: 'utf8', env });
   assert.equal(r.status, 2);
   const w = ['write', 'Connection'].join('');
-  const bypass = spawnSync(process.execPath, [file], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: `node -e "const { ${w} } = require('C:/x/lib/write')"` } }), encoding: 'utf8' });
+  const bypass = spawnSync(process.execPath, [file], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: `node -e "const { ${w} } = require('C:/x/lib/write')"` } }), encoding: 'utf8', env });
   assert.equal(bypass.status, 2);
-  const ok = spawnSync(process.execPath, [file], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'node C:/x/dataverse-write.js plan j.json' } }), encoding: 'utf8' });
+  const ok = spawnSync(process.execPath, [file], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'node C:/x/dataverse-write.js plan j.json' } }), encoding: 'utf8', env });
   assert.equal(ok.status, 0);
+  assert.ok(!fs.existsSync(path.join(scratch, 'events', 'events.jsonl')), "doctor's probes are not recorded as blocks");
 });
 
 test('every failing check names its fix (setup = run doctor, do the fixes, run it again)', () => {

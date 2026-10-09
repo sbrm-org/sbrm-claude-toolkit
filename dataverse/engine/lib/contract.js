@@ -42,10 +42,22 @@ function classifyBodyKey(key, value) {
   return { kind: 'plain' };
 }
 
-function sameSet(a, b) {
-  if (a.length !== b.length) return false;
-  const s = new Set(a);
-  return b.every((x) => s.has(x));
+// An intent field names the same column as a row key (1.11.7). A lookup is SET through its navigation
+// property ("msnfp_AppealId@odata.bind"; one that can point at more than one table carries the target,
+// "msnfp_CustomerId_contact@odata.bind"), while Claude names the COLUMN ("msnfp_appealid"). Three of the first
+// five intent refusals were only that (D-1026, D-1037, D-1050). So: the same name ignoring case and the
+// annotation, or, for a lookup key only, the column followed by a target. A plain column is never stretched.
+function fieldMatches(field, key) {
+  const n = (s) => String(s).replace(/@odata\.bind$/i, '').toLowerCase();
+  const f = n(field);
+  const k = n(key);
+  if (f === k) return true;
+  return /@odata\.bind$/i.test(key) && k.startsWith(`${f}_`) && /^[a-z][a-z0-9_]*$/.test(k.slice(f.length + 1));
+}
+
+// Every intent field names a column the rows set, and every column the rows set is named.
+function fieldsAgree(fields, keys) {
+  return fields.every((f) => keys.some((k) => fieldMatches(f, k))) && keys.every((k) => fields.some((f) => fieldMatches(f, k)));
 }
 
 function cents(n) {
@@ -157,7 +169,7 @@ function validateJob(raw, { envs }) {
     if (intent.table !== raw.table) mism.push(`table says "${intent.table}", the file writes "${raw.table}"`);
     const fields = Array.isArray(intent.fields) ? intent.fields : null;
     const actual = [...bodyKeys].sort();
-    if (!fields || !sameSet(fields, actual)) {
+    if (!fields || !fields.every((f) => typeof f === 'string') || !fieldsAgree(fields, actual)) {
       mism.push(`fields say [${fields ? fields.join(', ') : '?'}], the rows set [${actual.join(', ')}]`);
     }
     if (raw.amount_field) {

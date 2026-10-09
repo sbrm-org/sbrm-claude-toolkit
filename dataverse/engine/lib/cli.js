@@ -171,8 +171,12 @@ function readConnection(host, cli = resolveCli()) {
   return {
     host,
     cliVersion: cli.version,
-    get(apiPath, { formatted = false } = {}) {
-      return request(cli, host, apiPath, { method: 'GET', headers: formatted ? [FORMATTED] : [] });
+    // pageSize (1.11.8, `query`): ask for up to N rows per page; the caller follows @odata.nextLink.
+    get(apiPath, { formatted = false, pageSize = 0 } = {}) {
+      if (!pageSize) return request(cli, host, apiPath, { method: 'GET', headers: formatted ? [FORMATTED] : [] });
+      const prefs = [`odata.maxpagesize=${Number(pageSize)}`];
+      if (formatted) prefs.unshift('odata.include-annotations="OData.Community.Display.V1.FormattedValue"');
+      return request(cli, host, apiPath, { method: 'GET', headers: [`Prefer: ${prefs.join(',')}`] });
     },
     getMany(paths, concurrency) {
       return getMany(cli, host, paths, concurrency);

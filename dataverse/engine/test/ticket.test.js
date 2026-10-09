@@ -30,6 +30,7 @@ test('no ticket, no approval; another plan id\'s ticket does not count', () => {
 });
 
 test('a ticket past its time is refused', () => {
+  assert.equal(T.TTL_MS, 10 * 60 * 1000, 'ten minutes (ruled 10/9)');
   T.mint(ID, { now: Date.now() - T.TTL_MS - 1000 });
   assert.equal(T.take(ID).why, 'expired');
 });
