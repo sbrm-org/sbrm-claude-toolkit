@@ -34,7 +34,25 @@ function first(name) {
 // input: { now, days, access, people: { email -> fullname },
 //          logs:   [{ env, email, name, time, planid, headline, outcome, written, notwritten, leftout }],
 //          events: [{ env, email, name, time, number, kind, code, signal, status, headline, words, planid, versions, machine }] }
-function summarize({ now = new Date(), days = 7, access, logs, events, people = {} }) {
+// The toolkit version an event names (1.11.6 on), or null for an older one (the version said only "engine").
+function toolkitOf(v) {
+  const m = /toolkit (\d+(?:\.\d+)*)/.exec(String(v || ''));
+  return m ? m[1] : null;
+}
+
+function cmpVersion(a, b) {
+  const x = String(a).split('.').map(Number);
+  const y = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i += 1) {
+    const d = (x[i] || 0) - (y[i] || 0);
+    if (d) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+// `toolkit` = the reviewer's own version; the current one is the newest of that and any version seen, so
+// a reviewer who has not updated yet does not mark everyone else behind.
+function summarize({ now = new Date(), days = 7, access, logs, events, people = {}, toolkit = null }) {
   const from = new Date(now - days * DAY);
   const inWindow = (t) => new Date(t) >= from;
   const expected = Object.entries((access && access.people) || {})
@@ -79,7 +97,15 @@ function summarize({ now = new Date(), days = 7, access, logs, events, people = 
     }
     routine[e.code || 'unclassified'] = (routine[e.code || 'unclassified'] || 0) + 1;
   }
-  return { from, to: now, days, people: ppl, open, problems, routine, blocks };
+  // Behind on the toolkit (1.11.6, DESIGN.md §11, candidate 2): a person whose LATEST event names an older
+  // version, or none (before 1.11.6). Usually: they did not quit Claude Code completely after an update.
+  const seen = events.map((e) => toolkitOf(e.versions)).filter(Boolean);
+  const valid = [toolkitOf(`toolkit ${toolkit}`), ...seen].filter(Boolean);
+  const current = valid.length ? valid.reduce((a, b) => (cmpVersion(a, b) >= 0 ? a : b)) : null;
+  const behind = current ? ppl.filter((p) => p.lastSeen && p.versions !== null)
+    .map((p) => ({ name: p.name, version: toolkitOf(p.versions), lastSeen: p.lastSeen }))
+    .filter((p) => !p.version || cmpVersion(p.version, current) < 0) : [];
+  return { from, to: now, days, people: ppl, open, problems, routine, blocks, toolkit: current, behind };
 }
 
 // Open events, oldest first, with each person's open health checks on one machine folded into ONE item:
@@ -161,6 +187,11 @@ function render(s, { generatedBy = null } = {}) {
   out.push(b.length ? `Guard blocks: ${b.reduce((n, [, c]) => n + c, 0)}   (${b.map(([k, c]) => `${k} ${c}`).join(', ')}; any Claude judged wrong are under Open)` : 'Guard blocks: none');
   const hc = s.people.filter((p) => p.health).map((p) => `${first(p.name)} ${md(p.health.time)} ${p.health.code === 'health_passed' ? 'pass' : p.health.code === 'drift' ? 'DRIFT' : 'FAIL'}`);
   out.push(`Health checks: ${hc.length ? hc.join(', ') : 'none on record'}`);
+  if (s.toolkit) {
+    out.push((s.behind || []).length
+      ? `Behind on the toolkit (now ${s.toolkit}): ${s.behind.map((p) => `${p.name} (last seen ${md(p.lastSeen)} on ${p.version || 'a version before 1.11.6'})`).join('; ')}. If they have not updated since: quit Claude Code completely and reopen it`
+      : `Toolkit: everyone seen is on ${s.toolkit}.`);
+  }
   const silent = s.people.filter((p) => p.silent);
   out.push(silent.length
     ? `Silent ${SILENT_DAYS}+ days: ${silent.map((p) => `${p.name} (last seen ${md(p.lastSeen)}): ask them to run the health check`).join('; ')}`
@@ -182,6 +213,7 @@ function brief(s) {
   if (unset.length) parts.push(`${unset.join(', ')} not set up`);
   const silent = s.people.filter((p) => p.silent).map((p) => first(p.name));
   if (silent.length) parts.push(`${silent.join(', ')} silent ${SILENT_DAYS}+ days`);
+  if ((s.behind || []).length) parts.push(`${s.behind.map((p) => first(p.name)).join(', ')} behind on the toolkit (now ${s.toolkit})`);
   return `Dataverse toolkit, ${md(s.from)} to ${md(s.to)}: ${parts.join(', ')}. "dataverse review" for detail.`;
 }
 

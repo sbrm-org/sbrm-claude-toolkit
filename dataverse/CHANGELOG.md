@@ -10,7 +10,11 @@ One line per release from 1.11.5. Earlier releases are described in their pull r
   legitimate; the report opens an item with the block attached and Claude's sentence labelled as Claude's.
   A person's own `report` now carries the last day's blocks too. Every event names the toolkit version (read
   from plugin.json; the engine's version constant had not moved since 1.11.1). doctor's own guard probes are
-  not recorded. Tests: `engine/test/blocks.test.js`.
+  not recorded. Recorded on their own, with nobody having to notice: one rule blocking a machine three times
+  in a day with no report from Claude (opens an item); the guard unable to run (the fallback leaves a line,
+  the next engine run opens one item); an app's read connection failing to start (once per app per day);
+  approvals Claude Code asked for that never ran (counted). The review lists anyone behind on the toolkit.
+  Tests: `engine/test/blocks.test.js`.
 - **1.11.6** (2026-10-09) Guard: a home folder set for one run no longer counts as moving the engine's store
   unless it is about Dataverse. In a code file it is refused only when the file names Dataverse (the engine,
   the store, its variables, the plugin, the CRM host) or runs Claude Code itself; a Fly.io entrypoint dropping

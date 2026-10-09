@@ -515,6 +515,34 @@ function reportInterrupted(run) {
   }
 }
 
+// The guard could not run on this machine (1.11.6, DESIGN.md §11, candidate 3): guard/run.sh's fallback leaves
+// one plain line per call in events/guard_down.log (it may have no node to do more). Each engine run turns
+// what is there into ONE open item and removes the file; the rename is the claim, so two runs cannot both.
+function reportGuardDown(run) {
+  const file = path.join(dir('events'), 'guard_down.log');
+  if (!fs.existsSync(file)) return;
+  const claimed = `${file}.${process.pid}.claimed`;
+  try { fs.renameSync(file, claimed); } catch { return; }
+  try {
+    const rows = fs.readFileSync(claimed, 'utf8').split('\n').filter(Boolean).map((l) => l.split('\t'));
+    if (!rows.length) return;
+    const reasons = [...new Set(rows.map((r) => r[1] || 'unknown'))];
+    const tools = [...new Set(rows.map((r) => r[2]).filter(Boolean))];
+    events.record(run, {
+      kind: 'guard could not run', code: 'guard_down', env: 'machine',
+      headline: `The guard could not run on this machine ${rows.length} time(s) (${reasons.join('; ')}): it fell back to blocking anything that names Dataverse`,
+      detail: [
+        `First: ${rows[0][0]}   Last: ${rows[rows.length - 1][0]}   Calls: ${rows.length}`,
+        `Why: ${reasons.join('; ')}`, `Tools: ${tools.join(', ') || 'not known'}`, '',
+        'Fix: /dataverse-setup (or start Claude Code from a terminal where node works); then doctor.', '',
+        'Last 50 lines (time, why, tool):', ...rows.slice(-50).map((r) => `  ${r.join('  ')}`),
+      ].join('\n'),
+    });
+  } catch { /* the file is gone either way; the next fallback call starts a new one */ } finally {
+    fs.rmSync(claimed, { force: true });
+  }
+}
+
 function reportApply(run, id, res) {
   run.person = res.person || run.person;
   run.wroteLog = true; // the Write Log entry is this outcome's record (applied, with problems, or cancelled)
@@ -730,7 +758,7 @@ function reportBlock(run, deps, id, words, opt) {
   ].join('\n');
   const ev = events.record(run, {
     kind: 'blocked by guard', code: 'false_block', words: `Claude: ${said}`,
-    headline: `Guard block looks wrong [${b.rule}]: ${b.tool}, toolkit ${b.toolkit}`, detail: context, extra: { block_id: id },
+    headline: `Guard block looks wrong [${b.rule}]: ${b.tool}, toolkit ${b.toolkit}`, detail: context, extra: { block_id: id, block_rule: b.rule },
   });
   run.reported = true;
   const number = sendAndNumber(run, deps, envs, env, ev);
@@ -815,7 +843,7 @@ function cmdReview(run, deps, args) {
   }
   const people = {};
   for (const r of [...logs, ...evs]) if (r.email) people[r.email] = r.name;
-  const s = review.summarize({ now, days, access: mergeAccessLists(lists), logs, events: evs, people });
+  const s = review.summarize({ now, days, access: mergeAccessLists(lists), logs, events: evs, people, toolkit: blocks.toolkitVersion() });
   if (opt.brief) console.log(review.brief(s) + (notes.length ? ` (${notes.length} app(s) could not be read)` : ''));
   else {
     console.log('\n' + review.render(s, { generatedBy: run.person ? run.person.fullname : null }));
@@ -1002,6 +1030,7 @@ function finish(run, deps) {
 function runCli(argv, deps = DEFAULT_DEPS) {
   const run = events.newRun(argv);
   reportInterrupted(run); // an earlier apply on this machine that was cut off part-way
+  reportGuardDown(run); // the guard could not run here since the last engine run
   const original = console.log;
   console.log = (...a) => { run.output.push(a.join(' ')); original(...a); };
   const done = (code) => {

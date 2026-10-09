@@ -19,7 +19,7 @@ const path = require('path');
 const crypto = require('crypto');
 const store = require('./store');
 const { request, resolveCli, DataverseError } = require('./cli');
-const { toolkitVersion } = require('./blocks');
+const { toolkitVersion } = require('./note');
 
 const ENGINE_VERSION = '2026.10.09.1'; // 1.11.6: guard blocks recorded, `report --blocked`; versions name the toolkit
 const EVENT_SET = 'sbrm_dataverseevents';
@@ -35,6 +35,10 @@ const SIGNAL = {
   interrupted: true, // an apply cut off part-way (1.10.1): what landed may have no Write Log entry
   no_approval: true, // an apply ran without Claude Code's approval prompt (1.11.0): the guard should have asked
   false_block: true, // the person's Claude judged a guard block wrong and reported it (1.11.6, lib/blocks.js)
+  // recorded on their own (1.11.6, DESIGN.md §11): no person has to notice
+  repeat_block: true, // one rule blocked 3 times in a day on a machine and Claude reported none of them
+  guard_down: true, // the guard could not run (no node, or it crashed); the fallback's line, sent by the engine
+  mcp_failed: true, // an app's read connection could not start (once per app per machine per day)
   // the gate doing its job (counted, never listed)
   invalid_job: false, intent_mismatch: false, every_row_refused: false, every_row_moved: false,
   stale_plan: false, no_plan: false, nothing_to_undo: false, table_missing: false,
@@ -44,6 +48,7 @@ const SIGNAL = {
   snapshot_moved: false, severity_grew: false, nothing_to_change: false,
   approval_expired: false, // the person answered Claude Code's prompt after the ticket's three minutes (1.11.0)
   blocked: false, // a guard block (1.11.6): counted by rule in the review; a report about one is false_block
+  approval_unused: false, // Claude Code asked and the change never ran (declined or left): counted (1.11.6)
 };
 
 function isSignal(code) {

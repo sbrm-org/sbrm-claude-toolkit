@@ -37,13 +37,38 @@ function sign(key, created, nonce, env) {
   return crypto.createHmac('sha256', store.planKey(env)).update(`ticket|${key}|${created}|${nonce}`).digest('hex');
 }
 
-// Drop tickets past their time (a declined prompt leaves one behind).
+// The app a plan belongs to, for filing (null: a resolve, or the plan is gone).
+function planEnv(key, env) {
+  try { return JSON.parse(fs.readFileSync(path.join(store.dir('plans', env), `${key}.json`), 'utf8')).env || null; } catch { return null; }
+}
+
+// Drop tickets past their time. A ticket still here was never used: Claude Code asked and the person said No,
+// or never answered (an approval given late is used up as `approval_expired` by take()). Each one is counted
+// for the review as `approval_unused` (1.11.6, DESIGN.md §11, candidate 5): many would mean the prompts
+// confuse people. The rename is the claim, so two sweeps cannot both count one ticket.
 function sweep({ env, now = Date.now() } = {}) {
   let names = [];
   try { names = fs.readdirSync(folder(env)); } catch { return; }
   for (const n of names) {
     const f = path.join(folder(env), n);
-    try { if (now - fs.statSync(f).mtimeMs > TTL_MS + 60 * 1000) fs.rmSync(f, { force: true }); } catch { /* gone already */ }
+    try {
+      if (now - fs.statSync(f).mtimeMs <= TTL_MS + 60 * 1000) continue;
+      if (!n.endsWith('.json')) { fs.rmSync(f, { force: true }); continue; } // a temp or claimed leftover
+      const claimed = `${f}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.swept`;
+      fs.renameSync(f, claimed);
+      fs.rmSync(claimed, { force: true });
+      const key = n.slice(0, -'.json'.length);
+      try {
+        const note = require('./note');
+        const at = new Date(now);
+        note.note({
+          id: note.newId('A', at), time: at, kind: 'approval not used', code: 'approval_unused', signal: false,
+          env: planEnv(key, env) || 'machine', by: 'guard',
+          headline: `Claude Code asked to approve ${key.startsWith('resolve-') ? `closing ${key.slice('resolve-'.length)}` : `plan ${key}`} and it never ran (declined or not answered)`,
+          detail: `Approval key: ${key}`,
+        });
+      } catch { /* counting is extra; the ticket is gone either way */ }
+    } catch { /* gone already, or another sweep claimed it */ }
   }
 }
 
@@ -77,7 +102,11 @@ function check(key, { env, now = Date.now() } = {}) {
 // The engine's half: check, then use it up. The rename is the claim, so two runs cannot both use one ticket.
 function take(key, opts = {}) {
   const c = check(key, opts);
-  if (!c.ok) return c;
+  if (!c.ok) {
+    // An approval given too late: used up here, so the sweep does not also count it as never used (1.11.6).
+    if (c.why === 'expired') { try { fs.rmSync(fileFor(key, opts.env), { force: true }); } catch { /* gone */ } }
+    return c;
+  }
   const claimed = `${c.file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.used`;
   try { fs.renameSync(c.file, claimed); } catch { return { ok: false, why: 'already used' }; }
   fs.rmSync(claimed, { force: true });

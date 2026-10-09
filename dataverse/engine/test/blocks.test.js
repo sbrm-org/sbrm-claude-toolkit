@@ -211,3 +211,106 @@ test('review: guard blocks are counted by rule on their own line, not as routine
   assert.match(text, /Guard blocks: 3 {3}\(injection 2, changing the engine's own store 1; any Claude judged wrong are under Open\)/);
   assert.match(text, /toolkit 1\.11\.6 {2}CLI 1\.0\.81/);
 });
+
+// ---- the other automatic reports (DESIGN.md §11, candidates 1-5, Dylan 10/9: "Ill take your 5 recommendations") ----
+
+const note = require('../lib/note');
+const ofCode = (code) => note.history().filter((x) => x.reason_code === code);
+
+test('1. the THIRD block by one rule in a day opens one item; a fourth adds nothing; a rule Claude already reported opens none', () => {
+  const what = (r) => `a test rule [rule: ${r}; matched: "x"]`;
+  const at = new Date();
+  blocks.record(bash('ls a'), what('alpha'), { envs: {}, now: at });
+  blocks.record(bash('ls b'), what('alpha'), { envs: {}, now: at });
+  assert.equal(ofCode('repeat_block').filter((x) => x.rule === 'alpha').length, 0, 'two is not yet a pattern');
+  blocks.record(bash('ls c'), what('alpha'), { envs: {}, now: at });
+  const items = ofCode('repeat_block').filter((x) => x.rule === 'alpha');
+  assert.equal(items.length, 1);
+  assert.deepEqual([items[0].kind, items[0].signal, items[0].env], ['repeated block', true, 'machine']);
+  assert.match(items[0].headline, /^Blocked 3 times today by one rule \[alpha\], and Claude has not reported it$/);
+  for (const c of ['ls a', 'ls b', 'ls c']) assert.ok(items[0].detail.includes(`The call, as the guard saw it:\n${c}`));
+  blocks.record(bash('ls d'), what('alpha'), { envs: {}, now: at });
+  assert.equal(ofCode('repeat_block').filter((x) => x.rule === 'alpha').length, 1, 'one item per rule per day');
+  // beta: Claude reported the first block, so the third opens nothing more
+  const first = blocks.record(bash('ls e'), what('beta'), { envs: {}, now: at });
+  assert.equal(go(['report', '--blocked', first.block_id, 'listing a folder'], deps(fakeDv())).code, 0);
+  blocks.record(bash('ls f'), what('beta'), { envs: {}, now: at });
+  blocks.record(bash('ls g'), what('beta'), { envs: {}, now: at });
+  assert.equal(ofCode('repeat_block').filter((x) => x.rule === 'beta').length, 0);
+});
+
+test('2. review: someone whose latest event names an older toolkit (or none) is listed as behind; the newest version seen is current', () => {
+  const now = new Date('2026-10-09T17:00:00');
+  const ev = (email, name, versions, time = '2026-10-09T10:00:00') => ({ env: 'donorapp', email, name, time, kind: 'refused', code: 'usage', signal: false, status: null, headline: 'x', versions });
+  const s = review.summarize({ now, logs: [], toolkit: '1.11.5', events: [
+    ev('d@example.org', 'Dana Example', 'toolkit 1.11.6; engine 2026.10.09.1; Dataverse CLI 1.0.81'),
+    ev('a@example.org', 'Alex Rivera', 'toolkit 1.11.4; engine x; Dataverse CLI 1.0.81'),
+    ev('k@example.org', 'Kim Lee', 'engine 2026.10.08.4; Dataverse CLI 1.0.81'),
+    ev('k@example.org', 'Kim Lee', 'toolkit 1.11.10; engine y; Dataverse CLI 1.0.81', '2026-10-08T10:00:00'),
+  ] });
+  assert.equal(s.toolkit, '1.11.10', 'numeric, not text, order; the reviewer\'s own older install does not set it');
+  assert.deepEqual(s.behind.map((p) => [p.name, p.version]), [['Alex Rivera', '1.11.4'], ['Dana Example', '1.11.6'], ['Kim Lee', null]], 'Kim\'s LATEST event is the one that counts');
+  const text = review.render(s);
+  assert.match(text, /Behind on the toolkit \(now 1\.11\.10\): Alex Rivera \(last seen 10\/9 on 1\.11\.4\); Dana Example \(last seen 10\/9 on 1\.11\.6\); Kim Lee \(last seen 10\/9 on a version before 1\.11\.6\)\. If they have not updated since: quit Claude Code completely and reopen it/);
+  assert.match(review.brief(s), /Alex, Dana, Kim behind on the toolkit \(now 1\.11\.10\)/);
+  const even = review.summarize({ now, logs: [], toolkit: '1.11.6', events: [ev('d@example.org', 'Dana Example', 'toolkit 1.11.6; engine z; Dataverse CLI 1')] });
+  assert.match(review.render(even), /Toolkit: everyone seen is on 1\.11\.6\./);
+  assert.ok(!/behind/.test(review.brief(even)));
+});
+
+test('3. the guard could not run: run.sh leaves a plain line (blocked or not), and the next engine run turns the lines into ONE open item', (t) => {
+  if (!fs.existsSync(BASH)) { t.skip('no bash at ' + BASH); return; }
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-down-'));
+  const env = { ...process.env, SBRM_DV_HOME: store, SBRM_GUARD_TEST_NO_NODE: '1' };
+  const a = spawnSync(BASH, [RUN], { input: JSON.stringify(bash(RAW_WRITE)), encoding: 'utf8', env });
+  const b = spawnSync(BASH, [RUN], { input: JSON.stringify(bash('ls')), encoding: 'utf8', env });
+  assert.deepEqual([a.status, b.status], [2, 0], 'the fallback still decides as before');
+  const lines = fs.readFileSync(path.join(store, 'events', 'guard_down.log'), 'utf8').split('\n').filter(Boolean);
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\tNode was not found \(test\)\tBash$/);
+  // The engine's half, in this file's own store.
+  const own = path.join(process.env.SBRM_DV_HOME, 'events', 'guard_down.log');
+  fs.copyFileSync(path.join(store, 'events', 'guard_down.log'), own);
+  const dv = fakeDv();
+  go(['report', 'anything'], deps(dv));
+  assert.ok(!fs.existsSync(own), 'claimed');
+  assert.deepEqual(fs.readdirSync(path.dirname(own)).filter((n) => n.startsWith('guard_down')), [], 'and the claimed copy removed');
+  const items = Object.values(dv.data[EVENTS]).filter((x) => x.sbrm_reasoncode === 'guard_down');
+  assert.equal(items.length, 1);
+  assert.deepEqual([items[0].sbrm_signal, items[0].sbrm_status, items[0].sbrm_envkey], [true, 'open', 'machine']);
+  assert.match(items[0].sbrm_name, /^The guard could not run on this machine 2 time\(s\) \(Node was not found \(test\)\)/);
+  assert.match(items[0].sbrm_detail, /Tools: Bash/);
+  go(['report', 'again'], deps(dv));
+  assert.equal(Object.values(dv.data[EVENTS]).filter((x) => x.sbrm_reasoncode === 'guard_down').length, 1, 'nothing new without new lines');
+});
+
+test('4. a read connection that cannot start is recorded once per app per day, filed as the machine\'s', () => {
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-mcpfail-'));
+  const LAUNCH = path.join(__dirname, '..', '..', 'mcp', 'launch.js');
+  const env = { ...process.env, SBRM_DV_HOME: store, SBRM_DATAVERSE_CLI: path.join(os.tmpdir(), 'no-such-dataverse.exe') };
+  for (const app of ['donorapp', 'donorapp', 'hgs']) assert.equal(spawnSync(process.execPath, [LAUNCH, app], { input: '', encoding: 'utf8', env }).status, 1);
+  const got = fs.readFileSync(path.join(store, 'events', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  assert.deepEqual(got.map((x) => [x.reason_code, x.app, x.signal, x.env]), [['mcp_failed', 'donorapp', true, 'machine'], ['mcp_failed', 'hgs', true, 'machine']]);
+  assert.match(got[0].headline, /^The Donor App read connection could not start: SBRM_DATAVERSE_CLI points at a missing file/);
+  assert.equal(fs.readdirSync(path.join(store, 'events', 'pending')).length, 2);
+});
+
+test('5. an approval Claude Code asked for that never ran is counted once (routine); one given too late is not counted again', () => {
+  const ticket = require('../lib/ticket');
+  const PLAN = '20261009-100000-0a1b2c3d';
+  const LATE = '20261009-100100-0a1b2c3e';
+  const then = Date.now() - 10 * 60 * 1000;
+  ticket.mint(PLAN, { now: then });
+  ticket.mint(LATE, { now: then });
+  // The sweep judges by the FILE's age: make both files as old as their tickets.
+  const tdir = path.join(process.env.SBRM_DV_HOME, 'config', 'tickets');
+  for (const k of [PLAN, LATE]) fs.utimesSync(path.join(tdir, `${k}.json`), then / 1000, then / 1000);
+  assert.equal(ticket.take(LATE).why, 'expired', 'approved after three minutes');
+  ticket.sweep();
+  ticket.sweep();
+  const got = ofCode('approval_unused');
+  assert.equal(got.length, 1, 'the declined one, once; the late one is already approval_expired');
+  assert.deepEqual([got[0].kind, got[0].signal, got[0].env], ['approval not used', false, 'machine']);
+  assert.match(got[0].headline, new RegExp(`plan ${PLAN} and it never ran \\(declined or not answered\\)`));
+  assert.deepEqual(fs.readdirSync(path.join(process.env.SBRM_DV_HOME, 'config', 'tickets')).filter((n) => n.includes(PLAN)), []);
+});

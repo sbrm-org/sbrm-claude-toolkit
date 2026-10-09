@@ -28,7 +28,27 @@ function hasProfile(text) {
   return /^\s*\[\d+\]/m.test(t);
 }
 
-function fail(msg) {
+// 1.11.6 (DESIGN.md §11, candidate 4): a connection that cannot start leaves an OPEN item for Dylan, once per
+// app per machine per day (Claude Code starts every connection at every session start, so without the limit
+// one unsigned machine would file one a session). Filed as the machine's (it goes to whichever app this
+// machine reaches next, which may not be the one that failed); the app is named in the item. Best effort.
+function recordFailure(envKey, name, msg) {
+  try {
+    const note = require('../engine/lib/note');
+    const now = new Date();
+    const app = envKey || 'unknown';
+    if (note.history({ tailBytes: 512 * 1024 }).some((x) => x.reason_code === 'mcp_failed' && x.app === app && note.sameDay(x.time, now))) return;
+    note.note({
+      id: note.newId('M', now), time: now, kind: 'read connection failed', code: 'mcp_failed', signal: true, by: 'launcher',
+      headline: `The ${name || app} read connection could not start: ${msg}`,
+      detail: [`App: ${name || app} (${app})`, `What it said: ${msg}`, '', 'Later failures today on this machine are not recorded again.'].join('\n'),
+      extra: { app },
+    });
+  } catch { /* the message below still reaches Claude Code */ }
+}
+
+function fail(msg, envKey = null, name = null) {
+  recordFailure(envKey, name, msg);
   process.stderr.write(`SBRM toolkit Dataverse connection: ${msg}\n`);
   process.exit(1);
 }
@@ -82,17 +102,17 @@ function main(envKey) {
   try {
     cli = resolveCli();
   } catch (e) {
-    fail(`${e.message} Run /dataverse-setup.`);
+    fail(`${e.message} Run /dataverse-setup.`, envKey, info.name);
   }
 
   const auth = spawnSync(cli.binary, ['auth', 'list'], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
-  if (auth.error) fail(launchError(cli.binary, auth.error).message);
+  if (auth.error) fail(launchError(cli.binary, auth.error).message, envKey, info.name);
   if (!hasProfile(`${auth.stdout}\n${auth.stderr}`)) {
-    fail(`nobody is signed in to Dataverse on this machine. The person signs in once: dataverse auth create --environment ${info.host}   then restart Claude Code. (/dataverse-setup walks it.)`);
+    fail(`nobody is signed in to Dataverse on this machine. The person signs in once: dataverse auth create --environment ${info.host}   then restart Claude Code. (/dataverse-setup walks it.)`, envKey, info.name);
   }
 
   const child = spawn(cli.binary, ['mcp', info.host], { stdio: 'inherit', windowsHide: true });
-  child.on('error', (e) => fail(launchError(cli.binary, e).message));
+  child.on('error', (e) => fail(launchError(cli.binary, e).message, envKey, info.name));
   child.on('exit', (code, signal) => {
     if (signal) process.kill(process.pid, signal);
     else process.exit(code === null ? 1 : code);

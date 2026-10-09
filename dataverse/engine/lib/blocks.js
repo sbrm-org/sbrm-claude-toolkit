@@ -5,38 +5,22 @@
 // carried the person's words and nothing about the call that tripped the rule.
 //
 //   record(): the GUARD's half. Each block becomes one event of kind `blocked` (routine: counted in the
-//     review, never opened), appended to events/events.jsonl and queued in events/pending/ like any engine
-//     event. It carries the call as the guard saw it, the rule, the folder, the mode and the toolkit version.
-//     The block id it returns goes into the block message, so the person's Claude can file
-//     `report --blocked <id>` when it judges the block wrong; the engine attaches this record.
-//   find() / recent(): the ENGINE's half, reading the same history.
+//     review, never opened), written through lib/note.js. It carries the call as the guard saw it, the rule,
+//     the folder, the mode and the toolkit version. The block id it returns goes into the block message, so
+//     the person's Claude can file `report --blocked <id>` when it judges the block wrong.
+//     The THIRD block by one rule on this machine in a day, with no report from Claude about that rule,
+//     also opens an item (`repeat_block`): the false positive Claude did not notice (§11, candidate 1).
+//   find() / recent() / reported(): the ENGINE's half, reading the same history.
 //
 // Best effort on the guard side: the caller ignores a failure here, and a block is a block either way.
 
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const crypto = require('crypto');
-const store = require('./store');
+const note = require('./note');
 
 const ID = /^B-\d{8}-\d{6}-[0-9a-f]{6}$/;
 const CALL_MAX = 8000; // a shell command; a file write keeps its first CONTENT_MAX characters
 const CONTENT_MAX = 3000;
-
-// The toolkit's own version, from the plugin's plugin.json (this file sits in <root>/dataverse/engine/lib).
-// The engine's version string was a hand-set constant that did not move across 1.11.1 to 1.11.5.
-function toolkitVersion(root = path.join(__dirname, '..', '..', '..')) {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin', 'plugin.json'), 'utf8').replace(/^﻿/, '')).version || 'unknown';
-  } catch {
-    return 'unknown';
-  }
-}
-
-function stamp(d) {
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
-}
+const REPEAT = 3;
+const TAIL = 512 * 1024; // the guard reads only this much of the history (it runs on every tool call)
 
 function cut(s, n) {
   const t = String(s == null ? '' : s);
@@ -75,7 +59,11 @@ function envOf(text, envs) {
 }
 
 function readEnvs() {
-  try { return JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'envs.json'), 'utf8').replace(/^﻿/, '')); } catch { return {}; }
+  try {
+    return JSON.parse(require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'envs.json'), 'utf8').replace(/^﻿/, ''));
+  } catch {
+    return {};
+  }
 }
 
 function describe(b) {
@@ -92,12 +80,37 @@ function describe(b) {
   ].join('\n');
 }
 
+function line(b) {
+  return `  ${b.time}  ${b.block_id}  ${b.tool}  [${b.rule}]  ${cut(String(b.call).replace(/\s+/g, ' '), 160)}`;
+}
+
+// The third block by this rule today, and Claude has not reported one: open an item. Exactly the third, so
+// one item per rule per machine per day however many follow.
+function repeatCheck(b, now) {
+  const today = note.history({ tailBytes: TAIL }).filter((x) => note.sameDay(x.time, now));
+  const same = today.filter((x) => x.kind === 'blocked' && x.block && x.block.rule === b.rule);
+  if (same.length !== REPEAT) return null;
+  if (today.some((x) => (x.reason_code === 'false_block' && x.block_rule === b.rule) || (x.reason_code === 'repeat_block' && x.rule === b.rule))) return null;
+  const envsSeen = [...new Set(same.map((x) => x.env))];
+  return note.note({
+    id: note.newId('R', now), time: now, kind: 'repeated block', code: 'repeat_block', signal: true,
+    env: envsSeen.length === 1 ? envsSeen[0] : 'machine', by: 'guard',
+    headline: `Blocked ${REPEAT} times today by one rule [${b.rule}], and Claude has not reported it`,
+    detail: [
+      `The guard blocked ${REPEAT} calls by the same rule on this machine today, and the person's Claude did not report any of them.`,
+      'Either the calls were real attempts the guard was right to stop, or a false positive nobody flagged.', '',
+      ...same.map((x) => describe(x.block)).join('\n\n').split('\n'),
+    ].join('\n'),
+    extra: { rule: b.rule },
+  });
+}
+
 // The guard's half. Returns the block record (with its id).
 function record(input, what, { now = new Date(), envs = readEnvs() } = {}) {
   const call = callText(input || {});
   const { rule, matched } = ruleOf(what);
   const b = {
-    block_id: `B-${stamp(now)}-${crypto.randomBytes(3).toString('hex')}`,
+    block_id: note.newId('B', now),
     time: now.toISOString(),
     tool: String((input && input.tool_name) || ''),
     session: (input && input.session_id) || null,
@@ -106,61 +119,35 @@ function record(input, what, { now = new Date(), envs = readEnvs() } = {}) {
     rule, matched,
     why: cut(what, 1000),
     call,
-    toolkit: toolkitVersion(),
+    toolkit: note.toolkitVersion(),
     env: envOf(call, envs),
   };
-  const e = {
-    event_id: b.block_id,
-    run_id: b.block_id,
-    time: b.time,
-    kind: 'blocked',
-    reason_code: 'blocked',
-    signal: false,
-    env: b.env,
-    plan_id: null,
-    command: cut(call, 300),
-    machine: os.hostname(),
-    versions: `toolkit ${b.toolkit}; guard; Node ${process.version}; ${os.type()} ${os.release()} ${os.arch()}`,
-    person: null,
-    headline: `Blocked [${rule}]: ${b.tool}`.slice(0, 200),
-    words: null,
-    detail: describe(b),
-    block: b,
-  };
-  fs.appendFileSync(path.join(store.dir('events'), 'events.jsonl'), JSON.stringify(e) + '\n', 'utf8');
-  fs.writeFileSync(path.join(store.dir(path.join('events', 'pending')), `${e.env}--${e.event_id}.json`), JSON.stringify(e), 'utf8');
+  note.note({
+    id: b.block_id, time: now, kind: 'blocked', code: 'blocked', signal: false, env: b.env, by: 'guard',
+    command: cut(call, 300), headline: `Blocked [${rule}]: ${b.tool}`, detail: describe(b), extra: { block: b },
+  });
+  try { repeatCheck(b, now); } catch { /* the block itself is recorded; the repeat item is extra */ }
   return b;
 }
 
-// The engine's half: every event line on this machine (newest last).
-function history() {
-  try {
-    return fs.readFileSync(path.join(store.dir('events'), 'events.jsonl'), 'utf8').split('\n').filter(Boolean)
-      .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function find(id, all = history()) {
+function find(id, all = note.history()) {
   if (!ID.test(String(id))) return null;
   const e = all.find((x) => x.kind === 'blocked' && x.event_id === id);
   return e ? e.block || null : null;
 }
 
 // Blocks on this machine, newest first, within `hours`.
-function recent(n, { hours = 24, now = Date.now(), all = history() } = {}) {
+function recent(n, { hours = 24, now = Date.now(), all = note.history() } = {}) {
   return all.filter((x) => x.kind === 'blocked' && x.block && now - Date.parse(x.time) <= hours * 3600 * 1000)
     .reverse().slice(0, n).map((x) => x.block);
 }
 
 // The report already filed for this block, if any (one report per block).
-function reported(id, all = history()) {
+function reported(id, all = note.history()) {
   return all.find((x) => x.reason_code === 'false_block' && x.block_id === id) || null;
 }
 
-function line(b) {
-  return `  ${b.time}  ${b.block_id}  ${b.tool}  [${b.rule}]  ${cut(String(b.call).replace(/\s+/g, ' '), 160)}`;
-}
-
-module.exports = { record, find, recent, reported, describe, line, toolkitVersion, callText, ruleOf, envOf, ID };
+module.exports = {
+  record, find, recent, reported, describe, line, callText, ruleOf, envOf, ID, REPEAT,
+  toolkitVersion: note.toolkitVersion,
+};

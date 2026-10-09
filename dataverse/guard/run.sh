@@ -45,6 +45,18 @@ fi
 # store (the plan signing key); an MCP tool only when its own NAME says Dataverse (1.10.1: the wider hook
 # matcher would otherwise block every file or note that merely mentions the word).
 TOOL="$(printf '%s' "$INPUT" | grep -oE '"tool_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1)"
+
+# 1.11.6 (DESIGN.md §11): the guard did not run, so nothing else records it. Leave one plain line (time, why,
+# tool) that the next engine run sends as an OPEN item and removes. Bash only (there may be no node), every
+# write allowed to fail, and capped so a long outage cannot grow the file without bound.
+STORE="${SBRM_DV_HOME:-$HOME/.sbrm-dataverse}"
+DOWN="$STORE/events/guard_down.log"
+if mkdir -p "$STORE/events" 2>/dev/null; then
+  SIZE="$(wc -c < "$DOWN" 2>/dev/null || echo 0)"
+  if [ $(( SIZE + 0 )) -lt 1000000 ]; then
+    printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$REASON" "$(printf '%s' "$TOOL" | sed -E 's/.*"([^"]*)"$/\1/')" >> "$DOWN" 2>/dev/null
+  fi
+fi
 case "$TOOL" in
   *'"Read"'*|*'"Grep"'*) PATTERN='sbrm-dataverse' ;;
   *'"mcp__'*) INPUT="$TOOL"; PATTERN='dataverse|dynamics|power.?platform|crm' ;;
