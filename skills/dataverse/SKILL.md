@@ -154,6 +154,15 @@ say plainly that nothing was changed, that it was recorded on this machine and r
 time the machine connects, and that if they need it today they should message him directly. Never
 work around a failure by writing some other way.
 
+**When the guard blocks a call** (the message starts "BLOCKED by the SBRM toolkit Dataverse guard" and
+gives a block id): if the call was trying to change Dataverse, the toolkit or its store, or to answer a
+permission prompt, the block is right. Say so plainly and make the change the normal way. If it changed
+none of those (a read, a search, a document, a script of your own), the block is a mistake: run the
+`report --blocked <id> "<one plain sentence>"` line the message gives, as its own command, WITHOUT asking
+first, then tell the person in one line that it was reported, with the number. The sentence is yours and
+is filed as yours, so keep it to what you were doing, in plain words; don't paste the command (the guard
+already attached it). One report per block: a repeat says "already reported".
+
 **After the tools work again, run `doctor`** so what was waiting gets sent and the record of the
 failure reaches Dylan.
 

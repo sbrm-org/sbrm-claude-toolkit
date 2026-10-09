@@ -3,6 +3,14 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.7** (2026-10-09) Guard blocks are recorded and can be reported automatically. Every block is kept
+  on the machine (the call as the guard saw it, the rule, the folder, the mode, the toolkit version) and sent
+  to Dylan's review as a routine count by rule. The block message gives a block id and the
+  `report --blocked <id> "<sentence>"` line, which the person's Claude runs on its own when the call was
+  legitimate; the report opens an item with the block attached and Claude's sentence labelled as Claude's.
+  A person's own `report` now carries the last day's blocks too. Every event names the toolkit version (read
+  from plugin.json; the engine's version constant had not moved since 1.11.1). doctor's own guard probes are
+  not recorded. Tests: `engine/test/blocks.test.js`.
 - **1.11.6** (2026-10-09) Guard: a home folder set for one run no longer counts as moving the engine's store
   unless it is about Dataverse. In a code file it is refused only when the file names Dataverse (the engine,
   the store, its variables, the plugin, the CRM host) or runs Claude Code itself; a Fly.io entrypoint dropping

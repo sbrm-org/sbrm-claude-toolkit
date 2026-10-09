@@ -11,7 +11,9 @@ const RUN = path.join(__dirname, '..', '..', 'guard', 'run.sh');
 // A bare `bash` on Windows can be the WSL stub (Claude Guardrails trap); use Git Bash explicitly.
 const BASH = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : '/bin/bash';
 const V = ['ap', 'ply'].join('');
-const call = (input, env = {}) => spawnSync(BASH, [RUN], { input: JSON.stringify(input), encoding: 'utf8', env: { ...process.env, ...env } });
+// A block is RECORDED in the store from 1.11.6: every spawned guard gets a throwaway one (never the real store).
+const SCRATCH = fs.mkdtempSync(path.join(require('os').tmpdir(), 'sbrmdv-launch-'));
+const call = (input, env = {}) => spawnSync(BASH, [RUN], { input: JSON.stringify(input), encoding: 'utf8', env: { ...process.env, SBRM_DV_HOME: SCRATCH, ...env } });
 const bash = (command) => ({ tool_name: 'Bash', tool_input: { command } });
 
 test('with node: the real guard decides (a raw write blocked; plan allowed; an apply outside the plugin refused)', (t) => {

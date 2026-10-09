@@ -19,8 +19,9 @@ const path = require('path');
 const crypto = require('crypto');
 const store = require('./store');
 const { request, resolveCli, DataverseError } = require('./cli');
+const { toolkitVersion } = require('./blocks');
 
-const ENGINE_VERSION = '2026.10.08.4'; // 1.11.1: a machine connects only to the apps it chose (apps.json)
+const ENGINE_VERSION = '2026.10.09.1'; // 1.11.6: guard blocks recorded, `report --blocked`; versions name the toolkit
 const EVENT_SET = 'sbrm_dataverseevents';
 
 // DESIGN.md §7 D2: signal (listed in the review, opens an issue) or routine (counted by reason).
@@ -33,6 +34,7 @@ const SIGNAL = {
   too_big: true, // a job over what one apply can carry or log in full (not an access cap; there is none since 10/7)
   interrupted: true, // an apply cut off part-way (1.10.1): what landed may have no Write Log entry
   no_approval: true, // an apply ran without Claude Code's approval prompt (1.11.0): the guard should have asked
+  false_block: true, // the person's Claude judged a guard block wrong and reported it (1.11.6, lib/blocks.js)
   // the gate doing its job (counted, never listed)
   invalid_job: false, intent_mismatch: false, every_row_refused: false, every_row_moved: false,
   stale_plan: false, no_plan: false, nothing_to_undo: false, table_missing: false,
@@ -41,6 +43,7 @@ const SIGNAL = {
   // between plan and apply; nothing left to change (a re-plan of an applied schema job)
   snapshot_moved: false, severity_grew: false, nothing_to_change: false,
   approval_expired: false, // the person answered Claude Code's prompt after the ticket's three minutes (1.11.0)
+  blocked: false, // a guard block (1.11.6): counted by rule in the review; a report about one is false_block
 };
 
 function isSignal(code) {
@@ -71,7 +74,7 @@ function versions() {
   if (cachedVersions) return cachedVersions;
   let cli = 'not found';
   try { cli = resolveCli().version || 'unknown'; } catch { /* recorded as not found */ }
-  cachedVersions = `engine ${ENGINE_VERSION}; Dataverse CLI ${cli}; Node ${process.version}; ${os.type()} ${os.release()} ${os.arch()}`;
+  cachedVersions = `toolkit ${toolkitVersion()}; engine ${ENGINE_VERSION}; Dataverse CLI ${cli}; Node ${process.version}; ${os.type()} ${os.release()} ${os.arch()}`;
   return cachedVersions;
 }
 
@@ -80,7 +83,8 @@ function pendingDir() {
 }
 
 // Record one event on the run. Local only; never throws for a send problem (nothing is sent here).
-function record(run, { kind, code, headline, words = null, detail = null, env = null, signal }) {
+// `extra` = fields kept on this machine only (rowFor builds the table row and never carries them).
+function record(run, { kind, code, headline, words = null, detail = null, env = null, signal, extra = null }) {
   run.seq += 1;
   const e = {
     event_id: `${run.id}-${run.seq}`,
@@ -98,6 +102,7 @@ function record(run, { kind, code, headline, words = null, detail = null, env = 
     headline: String(headline).replace(/\s+/g, ' ').trim().slice(0, 200),
     words,
     detail: detail !== null ? detail : run.output.join('\n'),
+    ...(extra || {}),
   };
   fs.appendFileSync(path.join(store.dir('events'), 'events.jsonl'), JSON.stringify(e) + '\n', 'utf8');
   fs.writeFileSync(path.join(pendingDir(), `${e.env}--${e.event_id}.json`), JSON.stringify(e), 'utf8');

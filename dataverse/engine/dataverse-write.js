@@ -41,6 +41,7 @@ const ticket = require('./lib/ticket');
 const { planRevert, findEntry } = require('./lib/revert');
 const { readEntries } = require('./lib/log');
 const events = require('./lib/events');
+const blocks = require('./lib/blocks');
 const levels = require('./lib/levels');
 
 // App development kinds (DESIGN.md §10): each one module with the same contract as lib/merge.js.
@@ -77,20 +78,23 @@ function realGuard() {
   // A session reaching the write side without the CLI (which would skip the pop-up) must be blocked.
   const lib = path.join(__dirname, 'lib', 'write').replace(/\\/g, '/');
   const probe = JSON.stringify({ tool_name: 'Bash', tool_input: { command: `node -e "const { ${['write', 'Connection'].join('')} } = require('${lib}')"` } });
-  let r = spawnSync(process.execPath, [file], { input: probe, encoding: 'utf8', windowsHide: true });
+  // SBRM_GUARD_PROBE: these test calls are doctor's own, not blocks of the person's work, so the guard keeps
+  // no record of them (1.11.6). Set on the guard's process here; a session command cannot set it for the hook.
+  const probeEnv = { ...process.env, SBRM_GUARD_PROBE: '1' };
+  let r = spawnSync(process.execPath, [file], { input: probe, encoding: 'utf8', windowsHide: true, env: probeEnv });
   // Then the way the HOOK runs it: `bash run.sh`, with whatever `bash` this machine finds first (1.10.1: on
   // Windows a WSL bash ahead of Git Bash could not start the launcher, and a hook that cannot start fails
   // open). Both must block.
   const launcher = path.join(__dirname, '..', 'guard', 'run.sh');
   let via = 'node';
   if (r.status === 2 && fs.existsSync(launcher)) {
-    const h = spawnSync('bash', [launcher], { input: probe, encoding: 'utf8', windowsHide: true, env: { ...process.env, CLAUDE_PLUGIN_ROOT: path.join(__dirname, '..', '..') } });
+    const h = spawnSync('bash', [launcher], { input: probe, encoding: 'utf8', windowsHide: true, env: { ...probeEnv, CLAUDE_PLUGIN_ROOT: path.join(__dirname, '..', '..') } });
     if (h.status !== 2) { r = h; via = 'bash run.sh (as the hook runs it)'; }
   }
   // 1.11.0: an apply in a mode where Claude Code does not ask must be refused (nothing is minted for it).
   if (r.status === 2) {
     const apply = JSON.stringify({ tool_name: 'Bash', permission_mode: 'bypassPermissions', tool_input: { command: `node "${path.join(__dirname, 'dataverse-write.js').replace(/\\/g, '/')}" apply 20000101-000000-00000000` } });
-    const m = spawnSync(process.execPath, [file], { input: apply, encoding: 'utf8', windowsHide: true });
+    const m = spawnSync(process.execPath, [file], { input: apply, encoding: 'utf8', windowsHide: true, env: probeEnv });
     if (m.status !== 2) { r = m; via = 'node (an apply in bypassPermissions mode)'; }
   }
   let hooksOff = null;
@@ -677,32 +681,80 @@ function recentEvents(n) {
   } catch { return []; }
 }
 
+// Send what is waiting for this env and read back the number the table gave the event (null = still on
+// this machine).
+function sendAndNumber(run, deps, envs, env, ev) {
+  try {
+    const dv = connect(run, deps, 'read', envs[env].host);
+    const sent = events.flush(deps.eventConnection(envs[env].host), env);
+    if (sent.error) return null;
+    const hit = (dv.get(`${events.EVENT_SET}?$select=sbrm_number&$filter=${encodeURIComponent(`sbrm_eventid eq '${ev.event_id}'`)}`).value || [])[0];
+    return hit ? hit.sbrm_number : null;
+  } catch { return null; /* stays on this machine; said by the caller */ }
+}
+
+function recentContext() {
+  const recentBlocks = blocks.recent(5);
+  return [
+    'Recent events on this machine (newest first):',
+    ...(recentEvents(5).map((e) => `  ${e.time}  ${e.kind}  ${e.reason_code || ''}  ${e.headline}`)),
+    '', 'Recent writes on this machine (newest first):',
+    ...(recentLocal(3).map((e) => `  ${e.time}  ${e.headline}  ${e.outcome}  plan ${e.plan_id}`)),
+    '', 'Guard blocks on this machine, last 24 hours (newest first):',
+    ...(recentBlocks.length ? recentBlocks.map(blocks.line) : ['  none']),
+  ];
+}
+
+// `report --blocked <id> "<what Claude was doing>"` (1.11.6, DESIGN.md §11): filed by the person's Claude, on
+// its own, when the guard blocked a call it judges legitimate. The block's own record (the call as the guard
+// saw it, the rule, the folder, the version) is attached from this machine; the sentence is Claude's and is
+// labelled so, never presented as the person's words. One report per block.
+function reportBlock(run, deps, id, words, opt) {
+  const b = blocks.find(id);
+  if (!b) throw new Refusal('usage', 'report', [`no guard block ${id} is recorded on this machine (the id is in the block message: B-<date>-<time>-<6 letters>)`], { exitCode: 2 });
+  const earlier = blocks.reported(id);
+  if (earlier) {
+    run.reported = true;
+    console.log(`\nBlock ${id} was already reported (${earlier.time}). Nothing new was filed.\n`);
+    return 0;
+  }
+  const { envs } = config();
+  const env = b.env && envs[b.env] ? b.env : reportEnv(envs, opt);
+  run.env = env;
+  const said = words || '(Claude gave no description)';
+  const context = [
+    'Filed by the person\'s Claude after a guard block it judged legitimate. The description is Claude\'s, not the person\'s words.',
+    `Claude's description: ${said}`, '',
+    blocks.describe(b), '',
+    ...recentContext(),
+  ].join('\n');
+  const ev = events.record(run, {
+    kind: 'blocked by guard', code: 'false_block', words: `Claude: ${said}`,
+    headline: `Guard block looks wrong [${b.rule}]: ${b.tool}, toolkit ${b.toolkit}`, detail: context, extra: { block_id: id },
+  });
+  run.reported = true;
+  const number = sendAndNumber(run, deps, envs, env, ev);
+  if (number) console.log(`\nReported as ${number}: the blocked call, the rule and the toolkit version are attached for Dylan.\n`);
+  else console.log('\nReport saved on this machine; it is sent (and gets its number) the next time this machine reaches Dataverse.\n');
+  return 0;
+}
+
 function cmdReport(run, deps, args) {
-  const { pos, opt } = options(args, ['plan', 'env']);
+  const { pos, opt } = options(args, ['plan', 'env', 'blocked']);
   const words = pos.join(' ').trim();
+  if (opt.blocked !== undefined) {
+    if (opt.blocked === true) throw new Refusal('usage', 'report', ['name the block: report --blocked <block id> "<what you were doing>"'], { exitCode: 2 });
+    return reportBlock(run, deps, String(opt.blocked), words, opt);
+  }
   if (!words) throw new Refusal('usage', 'report', ['say what went wrong, in the person\'s own words: report "<words>"'], { exitCode: 2 });
   const { envs } = config();
   const env = reportEnv(envs, opt);
   run.env = env;
   if (opt.plan) run.planId = String(opt.plan);
-  const context = [
-    `Their words: ${words}`, '',
-    'Recent events on this machine (newest first):',
-    ...(recentEvents(5).map((e) => `  ${e.time}  ${e.kind}  ${e.reason_code || ''}  ${e.headline}`)),
-    '', 'Recent writes on this machine (newest first):',
-    ...(recentLocal(3).map((e) => `  ${e.time}  ${e.headline}  ${e.outcome}  plan ${e.plan_id}`)),
-  ].join('\n');
+  const context = [`Their words: ${words}`, '', ...recentContext()].join('\n');
   const ev = events.record(run, { kind: 'report', code: 'report', words, headline: `Report: "${words.slice(0, 150)}"`, detail: context });
   run.reported = true; // finish() stays quiet: this command says where the report went itself
-  let number = null;
-  try {
-    const dv = connect(run, deps, 'read', envs[env].host);
-    const sent = events.flush(deps.eventConnection(envs[env].host), env);
-    if (!sent.error) {
-      const hit = (dv.get(`${events.EVENT_SET}?$select=sbrm_number&$filter=${encodeURIComponent(`sbrm_eventid eq '${ev.event_id}'`)}`).value || [])[0];
-      number = hit ? hit.sbrm_number : null;
-    }
-  } catch { /* stays on this machine; said below */ }
+  const number = sendAndNumber(run, deps, envs, env, ev);
   if (number) {
     console.log(`\nReported as ${number}. It carries the person's words, the recent runs on this machine and the versions.`);
     console.log(`Dylan sees it in his review. If it's urgent, message him and mention ${number}.\n`);
