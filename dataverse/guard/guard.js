@@ -432,11 +432,34 @@ const ENV_DENY = '(?:USERPROFILE|HOME\\w*|PATH\\w*|PSModulePath|NODE_\\w*|NPM_\\
 const ENV_SAFE = `(?!${ENV_DENY}\\b)[A-Za-z_][A-Za-z0-9_]*`;
 const STORE_MOVE = new RegExp([
   '\\bSBRM_DV_(?:HOME|CONFIG)\\b', '\\bSBRM_DATAVERSE_CLI\\b',
-  '(?:^|[\\s;&|(])(?:USERPROFILE|HOME|HOMEPATH|HOMEDRIVE)=', '\\$env:(?:USERPROFILE|HOME|HOMEPATH|HOMEDRIVE)\\s*=',
   `\\[(?:System\\.)?Environment\\]::SetEnvironmentVariable\\s*\\((?!\\s*(?<q1>['"])${ENV_SAFE}\\k<q1>\\s*,)`,
   `\\bSet-Item\\b[^;|&\\n]*?\\benv:(?![\\\\/]?${ENV_SAFE}['"]?(?:\\s|$))`,
   `\\bsetx(?:\\.exe)?\\b(?!\\s+(?<q2>['"]?)${ENV_SAFE}\\k<q2>\\s)`,
 ].join('|'), 'i');
+// The home folder set for ONE run (an assignment prefix on a command, through `env`, or PowerShell's $env:).
+// 1.11.6: judged apart from the rules above. In a Claude shell it is refused on ANY line, quotes read as spaces
+// (so `bash -c "..."` and a quoted word handed to env count too): quoted text runs in too many ways ($(...),
+// bash -lc, a pipe into sh) to tell apart, and the next command on the line could start Claude Code with no
+// plugins. In a code FILE it is refused only when the file is about Dataverse or runs Claude Code itself (a
+// moved home loads no plugins, so no guard): a Fly.io entrypoint dropping privileges through setpriv and env
+// with the home set to /data/x was refused as moving the store (false positive 10/9).
+const HOME_VARS = '(?:USERPROFILE|HOME|HOMEPATH|HOMEDRIVE)';
+const HOME_MOVE = new RegExp(`(?:^|[\\s;&|(])${HOME_VARS}=|\\$\\{?env:${HOME_VARS}\\}?\\s*=`, 'i');
+// Quotes read as spaces, and also deleted along with backslashes (a split-up spelling of the name).
+const homeMoved = (text) => [String(text).replace(/["'`]/g, ' '), String(text).replace(/["'`\\]/g, '')].some((t) => HOME_MOVE.test(t));
+const DV_RELATED = /dataverse|SBRM_DV|SBRM_DATAVERSE|sbrm-claude-toolkit|sbrm-toolkit|CLAUDE_PLUGIN_ROOT|\.crm\d*\.dynamics\.com|\bapi\/data\/v9/i;
+// `claude` (lowercase) as the COMMAND of a line that is not a comment: at its start, after a separator, `$(`,
+// a call operator or an argument list's bracket, or after exec/env/sudo/npx and the like, past flags and
+// assignments; with its own path if any (`~/.local/bin/claude`, `C:\...\claude.exe`, `$BIN/claude`). A folder
+// named claude (`/home/claude`, `--reuid=claude`) or the word in an echo is not a run.
+const CLAUDE_RUN = new RegExp(String.raw`(?:^[ \t]*|[;&|(\[` + '`' + String.raw`]\s*|\$\(\s*|\b(?:exec|env|nohup|sudo|npx|command|time|xargs)\s+(?:-\S+\s+)*)(?:[A-Za-z_]\w*=\S*\s+)*["']?(?:[~\w.:$\{\}\\/-]*[\\/])?(?:claude(?:\.exe|\.cmd|\.ps1)?|@anthropic-ai\/claude-code(?:@[\w.^~-]+)?)(?=[\s"'` + '`' + String.raw`;|&),\]]|$)`);
+const runsClaude = (text) => String(text).split(/\r?\n/).some((l) => !/^[ \t]*(?:#|\/\/|REM\b|::)/i.test(l) && CLAUDE_RUN.test(l));
+function storeMoveShell(text) {
+  return STORE_MOVE.test(text) || homeMoved(text);
+}
+function storeMoveCode(text) {
+  return STORE_MOVE.test(text) || (homeMoved(text) && (DV_RELATED.test(text) || runsClaude(text)));
+}
 
 // A command that NAMES the store (or works inside it after a cd) may only be one of these reads; anything
 // else (another language's file API, an archive tool, a link maker, an alias) is refused rather than
@@ -878,7 +901,7 @@ function shellVerdict(text, cwd = null) {
   if (OTHER_DV_WRITERS.test(rest)) return 'another tool that writes to Dataverse (the Xrm PowerShell cmdlets or the Power Platform CLI)';
   const inj = shellInjection(text);
   if (inj) return `keystroke or click injection (approving is the person's alone) [rule: injection; matched: "${inj.token}" in ${inj.where}]`;
-  if (STORE_MOVE.test(text)) return "moving the engine's store or settings for a run (plans must stay where the guard protects them)";
+  if (storeMoveShell(text)) return "moving the engine's store or settings for a run (plans must stay where the guard protects them)";
   // An apply or resolve on a line that also changes PATH or node's own options could be handed a substitute
   // CLI or preloaded code (final re-verify). A Claude shell keeps no settings between commands, so the same
   // line is the only place such a change can come from.
@@ -976,7 +999,7 @@ function writeVerdict(tool, ti, dirs) {
     if (CODE_FILE.test(file) && (KEY_NAMED.test(text) || /\.sbrm-dataverse[\\/]+config/i.test(text))) return 'writing code that reads the plan signing key';
     if (CLI_LIST.test(text) && LIST_WRITE.test(text)) return "writing code that calls the Dataverse CLI's write side";
     // Code only: a note or doc that mentions the variable is not a run (re-verify false positive).
-    if (STORE_MOVE.test(text) && CODE_FILE.test(file)) return "writing code that moves the engine's store or settings";
+    if (CODE_FILE.test(file) && storeMoveCode(text)) return "writing code that moves the engine's store or settings";
   }
   return null;
 }

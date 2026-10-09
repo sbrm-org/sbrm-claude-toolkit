@@ -3,6 +3,13 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.6** (2026-10-09) Guard: a home folder set for one run no longer counts as moving the engine's store
+  unless it is about Dataverse. In a code file it is refused only when the file names Dataverse (the engine,
+  the store, its variables, the plugin, the CRM host) or runs Claude Code itself; a Fly.io entrypoint dropping
+  privileges through setpriv and env was refused before (a folder named claude, `/home/claude`, is not a
+  Claude run). In a shell it is still refused on any line, and quotes now read as spaces, so it is also caught
+  inside `bash -c` / `bash -lc` strings and as a quoted argument to env or sudo, which slipped through before.
+  The engine-store variables and persistent environment changes are unchanged. Tests: `engine/test/guard_false_positives.test.js`.
 - **1.11.5** (2026-10-09) Guard: two text heuristics now judge what a command does instead of matching words.
   The keystroke/click injection rule matches only a call that sends input (a send-keys or Win32 input call
   with its parenthesis, an input library's action call, an input tool given an action, a hotkey or AU3

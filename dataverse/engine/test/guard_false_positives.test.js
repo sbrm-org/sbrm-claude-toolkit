@@ -20,6 +20,8 @@ const SK = J('Send', 'Keys');
 const PAG = J('py', 'autogui');
 const KBE = J('keybd', '_event');
 const AHK_EXT = J('.a', 'hk');
+const HM = J('HO', 'ME=');
+const ENGINE = `${os.homedir().replace(/\\/g, '/')}/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.11.6/dataverse/engine/dataverse-write.js`;
 const HOME = os.homedir().replace(/\\/g, '/');
 const judge = (input) => verdict(input, [], { popup: () => false });
 const sh = (command, tool = 'PowerShell', extra = {}) => ({ tool_name: tool, tool_input: { command }, ...extra });
@@ -114,6 +116,11 @@ echo '{"hook_event_name":"Stop"}' | ~/.claude/hooks/tab-color.sh; echo "out-abov
   ['Get-ChildItem -Recurse of a folder under home', sh('Get-ChildItem "$env:USERPROFILE\\Documents\\Claude" -Recurse -Filter *.md | Measure-Object')],
   ['a recursive command with no path, from a project folder', sh('rg -n secret', 'Bash', { cwd: 'C:/Users/x/Documents/Claude' })],
   ['a non-recursive listing of home', sh('ls ~ && Get-ChildItem $HOME', 'Bash')],
+  // 1.11.6: a home folder set for one run, in a file or shell text that has nothing to do with Dataverse.
+  ['10a. a Fly.io entrypoint dropping privileges (was "writing code that moves the engine\'s store or settings")', write('/Users/tim/code-projects/happy-agent/fly/docker-entrypoint.sh', J('#!/bin/sh\nset -eu\nmkdir -p /data/happy-agent\nchown -R happy:happy /data\nexec setpriv --reuid=happy --regid=happy --init-groups env ', HM, '/data/happy-agent "$@"\n'))],
+  ['10b. the sbrm-ops-agents entrypoint, verbatim', write('/Users/tim/code-projects/sbrm-ops-agents/fly/docker-entrypoint.sh', J('#!/bin/sh\n# Prepare the Fly volume (mounted root-owned at /data) and drop privileges.\nset -eu\nDATA="${DATA_DIR:-/data}"\nfor d in state tailscale ledger queue transcripts; do mkdir -p "$DATA/$d"; done\nchown -R vigilance:vigilance "$DATA"\nchmod 0700 "$DATA/tailscale"\nexec setpriv --reuid=vigilance --regid=vigilance --init-groups env ', HM, '/home/vigilance "$@"\n'))],
+  ['10c. a test script giving npm a scratch home, mentioning Claude only in a comment', write('C:/work/app/test.sh', J('#!/bin/sh\n# Claude Code runs this before a commit\n', HM, '"$(mktemp -d)" npm test\n'))],
+  ['10d. an entrypoint whose user and home folder are named claude', write('C:/work/cc/entrypoint.sh', J('#!/bin/sh\nmkdir -p /home/claude\nchown claude /home/claude\necho "starting claude"\nexec setpriv --reuid=claude --regid=claude --init-groups env ', HM, '/home/claude "$@"\n'))],
 ];
 
 for (const [label, input] of PASS) {
@@ -161,6 +168,24 @@ const BLOCK = [
   ['a redirect to an unknown target on a line naming the plugin', sh(`cat ${HOME}/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.11.4/dataverse/envs.json > $OUT`, 'Bash'), /plugin's files/],
   ['cd into the plugin, then a relative redirect', sh(`cd ${HOME}/.claude/plugins/cache/sbrm-claude-toolkit && echo x > y.json`, 'Bash'), /plugin's files/],
   ['a node one-liner writing into the plugin', sh(J(`node -e "require('fs').writeFile`, `Sync('${HOME}/.claude/plugins/cache/sbrm-claude-toolkit/x.json','{}')"`), 'Bash'), /plugin's files/],
+  // store move (1.11.6): a moved home in a file that runs the engine or Claude Code, and on any shell line
+  ['a script that runs the engine under a moved home', write('C:/temp/plan.sh', J('#!/bin/sh\n', HM, '/tmp/x node "', ENGINE, '" plan job.json\n')), /moves the engine's store/],
+  ['a PowerShell script moving USERPROFILE before the Dataverse CLI', write('C:/temp/run.ps1', J('$env:USER', 'PROFILE = "C:\\temp\\x"\ndataverse data query contacts\n')), /moves the engine's store/],
+  ['a script that starts Claude Code under a moved home (no plugins load, so no guard)', write('C:/temp/go.sh', J('#!/bin/sh\nexec env ', HM, '/tmp/x claude -p "do the thing"\n')), /moves the engine's store/],
+  ['a script starting Claude Code through npx with a version', write('C:/temp/npx.sh', J('#!/bin/sh\n', HM, '/tmp/x npx -y @anthropic-ai/claude-code@latest -p hi\n')), /moves the engine's store/],
+  ['a PowerShell script calling claude.exe by its Windows path', write('C:/temp/cc.ps1', J('$env:USER', 'PROFILE = "C:\\t"\n& "C:\\Users\\a\\.local\\bin\\claude.exe" -p hi\n')), /moves the engine's store/],
+  ['a script calling claude through a saved path variable', write('C:/temp/v.sh', J('#!/bin/sh\nREAL="$HOME"\n', HM, '/tmp/x "$REAL/.local/bin/claude" -p hi\n')), /moves the engine's store/],
+  ['the engine store variable in any script', write('C:/temp/s.py', J('import os\nos.environ["SBRM_DV_', 'HOME"] = "/tmp/x"\n')), /moves the engine's store/],
+  ['a moved home on a shell line', sh(J(HM, '/tmp/x node "', ENGINE, '" plan job.json'), 'Bash'), /moving the engine's store/],
+  ['a moved home on an unrelated shell line still blocks (the next command could run anything)', sh(J(HM, '/tmp/x ./run.sh'), 'Bash'), /moving the engine's store/],
+  ['a moved home inside bash -c', sh(J('bash -c "', HM, '/tmp/x ./run.sh"'), 'Bash'), /moving the engine's store/],
+  ['a quoted assignment word handed to env', sh(J('env "', HM, '/tmp/x" ./run.sh'), 'Bash'), /moving the engine's store/],
+  // Quoted text that still runs (review of 1.11.6): the shell rule reads quotes as spaces, so all of these block.
+  ['Claude Code under a moved home inside $(...)', sh(J('R="$(cd /tmp && ', HM, '/tmp/sb claude -p hi)"'), 'Bash'), /moving the engine's store/],
+  ['a comment apostrophe before the moved home', sh(J("# don't read my config\n", HM, '/tmp/sb claude -p hi'), 'Bash'), /moving the engine's store/],
+  ['bash -lc with the moved home', sh(J('bash -lc "cd /tmp && ', HM, '/x claude -p hi"'), 'Bash'), /moving the engine's store/],
+  ['PowerShell, a path ending in a backslash before the moved home', sh(J('Set-Location "C:\\work\\"; $env:USER', 'PROFILE = "C:\\sb"; claude -p hi')), /moving the engine's store/],
+  ['a grep for the assignment still blocks in a shell (the rule stays broad there)', sh(J('grep -n "', HM, '" docker-entrypoint.sh'), 'Bash'), /moving the engine's store/],
 ];
 
 for (const [label, input, message] of BLOCK) {
