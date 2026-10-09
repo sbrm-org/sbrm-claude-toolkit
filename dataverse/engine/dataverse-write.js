@@ -609,6 +609,42 @@ function cmdSnapshot(run, deps, args) {
   return 0;
 }
 
+// query <app> <table> [--select a,b] [--filter "..."] [--orderby "..."] [--expand "..."] [--max N] [--csv] [--name x]:
+// a READ-ONLY bulk read into a file for the person's Claude to process with a script (lib/query.js; 1.11.8, Dylan
+// 10/9/26: "especially daian will need to do reads over hundreds of rows"). Only the count, columns and path are
+// printed, never the rows. Same sign-in and permissions as every other read. Nothing is written to Dataverse.
+const QUERY_USAGE = 'query <app> <table set> [--select col,col] [--filter "<OData filter>"] [--orderby "<col> desc"] [--expand "<nav>($select=...)"] [--max N] [--csv] [--name label]';
+
+function cmdQuery(run, deps, args) {
+  const query = require('./lib/query');
+  const { pos, opt } = options(args, ['select', 'filter', 'orderby', 'expand', 'max', 'csv', 'name']);
+  const [env, set, extra] = pos;
+  const { envs } = config();
+  const bad = query.validate({ env, set, opt, envs });
+  if (extra !== undefined) bad.push(`unexpected "${extra}": put the query in --select / --filter / --orderby / --expand`);
+  if (bad.length) throw new Refusal('usage', 'query', [...bad, QUERY_USAGE], { exitCode: 2, nothing: 'read' });
+  run.env = env;
+  const dir = query.readsDir();
+  const exposed = query.exposure(dir);
+  if (exposed) throw new Refusal('client_info_exposed', 'query', [exposed, 'Point SBRM_DV_READS at a folder outside git and OneDrive.'], { nothing: 'read' });
+  const purged = query.purge(dir);
+  const dv = connect(run, deps, 'read', envs[env].host);
+  let result;
+  try {
+    result = query.read(dv, set, opt);
+  } catch (e) {
+    if (e instanceof DataverseError) throw new Refusal('bad_query', 'query', [e.message, 'Check the table set, column and filter names (the describe tool lists them).'], { nothing: 'read' });
+    throw e;
+  }
+  const file = query.save(dir, { env, set, opt, result });
+  const cols = query.columns(result.rows);
+  console.log(`\nRead ${result.rows.length} rows of ${set} from the ${envs[env].name} into:\n  ${file}`);
+  if (result.truncated) console.log(`  Stopped at --max ${result.max}: more rows exist. Narrow the filter or raise --max.`);
+  console.log(`  Columns (${cols.length}): ${cols.slice(0, 40).join(', ')}${cols.length > 40 ? ', ...' : ''}`);
+  console.log(`Nothing was changed. Read the file with a script, not into the chat. Files in ${dir} are deleted after ${query.KEEP_DAYS} days${purged ? ` (${purged} older file(s) deleted now)` : ''}.\n`);
+  return 0;
+}
+
 // "--name value" options after the positional arguments.
 function options(args, names) {
   const pos = [];
@@ -933,7 +969,7 @@ function cmdResolve(run, deps, args) {
   return 0;
 }
 
-const USAGE = 'usage: dataverse-write.js check|plan <job.json> | show <plan-id> | apply <plan-id> [<plan-id> ...] | revert <plan-id> [env] | whoami <env> | snapshot <env> <set> <id> | doctor [--apps a,b] | report "<words>" | review [--days N] [--brief] | resolve <number> <resolution> "<note>" | apps [a,b | all]';
+const USAGE = 'usage: dataverse-write.js check|plan <job.json> | show <plan-id> | apply <plan-id> [<plan-id> ...] | revert <plan-id> [env] | whoami <env> | snapshot <env> <set> <id> | doctor [--apps a,b] | report "<words>" | review [--days N] [--brief] | resolve <number> <resolution> "<note>" | apps [a,b | all] | query <app> <table> [--select ...] [--filter ...] [--max N] [--csv]';
 
 function dispatch(run, deps, argv) {
   const [cmd, arg, arg2] = argv;
@@ -951,6 +987,7 @@ function dispatch(run, deps, argv) {
     case 'review': return cmdReview(run, deps, argv.slice(1));
     case 'resolve': return cmdResolve(run, deps, argv.slice(1));
     case 'apps': return cmdApps(run, deps, argv.slice(1));
+    case 'query': return cmdQuery(run, deps, argv.slice(1));
     default: throw new Refusal('usage', 'usage', [USAGE], { exitCode: 2 });
   }
 }
@@ -999,8 +1036,9 @@ function failure(run, e) {
   }
   const detailText = run.output.join('\n') + (kind === 'crash' && e && e.stack ? `\n\n${e.stack}` : '');
   // `check` is Claude's own file-level lint before a plan: its refusals are not events (10/7 review: four
-  // throwaway checks queued four events for the review). A crash in check is still recorded.
-  if (!(/^check(?:\s|$)/.test(run.command || '') && kind !== 'crash')) events.record(run, { kind, code: code || 'unclassified', headline, detail: detailText });
+  // throwaway checks queued four events for the review). A crash in check is still recorded. `query` (1.11.8)
+  // likewise: a misspelt column or filter is Claude iterating on a read, not something for Dylan's review.
+  if (!(/^(?:check|query)(?:\s|$)/.test(run.command || '') && kind !== 'crash')) events.record(run, { kind, code: code || 'unclassified', headline, detail: detailText });
   return exitCode;
 }
 

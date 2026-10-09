@@ -3,6 +3,15 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.8** (2026-10-09) `query`: a read-only bulk read for the person's Claude (Dylan: "especially daian
+  will need to do reads over hundreds of rows"). `query <app> <table set> --select ... --filter ... [--orderby]
+  [--expand] [--max N] [--csv] [--name]` reads every page (5,000 rows a page, up to --max, default 50,000)
+  through the same GET-only read connection, adds choice and lookup display text as `<column>@label`, and writes
+  JSON or CSV to `~/sbrm-reads/`; it prints only the count, the columns and the path. Refused if that folder is
+  inside git or OneDrive (a read can hold Recovery client records); files older than 7 days are deleted on every
+  query. A bad query is a refusal with Dataverse's message and, like `check`, not a review item. The skill tells
+  Claude to use it, not the read tool, past a few dozen rows. Live test: 6,000 Donor App contacts over two pages,
+  all unique. Tests: `engine/test/query.test.js`.
 - **1.11.7** (2026-10-09) Guard blocks are recorded and can be reported automatically. Every block is kept
   on the machine (the call as the guard saw it, the rule, the folder, the mode, the toolkit version) and sent
   to Dylan's review as a routine count by rule. The block message gives a block id and the
