@@ -75,7 +75,7 @@ Verify the path on first use and say it in full whenever you hand the person a c
    drives the screen, mouse or keyboard (the guard refuses them). Never try to answer it, and never write
    some other way if they say No: ask what they want instead. If the guard says the session is in a mode where Claude Code does not
    ask, tell the person to switch modes (shift+tab) and run the apply again. Run applies from the main
-   conversation, never from a subagent (the guard refuses those). An approval lasts three minutes: if
+   conversation, never from a subagent (the guard refuses those). An approval lasts ten minutes: if
    the engine says it expired, run the same apply again and they approve it again. If apply refuses because the
    change grew or moved since the plan, plan it again and go back to step 4.
 6. **After the apply, read the output back to them**: what was written, anything that was not, and

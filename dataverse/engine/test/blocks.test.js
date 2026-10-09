@@ -299,13 +299,13 @@ test('5. an approval Claude Code asked for that never ran is counted once (routi
   const ticket = require('../lib/ticket');
   const PLAN = '20261009-100000-0a1b2c3d';
   const LATE = '20261009-100100-0a1b2c3e';
-  const then = Date.now() - 10 * 60 * 1000;
+  const then = Date.now() - ticket.TTL_MS - 2 * 60 * 1000; // past the window and the sweep's extra minute
   ticket.mint(PLAN, { now: then });
   ticket.mint(LATE, { now: then });
   // The sweep judges by the FILE's age: make both files as old as their tickets.
   const tdir = path.join(process.env.SBRM_DV_HOME, 'config', 'tickets');
   for (const k of [PLAN, LATE]) fs.utimesSync(path.join(tdir, `${k}.json`), then / 1000, then / 1000);
-  assert.equal(ticket.take(LATE).why, 'expired', 'approved after three minutes');
+  assert.equal(ticket.take(LATE).why, 'expired', 'approved after the window');
   ticket.sweep();
   ticket.sweep();
   const got = ofCode('approval_unused');

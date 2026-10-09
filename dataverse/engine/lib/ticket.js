@@ -19,9 +19,12 @@ const path = require('path');
 const crypto = require('crypto');
 const store = require('./store');
 
-// Three minutes (blind review 10/8, down from ten): long enough to read the prompt; a declined prompt's
-// ticket is gone soon after. An approval that comes later is refused, and the apply is simply run again.
-const TTL_MS = 3 * 60 * 1000;
+// Ten minutes (RULED 10/9, Dylan: "Go back to 10 minutes"). A blind review cut it to three on 10/8; in the first
+// two days eight approvals came after three minutes (six on 10/9, both people, prompts waiting in another tab),
+// each one a re-run and a second Yes. A declined prompt's ticket stays usable the extra minutes only to a run the
+// guard lets through, which is the same residual as before. An approval that comes later is refused, and the
+// apply is simply run again.
+const TTL_MS = 10 * 60 * 1000;
 const KEY = /^(?:\d{8}-\d{6}-[0-9a-f]{8}|resolve-[DHRSF]-\d{4,})$/;
 
 function folder(env) {
@@ -127,7 +130,7 @@ function pending({ env, now = Date.now() } = {}) {
 
 // What the person and the log are told when an apply has no approval.
 function refusalText(why) {
-  if (why === 'expired') return 'the approval expired before the change started (it lasts three minutes). Run the command again and approve it when Claude Code asks.';
+  if (why === 'expired') return 'the approval expired before the change started (it lasts ten minutes). Run the command again and approve it when Claude Code asks.';
   if (why === 'already used') return 'the approval for this change was already used. Run the command again and approve it when Claude Code asks.';
   return `this change was not approved in Claude Code's permission prompt (${why}). Run it as its own command so Claude Code asks, and approve it there.`;
 }

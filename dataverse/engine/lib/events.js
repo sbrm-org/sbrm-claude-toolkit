@@ -46,7 +46,7 @@ const SIGNAL = {
   // app development (DESIGN.md §10): a definition that moved since the person's read; a change that grew
   // between plan and apply; nothing left to change (a re-plan of an applied schema job)
   snapshot_moved: false, severity_grew: false, nothing_to_change: false,
-  approval_expired: false, // the person answered Claude Code's prompt after the ticket's three minutes (1.11.0)
+  approval_expired: false, // the person answered Claude Code's prompt after the ticket's time (three minutes in 1.11.0, ten from 1.11.7)
   blocked: false, // a guard block (1.11.6): counted by rule in the review; a report about one is false_block
   approval_unused: false, // Claude Code asked and the change never ran (declined or left): counted (1.11.6)
 };
