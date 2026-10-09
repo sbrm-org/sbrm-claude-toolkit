@@ -14,7 +14,10 @@ One line per release from 1.11.5. Earlier releases are described in their pull r
   in a day with no report from Claude (opens an item); the guard unable to run (the fallback leaves a line,
   the next engine run opens one item); an app's read connection failing to start (once per app per day);
   approvals Claude Code asked for that never ran (counted). The review lists anyone behind on the toolkit.
-  Tests: `engine/test/blocks.test.js`.
+  Tests: `engine/test/blocks.test.js`. Also: a job's `intent.fields` may name a lookup by its column
+  (`msnfp_appealid`) where the row sets `msnfp_AppealId@odata.bind`, including a lookup with a target
+  (`msnfp_CustomerId_contact@odata.bind`); three of the first five intent refusals were only that (D-1026,
+  D-1037, D-1050). Any other difference is still refused. Test: `engine/test/contract.test.js`.
 - **1.11.6** (2026-10-09) Guard: a home folder set for one run no longer counts as moving the engine's store
   unless it is about Dataverse. In a code file it is refused only when the file names Dataverse (the engine,
   the store, its variables, the plugin, the CRM host) or runs Claude Code itself; a Fly.io entrypoint dropping
