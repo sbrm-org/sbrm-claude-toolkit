@@ -250,12 +250,103 @@ const CLI_LIST = /['"`]dataverse(?:cli)?(?:\.exe)?['"`]\s*,/i;
 const LIST_WRITE = /['"`](?:--method|-X)['"`]\s*,\s*['"`](?:POST|PATCH|PUT|DELETE|MERGE)['"`]|['"`]--body(?:-file)?['"`]|['"`](?:create|update|upsert|delete|upload|associate|disassociate)['"`]/i;
 
 // ---------- 4. keystroke / click injection (the QBO guard's rule D, same spelling trick) ----------
-
-const INJECT = new RegExp(
-  '\\bSend[K]eys\\b|\\bApp[A]ctivate\\b|keybd[_]event|\\bSend[I]nput\\b|mouse[_]event|py[a]utogui|'
-  + 'py[w]inauto|UI[A]utomation|Auto[H]otkey|\\.a[h]k\\b|WScript\\.[S]hell|Post[M]essage[AW]?\\s*\\(|'
-  + 'System\\s+Events[\\s\\S]{0,600}(?:keystroke|click|key\\s+code)|cl[i]click|xdo[t]ool|pyn[p]ut|\\bkeyboard\\.(?:press|write|send|type|press_and_release)\\b|nir[c]md|'
-  + '\\bmouse\\.(?:click|press)\\b|robotjs|nut-tree|\\bautoit\\b|perform\\s+action\\s+["\']?A[X]|\\bAX[P]ress\\b', 'i');
+//
+// 1.11.5 (false positives 10/9, a terminal-setup review): the rule matched the mere NAMES of input tools, so it
+// blocked a monitor-size read (the Forms assembly's Screen class), a check whether automation tools were
+// installed (a lookup by name, an uninstall-list filter), a plan written in markdown that said none were
+// installed, and a grep for the rule's own words. It now matches only the construct that SENDS input: a call
+// with its parenthesis or argument, an import paired with an action call, a command-line tool given an action,
+// a script handed to the hotkey or AU3 runtimes. What is NOT injection: a bare product name, a lookup
+// (Get-Command, which, where, an uninstall-list search), a grep/echo whose text holds the words, and the Forms
+// assembly used for Screen, Clipboard or MessageBox.
+const INJECT_ACTIONS = '(?:click|doubleClick|rightClick|middleClick|tripleClick|press|release|keyDown|keyUp|hotkey|typewrite|write|tap|type|moveTo|moveRel|move|dragTo|dragRel|drag|mouseDown|mouseUp|scroll|hscroll|vscroll|press_and_release|send_keys|type_keys|click_input)';
+const INJECT_CALLS = [
+  // .NET, WSH, VBScript, JScript: the send-keys call in each spelling, and the window-focus call it pairs with
+  '\\bSend[K]eys\\s*\\]\\s*::\\s*Send(?:Wait)?\\b',
+  '\\.Send[K]eys\\s*[("\'\\s]',
+  '\\bSend[K]eys\\s*\\(',
+  '\\.App[A]ctivate\\s*[("\'\\s]',
+  // Win32 input calls, called or declared (a P/Invoke or ctypes declaration carries the parenthesis too)
+  '\\b(?:Send[I]nput|keybd[_]event|mouse[_]event|Post[M]essage[AW]?)\\s*\\(',
+  // Python input libraries: a dotted action call, or an import plus any action call later in the same text
+  `\\b(?:py[a]utogui|pydirect[i]nput)\\s*\\.\\s*${INJECT_ACTIONS}\\s*\\(`,
+  `\\b(?:import|from)\\s+(?:py[a]utogui|pydirect[i]nput|pyn[p]ut|py[w]inauto)\\b[\\s\\S]*?\\b${INJECT_ACTIONS}\\s*\\(`,
+  '\\.(?:click_input|double_click_input|right_click_input|type_keys|send_keystrokes|send_chars|press_mouse_input|wheel_mouse_input)\\s*\\(',
+  // keyboard/mouse modules (Python's, the Node nut-js library's) and the Node robot library
+  '\\bkeyboard\\s*\\.\\s*(?:press|release|write|send|type|press_and_release|pressKey|releaseKey|tap)\\s*\\(',
+  '\\bmouse\\s*\\.\\s*(?:click|press|release|leftClick|rightClick|doubleClick|move|setPosition|drag|scrollUp|scrollDown|scroll)\\s*\\(',
+  '\\brobot\\s*\\.\\s*(?:keyTap|keyToggle|typeString\\w*|mouseClick|mouseToggle|moveMouse\\w*|dragMouse|scrollMouse)\\s*\\(',
+  // The AU3 COM object, and Windows UI Automation patterns that act
+  '\\.(?:ControlClick|ControlSend|MouseClick|MouseClickDrag)\\s*\\(',
+  '\\bAuto[I]tX3\\b[\\s\\S]{0,400}\\.Send\\s*\\(',
+  '\\b(?:InvokePattern|TogglePattern|ExpandCollapsePattern|SelectionItemPattern|ValuePattern|LegacyIAccessiblePattern)\\b[\\s\\S]{0,400}\\.(?:Invoke|Toggle|Expand|Select|SetValue|DoDefaultAction)\\s*\\(',
+  '\\b(?:Invoke|Set|Send|Move)-UI[A]\\w+',
+  // Command-line input tools given an action
+  '\\b[xy]do[t]ool\\b[^\\n;|&]*?\\s(?:key|keydown|keyup|type|click|mousedown|mouseup|mousemove|windowactivate)\\b',
+  '\\bcl[i]click\\b[^\\n;|&]*?\\s(?:c|dc|rc|tc|kd|ku|kp|t|m|dd|du|dm):',
+  '\\bnir[c]mdc?(?:\\.exe)?["\']?\\s+(?:sendkey\\w*|sendmouse|setcursor\\w*|movecursor|win\\s+activate)\\b',
+  // macOS: the system-events app told to type or press, an accessibility action
+  'System\\s+Events["\']?[\\s\\S]{0,600}\\b(?:keystroke|key\\s+code|click)\\b',
+  'perform\\s+action\\s+["\']?A[X]\\w*|\\bAXUIElementPerform[A]ction\\s*\\(',
+].map((s) => new RegExp(s, 'i'));
+// The first call-shaped match in `text`, as a short token for the block message, or null.
+function injectMatch(text) {
+  for (const re of INJECT_CALLS) {
+    const m = re.exec(text);
+    if (m) {
+      const t = m[0].replace(/\s+/g, ' ').trim();
+      return t.length > 60 ? `${t.slice(0, 57)}...` : t;
+    }
+  }
+  return null;
+}
+// The hotkey and AU3 runtimes run a script whose only purpose is sending input: running either with any
+// argument, or launching one of their script files, is injection. Naming them (a lookup, an install, a grep) is not.
+const INJECT_RUNTIME = /^(?:auto[h]otkey\w*|auto[i]t3\w*)$/i;
+const INJECT_SCRIPT = /\.(?:a[h]k|au3)["']?$/i;
+const LAUNCHERS = new Set(['start', 'start-process', 'saps', 'invoke-item', 'ii', 'explorer', 'cmd', 'call', '&', 'wscript', 'cscript']);
+// Commands that only look things up or print text: their arguments are data (the 10/9 grep for the rule's own
+// words, a Get-Command lookup by name). Exempt only while they write no file and the line feeds nothing to an
+// interpreter (`echo "<send call>" | powershell` runs it).
+const LOOKUP_CMDS = new Set(['grep', 'egrep', 'fgrep', 'zgrep', 'rg', 'ag', 'ack', 'findstr', 'select-string', 'sls', 'get-command', 'gcm',
+  'where', 'which', 'type', 'echo', 'printf', 'write-output', 'write-host', 'cat', 'get-content', 'gc', 'head', 'tail', 'less', 'more',
+  'ls', 'dir', 'gci', 'get-childitem', 'test-path', 'get-item', 'gi', 'get-itemproperty', 'gp', 'get-package', 'get-appxpackage', 'git', 'gh', 'wc']);
+const FEEDS_INTERPRETER = /\|\s*["']?(?:\S*[\\/])?(?:bash|sh|zsh|dash|pwsh|powershell|python[\d.]*|py|node|cscript|wscript|osascript|perl|ruby|cmd|iex|Invoke-Expression|auto[h]otkey\w*|auto[i]t3\w*)(?:\.exe)?\b/i;
+// Heredoc bodies written to a non-executable file (`cat > notes.md <<EOF`) are prose, not code.
+function dataHeredocsRemoved(text) {
+  return text.replace(/([^\n]*)<<-?\s*(['"]?)(\w+)\2[^\n]*\n[\s\S]*?\n\s*\3\s*(?=\n|$)/g, (m, before) => {
+    const target = (before.match(/>{1,2}\s*("[^"]+"|'[^']+'|[^\s;|&]+)/) || [])[1];
+    const first = firstWord(before);
+    return target && !EXEC_FILE.test(target.replace(/^["']|["']$/g, '')) && ['cat', 'tee'].includes(first) ? m.split('\n')[0] : m;
+  });
+}
+// null, or { token, where } for a shell line that sends input.
+function shellInjection(text) {
+  const feeds = FEEDS_INTERPRETER.test(text);
+  const segs = segments(dataHeredocsRemoved(text)).filter((s) => !isEngineRun(s));
+  const live = [];
+  for (const seg of segs) {
+    const first = firstWord(seg);
+    if (LOOKUP_CMDS.has(first) && !feeds && !REDIRECT.test(unquoted(seg.replace(HARMLESS_REDIRECT, ' ')))) continue;
+    live.push(seg);
+    const words = (seg.trim().match(/"[^"]*"|'[^']*'|\S+/g) || []).map((w) => w.replace(/^["'({]+|["')}]+$/g, ''));
+    const bases = words.map((w) => base(w).replace(/\.exe$/i, '').toLowerCase());
+    const runsAt = (i) => i === 0 || LAUNCHERS.has(bases[i - 1]) || /^-(?:FilePath|ArgumentList)$/i.test(words[i - 1] || '');
+    for (let i = 0; i < words.length; i += 1) {
+      if (INJECT_RUNTIME.test(bases[i]) && runsAt(i) && words.length > i + 1) {
+        return { token: `${words[i]} ${words[i + 1]}`, where: 'a hotkey or AU3 script run' };
+      }
+      if (INJECT_SCRIPT.test(words[i]) && (runsAt(i) || INJECT_RUNTIME.test(bases[i - 1] || ''))) {
+        return { token: words[i], where: 'a script launched' };
+      }
+    }
+  }
+  const token = injectMatch(live.join(' ;\n'));
+  return token ? { token, where: 'a call that sends input' } : null;
+}
+// Files that RUN: only these are scanned for injection when written (prose cannot press anything, 10/9).
+const EXEC_FILE = /\.(?:js|cjs|mjs|jsx|ts|tsx|py|pyw|ps1|psm1|sh|bash|zsh|ksh|fish|cmd|bat|rb|pl|php|go|cs|vb|vbs|vbe|wsf|jse|hta|a[h]k|au3|applescript|scpt|swift|lua|java|kt|ipynb)$/i;
+const isExecFile = (file, text) => EXEC_FILE.test(file) || (!/\.[\w-]+$/.test(path.basename(String(file))) && /^#!/.test(text));
 
 // ---------- 6. code that runs out of sight: decoded or preloaded (10/7 re-verify) ----------
 
@@ -391,20 +482,102 @@ const STORE_NAMED = (s) => STORE_IN_TEXT.test(s) || STORE_ANY.test(s) || /\.sbrm
 // machine's dev exemptions file by name, passes.
 const KEY_NAMED = /\bplan\.key\b/i;
 const STORE_ROOT_OR_CONFIG = /\.sbrm-dataverse(?:[\\/]+(?:config\b[^\s"'`;|&]*|\*[^\s"'`;|&]*)|[\\/]*(?=[\s"'`;|&)]|$))/i;
-function keyVerdict(segs, text = segs.join(' ; ')) {
+// A recursive read, copy or archive of the home folder, a drive root or any folder above home sweeps the key
+// in (final re-verify: `grep -r x ~`, `find ~ -exec cat`, `gci $HOME -Recurse | gc`, robocopy /
+// Compress-Archive of home). 1.11.5: judged per COMMAND, on what that command actually targets. Until then the
+// rule fired when a home or root token and a recursion word appeared ANYWHERE on the line, so a process trace
+// whose prose said "shells / claude" (a lone `/`) and whose Get-CimInstance took `-Filter` (read as `-r`) was
+// blocked twice on 10/9, and a fixed file under $env:USERPROFILE could be too.
+// Commands that walk a tree by themselves, and those that do only with a flag.
+const SWEEP_ALWAYS = new Set(['find', 'tree', 'rg', 'ag', 'ack', 'fd', 'fdfind', 'robocopy', 'xcopy', 'tar', 'bsdtar', '7z', '7za', 'zip', 'rsync', 'compress-archive', 'rclone']);
+const PS_RECURSE = /^-(?:r(?:e(?:c(?:u(?:r(?:s(?:e)?)?)?)?)?)?|depth)(?::\$?true)?$/i;
+const SWEEP_FLAGGED = {
+  grep: (f) => /^-[a-zA-Z]*[rR][a-zA-Z]*$/.test(f) || /^--(?:dereference-)?recursive$|^--directories=recurse$/.test(f),
+  ls: (f) => /^-[a-zA-Z]*R[a-zA-Z]*$/.test(f) || PS_RECURSE.test(f),
+  dir: (f) => /^\/s$/i.test(f) || PS_RECURSE.test(f),
+  'get-childitem': (f) => PS_RECURSE.test(f),
+  cp: (f) => /^-[a-zA-Z]*[rRa][a-zA-Z]*$/.test(f) || /^--(?:recursive|archive)$/.test(f),
+  'copy-item': (f) => PS_RECURSE.test(f),
+  findstr: (f) => /^\/s$/i.test(f),
+  scp: (f) => /^-[a-zA-Z]*r[a-zA-Z]*$/.test(f),
+};
+for (const [alias, cmd] of [['egrep', 'grep'], ['fgrep', 'grep'], ['zgrep', 'grep'], ['gci', 'get-childitem'], ['cpi', 'copy-item'], ['copy', 'copy-item']]) SWEEP_FLAGGED[alias] = SWEEP_FLAGGED[cmd];
+const PATTERN_FIRST = new Set(['grep', 'egrep', 'fgrep', 'zgrep', 'rg', 'ag', 'ack', 'findstr']);
+// Words before a command word: a block, a wrapper, an assignment.
+const CMD_LEAD = new Set(['{', '(', 'do', 'then', 'else', 'sudo', 'time', 'xargs', 'nohup', 'exec', 'env', 'nice', 'timeout', '-c', '/c', '/k', '-command', '=', 'call', 'start', '&']);
+const HOME_N = norm(HOME).replace(/\/+$/, '');
+// The folder a path word names, normalized like norm(); null when it cannot be known (a variable, relative
+// with no known folder). `here` is the folder relative words resolve against.
+function sweepPath(word, here) {
+  let w = String(word).replace(/^["'(]+|["'),;]+$/g, '').replace(/\\/g, '/');
+  if (!w) return null;
+  w = w.replace(/^(?:\$\{?HOME\}?|\$\{?env:(?:USERPROFILE|HOME)\}?|%USERPROFILE%|%HOMEDRIVE%%HOMEPATH%|\$env:HOMEDRIVE\$env:HOMEPATH|~)(?=\/|$)/i, HOME.replace(/\\/g, '/'))
+    .replace(/^(?:\$env:SystemDrive|%SystemDrive%)(?=\/|$)/i, 'c:')
+    .replace(/^\/([a-z])(?=\/|$)/i, '$1:');
+  if (/[$%`]/.test(w)) return null;
+  w = w.replace(/(?:\/\*+(?:\.\*)?)+$/, '').replace(/^\*+(?:\.\*)?$/, '.');
+  let abs;
+  if (/^[a-z]:(?:\/|$)/i.test(w) || w.startsWith('/')) abs = w;
+  else if (here) abs = `${here}/${w}`;
+  else return null;
+  const drive = (abs.match(/^[a-z]:/i) || [''])[0];
+  abs = drive + path.posix.normalize(`/${abs.slice(drive.length)}`);
+  return norm(abs).replace(/\/+$/, '');
+}
+// The home folder, any folder above it, a drive root or `/`.
+function sweepsHome(p) {
+  return p !== null && (p === '' || /^[a-z]:$/i.test(p) || p === HOME_N || HOME_N.startsWith(`${p}/`));
+}
+// null, or { cmd, target } for the first command in the line that walks a tree at home or above it.
+function homeSweep(text, cwd, depth = 0) {
+  let here = cwd ? norm(cwd).replace(/\/+$/, '') : null;
+  for (const seg of segments(text)) {
+    const raw = seg.trim().match(/"[^"]*"|'[^']*'|\S+/g) || [];
+    const words = raw.map((w) => w.replace(/^["'({]+|["')}]+$/g, ''));
+    const bases = raw.map((w) => base(w.replace(/^[({]+/, '')).replace(/\.exe$/i, '').toLowerCase());
+    // A string handed to a shell (`bash -c "grep -r x ~"`) is a command line of its own.
+    if (depth < 2 && SHELL_WRAPPER.test(seg)) {
+      for (const q of raw.filter((w) => /^["']/.test(w))) {
+        const inner = homeSweep(q.slice(1, -1), here, depth + 1);
+        if (inner) return inner;
+      }
+    }
+    for (let i = 0; i < words.length; i += 1) {
+      const b = bases[i];
+      const lead = i === 0 || CMD_LEAD.has((words[i - 1] || '').toLowerCase()) || /^[({]/.test(raw[i]) || /[={]$/.test(words[i - 1] || '');
+      if (!lead) continue;
+      if (['cd', 'set-location', 'sl', 'pushd', 'push-location', 'chdir'].includes(b)) {
+        const to = words.slice(i + 1).find((w) => w && !/^-/.test(w));
+        here = to === undefined ? HOME_N : sweepPath(to, here);
+        break;
+      }
+      const flagged = SWEEP_FLAGGED[b];
+      if (!SWEEP_ALWAYS.has(b) && !flagged) continue;
+      let end = words.slice(i + 1).findIndex((w, k) => /^[)}]/.test(raw[i + 1 + k]) && !w);
+      end = end < 0 ? words.length : i + 1 + end;
+      const args = words.slice(i + 1, end).filter((w) => w !== '');
+      if (flagged && !args.some((a) => flagged(a))) break;
+      let targets = args.filter((a) => !/^-/.test(a) && !(/^\/[a-z]+$/i.test(a) && ['dir', 'findstr', 'robocopy', 'xcopy'].includes(b)));
+      // a search tool's first plain word is the pattern, unless -e/-f gave it
+      if (PATTERN_FIRST.has(b) && !args.some((a) => /^-(?:e|f)$|^--(?:regexp|file)=/.test(a))) targets = targets.slice(1);
+      if (!targets.length) targets = ['.'];
+      const hit = targets.find((t) => sweepsHome(sweepPath(t, here)));
+      if (hit) return { cmd: [words[i], ...args.filter((a) => /^-|^\/[a-z]+$/i.test(a))].join(' '), target: hit };
+      break;
+    }
+  }
+  return null;
+}
+
+function keyVerdict(segs, text = segs.join(' ; '), cwd = null) {
   // A listing of the root fed into something that reads each name (`find <store> | xargs cat`).
   // (A pipe into head/sort/grep only reads the NAMES; these run something per name, or bind names to files.)
   if (STORE_ROOT_OR_CONFIG.test(text) && /\|\s*(?:xargs|while\b|for\b|parallel|Get-Content|gc\b|%|ForEach-Object|foreach|Select-String|sls\b|Copy-Item|cpi\b)/i.test(text)) {
     return "feeding the store's root or settings folder into another command (it holds the plan signing key)";
   }
-  // A recursive read, copy or archive of the home folder or a drive root sweeps the key in (final re-verify:
-  // `grep -r x ~`, `find ~ -exec cat`, `gci $HOME -Recurse | gc`, robocopy / Compress-Archive of home).
-  const flat = text.replace(/\\/g, '/').toLowerCase();
-  const homeTokens = ['~', '~/', '$home', '$env:userprofile', '%userprofile%', HOME.replace(/\\/g, '/').toLowerCase(), '/'];
-  const namesHomeOrRoot = homeTokens.some((t) => new RegExp(`(?:^|[\\s"'=(])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/?(?=[\\s"';|&)]|$)`).test(flat))
-    || /(?:^|[\s"'=(])[a-z]:\/?(?=[\s"';|&)]|$)/.test(flat);
-  if (namesHomeOrRoot && /\s-(?:[a-z]*r\b|-recursive\b)|-recurse\b|\bfind\b|\btree\b|\brobocopy\b|\bxcopy\b|compress-archive|\btar\b|\bzip\b|\b7z\b|\brsync\b|\bcp\s+-[a-z]*r/.test(flat)) {
-    return 'a recursive read or copy of the home folder or a drive root (it would sweep in the plan signing key); name a narrower folder';
+  const sweep = homeSweep(text, cwd);
+  if (sweep) {
+    return `a recursive read or copy of the home folder or a drive root (it would sweep in the plan signing key); name a narrower folder [rule: home-sweep; matched: "${sweep.cmd}" on "${sweep.target}"]`;
   }
   // A wildcard or a `..` walking into the store can reach the key without naming it (`conf*/plan*`).
   if (/\.sbrm-dataverse[\\/]+[^\s"'`;|&]*\.\.[\\/]/i.test(text) || /\.sbrm-dataverse[\\/]+(?!jobs[\\/])[^\s"'`;|&/\\]*[*?]/i.test(text)) {
@@ -441,10 +614,39 @@ function keyPathVerdict(tool, ti, cwd) {
 }
 const INTERPRETERS = new Set(['node', 'python', 'python3', 'py']);
 
+// Where a command's redirects write: the word after each unquoted `>` / `>>` (quoted ones too when the text is
+// handed to a shell). 1.11.5 (false positive 10/9): `sed 's#<plugin path>#<working copy path>#' a.js > b.js`
+// rewrote a scratch file and was blocked as changing the plugin, because ANY redirect on a line that named the
+// plugin counted as a write into it. Now only a redirect whose target is in the plugin does, or one whose target
+// cannot be known (a variable, nothing), or a relative one after a `cd` into the plugin.
+function redirectTargets(seg) {
+  const scan = SHELL_WRAPPER.test(seg) ? seg : unquoted(seg);
+  const out = [];
+  const re = />{1,2}/g;
+  let m;
+  while ((m = re.exec(scan)) !== null) {
+    if (/[=-]$/.test(scan.slice(0, m.index))) continue; // `=>` and `->` are code, not redirects
+    const after = seg.slice(m.index + m[0].length).replace(/^\s+/, '');
+    out.push((after.match(/^"[^"]*"|^'[^']*'|^[^\s;|&()<>]+/) || [''])[0].replace(/^["']+|["']+$/g, ''));
+  }
+  return out;
+}
+const PLUGIN_CD = /(?:^|[\s;&|(])(?:cd|pushd|chdir|Set-Location|sl|Push-Location)\s+[^;&|\n]*\.claude[\\/]+plugins[\\/]+(?:cache|marketplaces)[\\/]+sbrm-claude-toolkit/i;
+function writesIntoPlugin(seg, line) {
+  return redirectTargets(seg).some((t) => !t || /[$`%]/.test(t) || PLUGIN_IN_TEXT.test(t) || inPlugin(t)
+    || (PLUGIN_CD.test(line) && !/^(?:[a-z]:)?[\\/~]/i.test(t)));
+}
+// mutates(), with a redirect counted only when it writes into the plugin.
+function mutatesPlugin(text, line = text) {
+  return SHELL_MUTATE_WORD.test(text) || GIT_WRITE.test(text) || segments(text).some((s) => writesIntoPlugin(s, line));
+}
+
 // Every simple command that names the store, or runs after a `cd` into it, must be a plain read
 // (STORE_READ_CMDS, no redirect, no find -delete/-exec). A command that names the plugin must be a plain
-// read or an interpreter run with nothing in it that writes (reading the plugin's JSON settings is fine).
+// read (or sed/awk without in-place editing) whose output goes elsewhere, or an interpreter run with nothing in
+// it that writes into the plugin (reading the plugin's JSON settings is fine).
 function storeOrPluginVerdict(segs) {
+  const line = segs.join(' ; ');
   let inStore = false;
   for (const seg of segs) {
     const first = firstWord(seg);
@@ -459,8 +661,10 @@ function storeOrPluginVerdict(segs) {
     }
     if (isCd) inStore = /\.sbrm-dataverse/i.test(seg);
     if (PLUGIN_IN_TEXT.test(seg)) {
-      const read = (STORE_READ_CMDS.has(first) && !(first === 'find' && FIND_WRITES.test(seg)) && !REDIRECT.test(unquoted(seg)))
-        || (INTERPRETERS.has(first) && !mutates(seg));
+      const filter = (first === 'sed' && !/\s(?:-[a-zA-Z]*i|--in-place)/.test(unquoted(seg)))
+        || (['awk', 'gawk'].includes(first) && !/\binplace\b/i.test(seg));
+      const read = (((STORE_READ_CMDS.has(first) && !(first === 'find' && FIND_WRITES.test(seg))) || filter) && !writesIntoPlugin(seg, line))
+        || (INTERPRETERS.has(first) && !mutatesPlugin(seg, line));
       if (!read) return "changing the toolkit plugin's files";
     }
   }
@@ -655,11 +859,13 @@ function askPerson({ verb, keys }) {
 
 // ---------- the verdict ----------
 
-function shellVerdict(text) {
+// `cwd` (the hook input's working folder, when given) is where a recursive command with no path, or a
+// relative one, would walk.
+function shellVerdict(text, cwd = null) {
   const segs = segments(text.replace(HARMLESS_REDIRECT, ' ')).filter((s) => !isEngineRun(s));
   const rest = segs.join(' ; ');
   if (HIDDEN_CODE.test(text)) return 'code that runs out of sight (decoded at run time, or preloaded into node)';
-  const key = keyVerdict(segments(text), text);
+  const key = keyVerdict(segments(text), text, cwd);
   if (key) return key;
   if (PLUGIN_OFF_SHELL.test(rest)) return 'switching the toolkit plugin (and its guard) off';
   const sp = storeOrPluginVerdict(segs);
@@ -670,7 +876,8 @@ function shellVerdict(text) {
   if (ENGINE_INTERNALS.test(rest)) return "code that reaches the engine's write side directly (it would skip the approval)";
   if (targetsDataverse(text.replace(HARMLESS_REDIRECT, ' '))) return 'a raw writing HTTP call at Dataverse';
   if (OTHER_DV_WRITERS.test(rest)) return 'another tool that writes to Dataverse (the Xrm PowerShell cmdlets or the Power Platform CLI)';
-  if (INJECT.test(rest)) return 'keystroke or click injection (approving is the person\'s alone)';
+  const inj = shellInjection(text);
+  if (inj) return `keystroke or click injection (approving is the person's alone) [rule: injection; matched: "${inj.token}" in ${inj.where}]`;
   if (STORE_MOVE.test(text)) return "moving the engine's store or settings for a run (plans must stay where the guard protects them)";
   // An apply or resolve on a line that also changes PATH or node's own options could be handed a substitute
   // CLI or preloaded code (final re-verify). A Claude shell keeps no settings between commands, so the same
@@ -682,7 +889,7 @@ function shellVerdict(text) {
   // The path is looked for in the WHOLE line (an engine run can feed a later delete, `show 1 | xargs rm`);
   // the mutating command only outside the engine's own arguments.
   if ((STORE_IN_TEXT.test(text) || STORE_ANY.test(text)) && mutates(rest)) return "changing the engine's own store (plans, log, events)";
-  if (PLUGIN_IN_TEXT.test(text) && mutates(rest)) return "changing the toolkit plugin's files";
+  if (PLUGIN_IN_TEXT.test(text) && mutatesPlugin(rest, text)) return "changing the toolkit plugin's files";
   if (HOOKS_OFF.test(rest)) return 'switching hooks off';
   if (PROMPT_ANSWERER.test(text) && /settings(?:\.local)?\.json/i.test(text) && mutates(rest)) return 'adding a hook that answers approval prompts (only the person may add one)';
   return null;
@@ -698,6 +905,46 @@ function contentOf(tool, ti) {
 
 const CODE_FILE = /\.(?:js|cjs|mjs|ts|py|ps1|psm1|sh|bash|zsh|cmd|bat|rb|pl|php|go|cs|vbs|applescript|scpt)$/i;
 
+// A settings write ADDS a prompt-answering hook only if the file afterwards holds a PermissionRequest hook it did
+// not hold before. 1.11.5 (10/9, Daian's Mac): iTerm2's own Claude integration installs one (a status reporter the
+// person added), so any Write of the whole file, or an Edit spanning that block, was refused while it only kept
+// it. Changing that hook's command counts as new. Anything that cannot be worked out fails closed.
+function answererHooks(jsonText) {
+  try {
+    const d = JSON.parse(String(jsonText).replace(/^﻿/, ''));
+    const groups = (d && d.hooks && d.hooks['Permission' + 'Request']) || [];
+    if (!Array.isArray(groups)) return null;
+    return groups.flatMap((g) => ((g && Array.isArray(g.hooks)) ? g.hooks : [null]).map((h) => JSON.stringify([g && g.matcher, h])));
+  } catch { return null; }
+}
+function readSettings(file) {
+  try {
+    return fs.readFileSync(/^~[\\/]/.test(file) ? path.join(HOME, file.slice(2)) : file, 'utf8');
+  } catch { return ''; }
+}
+function settingsHasAnswerer(file) {
+  const t = readSettings(file);
+  return PROMPT_ANSWERER.test(t) || /\\u[0-9a-f]{4}/i.test(t);
+}
+function addsAnswerer(tool, ti, file) {
+  const before = readSettings(file);
+  let after = before;
+  const edits = tool === 'Write' ? null : tool === 'Edit' ? [ti] : tool === 'MultiEdit' ? (ti.edits || []) : undefined;
+  if (edits === undefined) return true;
+  if (edits === null) after = String(ti.content || '');
+  for (const e of edits || []) {
+    const from = String((e && e.old_string) || '');
+    // Claude Code refuses an Edit whose old text is not in the file, so it writes nothing.
+    if (!from || !after.includes(from)) return false;
+    after = e.replace_all ? after.split(from).join(String(e.new_string || '')) : after.replace(from, () => String(e.new_string || ''));
+  }
+  const now = answererHooks(after);
+  // Not JSON afterwards: no hook in it can load. Refused only if the new text itself names the hook or a \u key.
+  if (now === null) return PROMPT_ANSWERER.test(contentOf(tool, ti)) || /\\u[0-9a-f]{4}/i.test(contentOf(tool, ti));
+  const was = before.trim() ? (answererHooks(before) || []) : [];
+  return now.some((h) => !was.includes(h));
+}
+
 function writeVerdict(tool, ti, dirs) {
   const file = ti.file_path || ti.notebook_path || '';
   if (inPlugin(file)) return "changing the toolkit plugin's files";
@@ -707,9 +954,19 @@ function writeVerdict(tool, ti, dirs) {
   if (SETTINGS_FILE.test(norm(file)) && PLUGIN_OFF_SETTINGS.test(text)) return 'switching the toolkit plugin (and its guard) off';
   // A PermissionRequest hook can answer Claude Code's prompts itself (docs, checked 10/8), which would
   // approve a write with nobody looking. Only the person adds one, by hand.
-  if (SETTINGS_FILE.test(norm(file)) && PROMPT_ANSWERER.test(text)) return 'adding a hook that answers approval prompts (only the person may add one)';
+  // Parsed and compared when the new text names the hook, spells a key with a JSON \u escape, or edits a file that
+  // already holds one (an Edit can change that hook's command without naming it; 1.11.4 missed both).
+  if (SETTINGS_FILE.test(norm(file)) && (PROMPT_ANSWERER.test(text) || /\\u[0-9a-f]{4}/i.test(text) || (tool !== 'Write' && settingsHasAnswerer(file)))
+    && addsAnswerer(tool, ti, file)) return 'adding a hook that answers approval prompts (only the person may add one) [rule: prompt-answerer; matched: a new or changed PermissionRequest hook]';
   if (HIDDEN_CODE.test(text) && !inDevDir(file, dirs)) return 'writing code that runs out of sight (decoded at run time, or preloaded into node)';
-  if (INJECT.test(text)) return 'writing keystroke or click injection (approving is the person\'s alone)';
+  // Only files that run (1.11.5): a markdown plan that names an input tool cannot press anything (false
+  // positive 10/9). A hotkey/AU3 script file is refused outright: sending input is all it does. Claude Code's
+  // settings carry hook COMMANDS, so they are read as code too.
+  if (/\.(?:a[h]k|au3)$/i.test(file)) return `writing keystroke or click injection (approving is the person's alone) [rule: injection-write; matched: a ${path.extname(file)} script]`;
+  if (isExecFile(file, text) || SETTINGS_FILE.test(norm(file))) {
+    const token = injectMatch(SETTINGS_FILE.test(norm(file)) ? text.replace(/\\"/g, '"') : text);
+    if (token) return `writing keystroke or click injection (approving is the person's alone) [rule: injection-write; matched: "${token}" in a ${path.extname(file) || 'script'} file]`;
+  }
   if (!inDevDir(file, dirs)) {
     if (ENGINE_INTERNALS.test(text)) return "writing code that reaches the engine's write side directly (it would skip the approval)";
     // A script that runs an apply would spend a ticket minted for someone else's prompt (blind review 10/8).
@@ -753,7 +1010,7 @@ function verdict(input, dirs = devDirs(), { popup = popupOpen } = {}) {
     }
   }
   if (tool === 'Read' || tool === 'Grep') return keyPathVerdict(tool, ti, input.cwd);
-  if (tool === 'Bash' || tool === 'PowerShell') return shellVerdict(String(ti.command || ''));
+  if (tool === 'Bash' || tool === 'PowerShell') return shellVerdict(String(ti.command || ''), input.cwd || null);
   if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(tool)) return writeVerdict(tool, ti, dirs);
   return null;
 }
@@ -990,6 +1247,16 @@ function selftest() {
     ['setx with a computed name', B('setx %N% C:\\tmp'), true],
     ['Set-Item the home folder', B('Set-Item env:HOME C:\\tmp', 'PowerShell'), true],
     ['Set-Item a computed env name', B('Set-Item "env:$n" C:\\tmp', 'PowerShell'), true],
+    // 1.11.5, false positives 10/9 (fuller set: engine/test/guard_false_positives.test.js): invocation, not vocabulary
+    ['the Forms Screen class for monitor sizes is fine', B('Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::AllScreens | ForEach-Object { $_.Bounds }', 'PowerShell'), false],
+    ['Get-Command lookups of input tools are fine', B(J("foreach ($c in 'Auto", "Hotkey','nir", "cmd') { Get-Command $c -ErrorAction SilentlyContinue }"), 'PowerShell'), false],
+    ['a grep for the rule\'s words is fine', B(J("grep -n -i -E 'injection|hotkey|Send", "Keys|nir", "cmd' guard/*")), false],
+    ['a markdown plan naming input tools is fine', W('C:/temp/PLAN.md', J('Automation helpers: none (no Auto', 'Hotkey, PowerToys).')), false],
+    ['a hotkey script file is refused', W(J('C:/temp/x.a', 'hk'), 'Send {Enter}'), true],
+    ['a process trace with prose " / " and -Filter is fine', B('Get-CimInstance Win32_Process -Filter "ProcessId=$PID"; "=== shells / claude ==="', 'PowerShell'), false],
+    ['Get-ChildItem -Recurse of $HOME', B('Get-ChildItem $HOME -Recurse | Get-Content', 'PowerShell'), true],
+    ['find from the Git Bash drive root', B('find /c/ -name "*.key"'), true],
+    ['a fixed file under $env:USERPROFILE is fine', B('Test-Path "$env:USERPROFILE\\.local\\bin\\claude.exe"', 'PowerShell'), false],
   ];
   // An approval waiting (a fresh ticket): a screen tool is refused only then (injected, not read).
   const screen = { tool_name: 'mcp__computer-use__left_click', tool_input: { x: 1, y: 2 } };
