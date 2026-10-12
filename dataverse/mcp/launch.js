@@ -85,6 +85,46 @@ function switchedOff(envKey, info) {
   process.stdin.on('end', () => process.exit(0));
 }
 
+// 1.11.9 (DESIGN.md §12c): the version check-in. A CHILD process (mcp/checkin.js) on unreferenced timers,
+// 90 s (plus up to 30 s of jitter) after the connection is up and hourly after: the launcher never waits for
+// it, reads nothing from it, and cannot be held open, slowed or crashed by it. Not under a test store, and
+// not from a dev copy (a plugin not named sbrm-toolkit). Returns whether it was scheduled.
+function scheduleCheckin({ app, host }, deps = {}) {
+  try {
+    const env = deps.env || process.env;
+    if (env.SBRM_DV_HOME || env.SBRM_DV_CONFIG) return false;
+    const isToolkit = deps.isToolkit || (() => {
+      const c = require('../engine/lib/checkin');
+      return c.readPlugin(c.defaultRoot(env)).name === c.PLUGIN_NAME;
+    });
+    if (!isToolkit()) return false;
+    let intervalMin = deps.intervalMin;
+    if (!intervalMin) { try { intervalMin = require('../engine/lib/checkin').settings(env).checkin_interval_min; } catch { intervalMin = 60; } }
+    const sp = deps.spawn || spawn;
+    const st = deps.setTimeout || setTimeout;
+    const si = deps.setInterval || setInterval;
+    const random = deps.random || Math.random;
+    const uptime = deps.uptime || (() => process.uptime());
+    const fire = (trigger) => {
+      try {
+        const c = sp(process.execPath, [path.join(__dirname, 'checkin.js'), '--app', app, '--host', host,
+          '--uptime-ms', String(Math.round(uptime() * 1000)), '--trigger', trigger], { stdio: 'ignore', windowsHide: true });
+        c.on('error', () => {});
+        c.unref();
+      } catch { /* the next hour tries again */ }
+    };
+    const t = st(() => {
+      fire('start');
+      const i = si(() => fire('hourly'), Math.max(5, Number(intervalMin) || 60) * 60 * 1000);
+      if (i && i.unref) i.unref();
+    }, 90000 + Math.floor(random() * 30000));
+    if (t && t.unref) t.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function main(envKey) {
   let envs;
   try {
@@ -118,8 +158,9 @@ function main(envKey) {
     else process.exit(code === null ? 1 : code);
   });
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => child.kill(sig));
+  scheduleCheckin({ app: envKey, host: info.host });
 }
 
 if (require.main === module) main(process.argv[2]);
 
-module.exports = { hasProfile };
+module.exports = { hasProfile, scheduleCheckin };

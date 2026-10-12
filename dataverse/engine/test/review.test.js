@@ -106,6 +106,76 @@ test('repeated health checks on one machine fold into the latest; a later pass i
   assert.equal(passed.open.find((e) => e.number === 'D-1005').clearedAt, null, 'the other machine is untouched');
 });
 
+// 1.11.9 (DESIGN.md §12d): the Toolkit block grades each person's latest check-in per machine against main.
+const ci = (email, name, time, machine, running, installed, main, state) => ({ email, name, time: at(time), machine, running, installed, main, state });
+function toolkitWeek(checkins, over = {}) {
+  return { now: new Date('2026-10-14T09:00:00'), days: 7, access: ACCESS, people: PEOPLE, logs: [], events: [], checkins, main: { version: '1.11.9', fetched: true }, ...over };
+}
+
+test('toolkit: each state graded against the main the review fetched; worst machine wins; first seen is the earliest row', () => {
+  const s = summarize(toolkitWeek([
+    ci('arivera@example.org', 'Alex Rivera', '2026-10-13T16:10:00', 'ALEX-MAC', '1.11.9', '1.11.9', '1.11.9', 'current'),
+    ci('dgross@example.org', 'Dylan Gross', '2026-10-13T16:11:00', 'DESKTOP', '1.11.8', '1.11.9', '1.11.9', 'restart-needed'),
+    ci('dgross@example.org', 'Dylan Gross', '2026-10-13T17:30:00', 'LAPTOP', '1.11.9', '1.11.9', '1.11.9', 'current'),
+    ci('slee@example.org', 'Sam Lee', '2026-10-13T18:00:00', 'SAM-MAC', '1.11.8', '1.11.8', '1.11.9', 'stale'),
+    ci('jpark@example.org', 'Jordan Park', '2026-10-13T08:00:00', 'JP', '1.11.8', '1.11.8', '1.11.8', 'current'),
+    ci('jpark@example.org', 'Jordan Park', '2026-10-14T08:00:00', 'JP', '1.11.8', '1.11.8', '1.11.9', 'pending'),
+  ]));
+  const out = render(s);
+  assert.match(out, /Toolkit \(main 1\.11\.9, fetched now; out since 10\/13 4:10 PM\)/, 'first seen = the earliest row naming it');
+  assert.match(out, /Alex Rivera +current 1\.11\.9 +ALEX-MAC, checked 10\/13 4:10 PM/);
+  assert.match(out, /Dylan Gross +DESKTOP: restart needed: running 1\.11\.8, 1\.11\.9 installed 10\/13 4:11 PM; LAPTOP: current 1\.11\.9/, 'two machines named, worst first');
+  assert.match(out, /Sam Lee +WARN auto-update not pulling: 1\.11\.8 installed, 1\.11\.9 out since 10\/13; a session ran 1h\+ without it/);
+  assert.match(out, /Jordan Park +1\.11\.9 pending \(out since 10\/13 4:10 PM; last check-in 10\/14 8:00 AM\)/, 'the LATEST row per machine counts');
+  assert.ok(!/Behind on the toolkit/.test(out), 'the sighting line is gone');
+  assert.equal(brief(s).match(/toolkit 1\.11\.9: [^.]*/)[0], 'toolkit 1.11.9: Alex current, Dylan restart needed, Jordan pending, Sam AUTO-UPDATE NOT PULLING');
+});
+
+test('toolkit: three days after a release with no stale proof = not updated; no check-in; quiet machines; ahead of main; install record missing', () => {
+  const s = summarize(toolkitWeek([
+    ci('arivera@example.org', 'Alex Rivera', '2026-10-10T09:00:00', 'ALEX-MAC', '1.11.9', '1.11.9', '1.11.9', 'current'),
+    ci('arivera@example.org', 'Alex Rivera', '2026-10-13T09:00:00', 'ALEX-MAC', '1.11.8', '1.11.8', '1.11.9', 'pending'),
+    ci('slee@example.org', 'Sam Lee', '2026-09-20T09:00:00', 'OLD-PC', '1.11.2', '1.11.2', '1.11.2', 'current'),
+    ci('dgross@example.org', 'Dylan Gross', '2026-10-13T09:00:00', 'DEV', '1.11.10', '1.11.10', '1.11.9', 'current'),
+    ci('jpark@example.org', 'Jordan Park', '2026-10-13T09:00:00', 'JP', '1.11.8', 'unknown', '1.11.9', 'unknown'),
+  ]));
+  const out = render(s);
+  assert.match(out, /Alex Rivera +WARN not updated 4 days after 1\.11\.9 shipped \(no session open 1h\+ since; ask them to update by hand\)/);
+  assert.match(out, /Sam Lee +no check-in since 9\/20 \(OLD-PC\)/);
+  assert.match(out, /Dylan Gross +ahead of main \(1\.11\.10\)/, 'numeric order; never "current"');
+  assert.match(out, /Jordan Park +install record missing \(JP\): a dev copy, or installed_plugins\.json unreadable; ask/);
+  const none = summarize(toolkitWeek([]));
+  assert.match(render(none), /Alex Rivera +no check-in \(not set up, or a toolkit before 1\.11\.9\)/);
+});
+
+test('toolkit: GitHub unreachable = main is the newest version seen anywhere, and says so; everyone current reads as one clause', () => {
+  const rows = [
+    ci('arivera@example.org', 'Alex Rivera', '2026-10-13T16:10:00', 'A', '1.11.9', '1.11.9', '1.11.9', 'current'),
+    ci('dgross@example.org', 'Dylan Gross', '2026-10-13T16:11:00', 'D', '1.11.9', '1.11.9', '1.11.9', 'current'),
+  ];
+  const s = summarize(toolkitWeek(rows, { main: { error: 'offline' }, toolkit: '1.11.8' }));
+  assert.match(render(s), /Toolkit \(main 1\.11\.9, newest seen; GitHub not reachable; out since/);
+  const quiet = summarize({ ...toolkitWeek(rows), access: { people: {} }, people: {} });
+  assert.match(brief(quiet), /toolkit: everyone checked in is on 1\.11\.9/);
+  assert.ok(!/not set up/.test(brief(quiet)), 'a check-in is a sighting: someone who only checked in is set up');
+});
+
+test('toolkit: a machine whose own idea of main is old is graded against the REVIEW\'s main, never marked current by it', () => {
+  const s = summarize(toolkitWeek([ci('arivera@example.org', 'Alex Rivera', '2026-10-14T08:00:00', 'A', '1.11.8', '1.11.8', '1.11.8', 'current')]));
+  assert.match(render(s), /Alex Rivera +1\.11\.9 pending/);
+});
+
+test('toolkit: check-ins never count as routine refusals', () => {
+  const s = summarize(toolkitWeek([], { now: NOW, events: [ev('arivera@example.org', 'Alex Rivera', '2026-10-05T09:00:00', { kind: 'version check-in', code: 'checkin', signal: false })] }));
+  assert.match(render(s), /Routine refusals: none/);
+});
+
+test('parseCheckin reads the strict lines a check-in row leads with', () => {
+  const { parseCheckin } = require('../lib/review');
+  const d = 'Time: x\nPerson: y\nCommand: (none)\n\nrunning: 1.11.8\ninstalled: 1.11.9\nmain: 1.11.9\nstate: restart-needed\ninstalled_since: 2026-10-13T16:05:00.000Z\nmain_fetched_at: never\nsession_uptime_min: 3\n\ntrigger: start';
+  assert.deepEqual(parseCheckin(d), { running: '1.11.8', installed: '1.11.9', main: '1.11.9', state: 'restart-needed', installed_since: '2026-10-13T16:05:00.000Z', session_uptime_min: '3' });
+});
+
 test('someone granted write with no activity yet shows by the name on their access row, not their email', () => {
   const s = summarize({ now: NOW, days: 7, access: { people: { 'new@example.org': { envs: { donorapp: 'write' }, name: 'New Person' } } }, logs: [], events: [], people: {} });
   assert.match(render(s), /New Person\s+never\s+not set up/);

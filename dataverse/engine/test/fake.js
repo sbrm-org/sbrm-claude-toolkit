@@ -270,6 +270,8 @@ function fakeDv({ email = 'dgross@example.org', dupHits = [], userId = IDS.me, i
         const eq = /^(\w+) eq '([^']+)'$/.exec(f);
         if (eq) return { value: rows.filter((r) => r[eq[1]] === eq[2]) };
         if (/^createdon ge /.test(f)) return { value: rows };
+        const eqWin = /^(\w+) eq '([^']+)' and createdon ge /.exec(f); // the review's check-in read (1.11.9)
+        if (eqWin) return { value: rows.filter((r) => r[eqWin[1]] === eqWin[2]) };
         throw new Error(`fake dv: unsupported filter ${f}`);
       }
       if ((m = /^(sbrm_dataversewritelogs|sbrm_dataverseevents)\?\$top=1&\$select=[^&]+$/.exec(p))) {

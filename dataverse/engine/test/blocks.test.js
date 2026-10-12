@@ -239,23 +239,18 @@ test('1. the THIRD block by one rule in a day opens one item; a fourth adds noth
   assert.equal(ofCode('repeat_block').filter((x) => x.rule === 'beta').length, 0);
 });
 
-test('2. review: someone whose latest event names an older toolkit (or none) is listed as behind; the newest version seen is current', () => {
+test('2. review: the 1.11.6 "behind" sighting line is superseded by check-in grading (1.11.9, DESIGN.md §12d); with no check-ins and GitHub unreachable, main is the newest version any event names', () => {
   const now = new Date('2026-10-09T17:00:00');
   const ev = (email, name, versions, time = '2026-10-09T10:00:00') => ({ env: 'donorapp', email, name, time, kind: 'refused', code: 'usage', signal: false, status: null, headline: 'x', versions });
-  const s = review.summarize({ now, logs: [], toolkit: '1.11.5', events: [
+  const s = review.summarize({ now, logs: [], toolkit: '1.11.5', main: null, checkins: [], events: [
     ev('d@example.org', 'Dana Example', 'toolkit 1.11.6; engine 2026.10.09.1; Dataverse CLI 1.0.81'),
-    ev('a@example.org', 'Alex Rivera', 'toolkit 1.11.4; engine x; Dataverse CLI 1.0.81'),
-    ev('k@example.org', 'Kim Lee', 'engine 2026.10.08.4; Dataverse CLI 1.0.81'),
     ev('k@example.org', 'Kim Lee', 'toolkit 1.11.10; engine y; Dataverse CLI 1.0.81', '2026-10-08T10:00:00'),
   ] });
-  assert.equal(s.toolkit, '1.11.10', 'numeric, not text, order; the reviewer\'s own older install does not set it');
-  assert.deepEqual(s.behind.map((p) => [p.name, p.version]), [['Alex Rivera', '1.11.4'], ['Dana Example', '1.11.6'], ['Kim Lee', null]], 'Kim\'s LATEST event is the one that counts');
+  assert.equal(s.toolkit.main, '1.11.10', 'numeric, not text, order; the reviewer\'s own older install does not set it');
   const text = review.render(s);
-  assert.match(text, /Behind on the toolkit \(now 1\.11\.10\): Alex Rivera \(last seen 10\/9 on 1\.11\.4\); Dana Example \(last seen 10\/9 on 1\.11\.6\); Kim Lee \(last seen 10\/9 on a version before 1\.11\.6\)\. If they have not updated since: quit Claude Code completely and reopen it/);
-  assert.match(review.brief(s), /Alex, Dana, Kim behind on the toolkit \(now 1\.11\.10\)/);
-  const even = review.summarize({ now, logs: [], toolkit: '1.11.6', events: [ev('d@example.org', 'Dana Example', 'toolkit 1.11.6; engine z; Dataverse CLI 1')] });
-  assert.match(review.render(even), /Toolkit: everyone seen is on 1\.11\.6\./);
-  assert.ok(!/behind/.test(review.brief(even)));
+  assert.ok(!/Behind on the toolkit/.test(text));
+  assert.match(text, /Toolkit \(main 1\.11\.10, newest seen; GitHub not reachable/);
+  assert.match(text, /Dana Example +no check-in \(not set up, or a toolkit before 1\.11\.9\)/);
 });
 
 test('3. the guard could not run: run.sh leaves a plain line (blocked or not), and the next engine run turns the lines into ONE open item', (t) => {

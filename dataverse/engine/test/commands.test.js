@@ -147,6 +147,25 @@ test('review reads the Write Log and events and prints the view; --brief prints 
   assert.deepEqual(brief.run.events, [], 'a review records nothing');
 });
 
+test('review grades a version check-in row from the table against the main it fetched (1.11.9)', () => {
+  const dv = fakeDv();
+  go(['report', 'hello'], deps(dv)); // makes the person known to the table
+  const someone = eventRows(dv)[0];
+  dv.create(EVENTS, {
+    sbrm_name: 'Toolkit 1.11.8 running, 1.11.9 installed: restart needed', sbrm_eventid: 'V-1', sbrm_runid: 'V-1', sbrm_kind: 'version check-in',
+    sbrm_signal: false, sbrm_reasoncode: 'checkin', sbrm_envkey: 'machine', sbrm_machine: 'LAPTOP', sbrm_versions: 'toolkit 1.11.8; launcher',
+    sbrm_detail: 'Time: x\nPerson: y\nCommand: (none)\n\nrunning: 1.11.8\ninstalled: 1.11.9\nmain: 1.11.9\nstate: restart-needed\n',
+    _createdby_value: someone._createdby_value,
+  });
+  let asked = null;
+  const r = go(['review'], deps(dv, { fetchMain: (url) => { asked = url; return { version: '1.11.9' }; } }));
+  assert.equal(r.code, 0);
+  assert.match(asked, /raw\.githubusercontent\.com\/sbrm-org\/sbrm-claude-toolkit\/main\/\.claude-plugin\/plugin\.json/);
+  assert.match(r.out, /Toolkit \(main 1\.11\.9, fetched now/);
+  assert.match(r.out, /Test Person +restart needed: running 1\.11\.8, 1\.11\.9 installed/);
+  assert.ok(!/Routine refusals: .*checkin/.test(r.out));
+});
+
 // ---- resolve ----
 
 function openReport(dv) {

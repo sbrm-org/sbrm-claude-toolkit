@@ -35,6 +35,64 @@ test('a missing CLI fails fast with the setup pointer (never hangs)', () => {
   assert.match(r.stderr, /points at a missing file[\s\S]*Run \/dataverse-setup/);
 });
 
+// 1.11.9 (DESIGN.md §12c): the version check-in is a CHILD on unref'd timers, so it can never hold the
+// launcher open, delay the connection or crash it.
+function fakeTimers() {
+  const made = [];
+  const mk = (kind) => (fn, ms) => { const t = { kind, fn, ms, unrefd: false, unref() { this.unrefd = true; return this; } }; made.push(t); return t; };
+  return { made, setTimeout: mk('timeout'), setInterval: mk('interval') };
+}
+function fakeSpawn() {
+  const calls = [];
+  const fn = (bin, args, o) => { const c = { bin, args, o, unrefd: false, handlers: {}, unref() { this.unrefd = true; }, on(ev, h) { this.handlers[ev] = h; return this; } }; calls.push(c); return c; };
+  return { calls, fn };
+}
+const PROD_ENV = { PATH: process.env.PATH }; // no SBRM_DV_HOME: the real-machine case
+
+test('check-in: first firing at 90 s plus jitter, then hourly; timers and child unref\'d; args name app, host, uptime, trigger', () => {
+  const { scheduleCheckin } = require('../../mcp/launch');
+  const tm = fakeTimers();
+  const sp = fakeSpawn();
+  const ok = scheduleCheckin({ app: 'donorapp', host: 'https://h' }, { ...tm, spawn: sp.fn, env: PROD_ENV, random: () => 0.5, uptime: () => 95.4, isToolkit: () => true, intervalMin: 60 });
+  assert.equal(ok, true);
+  assert.equal(tm.made.length, 1);
+  assert.equal(tm.made[0].ms, 105000, '90 s + half of 30 s');
+  assert.ok(tm.made[0].unrefd);
+  tm.made[0].fn();
+  assert.equal(sp.calls.length, 1);
+  const c = sp.calls[0];
+  assert.equal(c.bin, process.execPath);
+  assert.match(c.args[0], /mcp[\\/]checkin\.js$/);
+  assert.deepEqual(c.args.slice(1), ['--app', 'donorapp', '--host', 'https://h', '--uptime-ms', '95400', '--trigger', 'start']);
+  assert.equal(c.o.stdio, 'ignore');
+  assert.ok(c.unrefd);
+  assert.equal(typeof c.handlers.error, 'function', 'a spawn error is swallowed');
+  const iv = tm.made.find((t) => t.kind === 'interval');
+  assert.equal(iv.ms, 3600000);
+  assert.ok(iv.unrefd);
+  iv.fn();
+  assert.equal(sp.calls[1].args.at(-1), 'hourly');
+});
+
+test('check-in: never scheduled under a test store, from a dev copy, and a throwing spawn stays inside', () => {
+  const { scheduleCheckin } = require('../../mcp/launch');
+  const tm = fakeTimers();
+  const sp = fakeSpawn();
+  assert.equal(scheduleCheckin({ app: 'a', host: 'h' }, { ...tm, spawn: sp.fn, env: { SBRM_DV_HOME: '/tmp/x' }, isToolkit: () => true }), false);
+  assert.equal(scheduleCheckin({ app: 'a', host: 'h' }, { ...tm, spawn: sp.fn, env: PROD_ENV, isToolkit: () => false }), false);
+  assert.equal(tm.made.length, 0);
+  const boom = () => { throw new Error('spawn failed'); };
+  scheduleCheckin({ app: 'a', host: 'h' }, { ...tm, spawn: boom, env: PROD_ENV, random: () => 0, isToolkit: () => true });
+  assert.doesNotThrow(() => tm.made[0].fn());
+});
+
+test('check-in: the launcher schedules it only AFTER the connection is spawned', () => {
+  const src = fs.readFileSync(LAUNCH, 'utf8');
+  const spawnAt = src.indexOf("spawn(cli.binary, ['mcp', info.host]");
+  const schedAt = src.indexOf('scheduleCheckin({ app: envKey');
+  assert.ok(spawnAt > 0 && schedAt > spawnAt, 'scheduled after the MCP child exists');
+});
+
 test('it hands the session to the CLI as `mcp <host>`, stdio straight through', (t) => {
   // A stand-in "CLI": echoes its arguments and one line of stdin, as an MCP server would answer.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-mcp-'));

@@ -49,6 +49,7 @@ const SIGNAL = {
   approval_expired: false, // the person answered Claude Code's prompt after the ticket's time (three minutes in 1.11.0, ten from 1.11.7)
   blocked: false, // a guard block (1.11.6): counted by rule in the review; a report about one is false_block
   approval_unused: false, // Claude Code asked and the change never ran (declined or left): counted (1.11.6)
+  checkin: false, // a version check-in (1.11.9, DESIGN.md §12): graded in the review's Toolkit block, never counted
 };
 
 function isSignal(code) {
@@ -141,13 +142,14 @@ function isDuplicateKey(err) {
 }
 
 // A connection that can create event rows and nothing else.
-function eventConnection(host, cli = resolveCli()) {
+// timeoutMs (1.11.9): the version check-in's send gives up sooner than an engine run's.
+function eventConnection(host, cli = resolveCli(), { timeoutMs = 300000 } = {}) {
   return {
     createEvent(body) {
       const tmp = path.join(store.dir('tmp'), `event-${process.pid}-${crypto.randomBytes(4).toString('hex')}.json`);
       fs.writeFileSync(tmp, JSON.stringify(body), 'utf8');
       try {
-        return request(cli, host, EVENT_SET, { method: 'POST', headers: [], bodyFile: tmp });
+        return request(cli, host, EVENT_SET, { method: 'POST', headers: [], bodyFile: tmp, timeoutMs });
       } finally {
         fs.rmSync(tmp, { force: true });
       }

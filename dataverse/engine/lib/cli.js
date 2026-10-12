@@ -98,13 +98,14 @@ function cliPath(apiPath) {
   return p.startsWith('api/') ? p : 'api/data/v9.2/' + p;
 }
 
-function request(cli, host, apiPath, { method = 'GET', headers = [], bodyFile = null } = {}) {
+// timeoutMs (1.11.9): the version check-in's send gives up after a minute rather than five.
+function request(cli, host, apiPath, { method = 'GET', headers = [], bodyFile = null, timeoutMs = 300000 } = {}) {
   apiPath = cliPath(apiPath);
   const args = ['api', 'request', '--target', 'dataverse', '--environment', host,
     '--path', apiPath, '--method', method];
   for (const h of headers) args.push('--header', h);
   if (bodyFile) args.push('--body-file', bodyFile);
-  const r = spawnSync(cli.binary, args, { encoding: 'utf8', timeout: 300000, maxBuffer: 256 * 1024 * 1024, windowsHide: true });
+  const r = spawnSync(cli.binary, args, { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, windowsHide: true });
   if (r.error) throw launchError(cli.binary, r.error);
   const txt = (r.stdout || '').trim();
   if (!txt) {

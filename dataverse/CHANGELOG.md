@@ -3,6 +3,21 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.9** (2026-10-12) Version check-ins: the review knows who is behind, and a quietly failed automatic
+  update is caught (DESIGN.md §12). On 10/12 nobody had 1.11.8 three days after it shipped and nothing said so:
+  Claude Code updates a plugin in the background once per session start, fails quietly, and the running session
+  keeps the version it loaded. Each read connection now starts a small check (90 s after start, then hourly; a
+  lock and skip rules make it about one an hour per machine) that compares three versions: RUNNING (this
+  session), INSTALLED (on disk, what the update moves) and MAIN (the plugin.json on main), and records a
+  `version check-in` event only when they CHANGE (Dylan: a first-of-day record would always read behind after a
+  release). It also sends anything waiting, so a person who only reads now sends their events too. The review
+  replaces "Behind on the toolkit" with a Toolkit block graded against the main it fetches: current, restart
+  needed, pending, WARN auto-update not pulling (installed behind main after an hour of a session), WARN not
+  updated 3+ days after a release, install record missing, no check-in. A prompt hook tells the person's
+  Claude once when the session runs an older toolkit than the one installed (quit and reopen), and once a day
+  when the automatic update is stuck (offer to update; on their yes Claude runs the two `claude plugin` lines,
+  else gives the person the `!` lines). `doctor` gains a Toolkit line. Knobs in `toolkit.json` (ruled 10/12).
+  Tests: `engine/test/checkin.test.js`, `nudge.test.js`, and the review, launcher and health tests.
 - **1.11.8** (2026-10-09) `query`: a read-only bulk read for the person's Claude (Dylan: "especially daian
   will need to do reads over hundreds of rows"). `query <app> <table set> --select ... --filter ... [--orderby]
   [--expand] [--max N] [--csv] [--name]` reads every page (5,000 rows a page, up to --max, default 50,000)

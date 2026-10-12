@@ -264,7 +264,7 @@ test('a reason code missing from the table counts as SIGNAL (nothing is hidden b
 test('the send connection can only create rows in the event table', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'events.js'), 'utf8');
   const calls = src.match(/request\([^)]*\)/g) || [];
-  assert.deepEqual(calls, ["request(cli, host, EVENT_SET, { method: 'POST', headers: [], bodyFile: tmp })"]);
+  assert.deepEqual(calls, ["request(cli, host, EVENT_SET, { method: 'POST', headers: [], bodyFile: tmp, timeoutMs })"]);
   assert.equal(events.EVENT_SET, 'sbrm_dataverseevents');
   assert.ok(!/require\(['"]\.\/write['"]\)/.test(src));
 });

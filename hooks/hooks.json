@@ -10,6 +10,17 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/dataverse/nudge/run.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
