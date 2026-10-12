@@ -10,6 +10,7 @@
 // The brief() line is what the Monday /good-morning shows during the launch review period.
 
 const { atLeast, normalize } = require('./levels');
+const { isVersion, cmpVersion, newest } = require('./version');
 
 const DAY = 24 * 3600 * 1000;
 const SILENT_DAYS = 14;
@@ -40,38 +41,85 @@ function toolkitOf(v) {
   return m ? m[1] : null;
 }
 
-function cmpVersion(a, b) {
-  const x = String(a).split('.').map(Number);
-  const y = String(b).split('.').map(Number);
-  for (let i = 0; i < Math.max(x.length, y.length); i += 1) {
-    const d = (x[i] || 0) - (y[i] || 0);
-    if (d) return d < 0 ? -1 : 1;
-  }
-  return 0;
+// The strict `key: value` lines a version check-in's detail leads with (lib/checkin.js, 1.11.9).
+function parseCheckin(detail) {
+  const out = {};
+  const re = /^(running|installed|main|state|installed_since|session_uptime_min): (.*)$/gm;
+  let m;
+  while ((m = re.exec(String(detail || '')))) if (!(m[1] in out)) out[m[1]] = m[2].trim();
+  return out;
 }
 
-// `toolkit` = the reviewer's own version; the current one is the newest of that and any version seen, so
-// a reviewer who has not updated yet does not mark everyone else behind.
-function summarize({ now = new Date(), days = 7, access, logs, events, people = {}, toolkit = null }) {
+// The Toolkit block (1.11.9, DESIGN.md §12d): each person's latest check-in per machine, graded against the
+// main the reviewer fetched (else the newest version seen anywhere). Replaces 1.11.6's "behind" line, which
+// learned a version only when someone wrote or was refused.
+const RANK = ['stale', 'old', 'restart', 'pending', 'missing', 'ahead', 'current'];
+function gradeToolkit({ now, people, checkins, events, toolkit, main, machineDays, pendingDays }) {
+  const seen = [...checkins.flatMap((c) => [c.running, c.installed, c.main]), ...events.map((e) => toolkitOf(e.versions)), toolkit];
+  const fetched = main && isVersion(main.version);
+  const mainV = fetched ? main.version : newest(seen);
+  if (!mainV) return null;
+  const naming = checkins.filter((c) => [c.running, c.installed, c.main].includes(mainV)).map((c) => new Date(c.time));
+  const out = naming.length ? new Date(Math.min(...naming)) : null;
+  const grade = (c) => {
+    const m = c.machine || 'unknown machine';
+    if (c.state === 'unknown' || !isVersion(c.running) || !isVersion(c.installed)) {
+      return { rank: 'missing', short: 'install record missing', text: `install record missing (${m}): a dev copy, or installed_plugins.json unreadable; ask` };
+    }
+    if (cmpVersion(c.running, mainV) > 0) return { rank: 'ahead', short: `ahead of main (${c.running})`, text: `ahead of main (${c.running})` };
+    if (cmpVersion(c.running, c.installed) < 0) return { rank: 'restart', short: 'restart needed', text: `restart needed: running ${c.running}, ${c.installed} installed ${when(c.time)}` };
+    if (cmpVersion(c.installed, mainV) < 0) {
+      if (c.state === 'stale') return { rank: 'stale', short: 'AUTO-UPDATE NOT PULLING', text: `WARN auto-update not pulling: ${c.installed} installed, ${mainV} out since ${md(out || now)}; a session ran 1h+ without it` };
+      const age = out ? Math.floor((now - out) / DAY) : 0;
+      if (age >= pendingDays) return { rank: 'old', short: 'NOT UPDATED', text: `WARN not updated ${age} days after ${mainV} shipped (no session open 1h+ since; ask them to update by hand)` };
+      return { rank: 'pending', short: 'pending', text: `${mainV} pending (out since ${out ? when(out) : 'now'}; last check-in ${when(c.time)})` };
+    }
+    return { rank: 'current', short: 'current', text: `current ${mainV}` };
+  };
+  const rows = people.map((p) => {
+    const mine = checkins.filter((c) => c.email === p.email).sort((a, b) => new Date(a.time) - new Date(b.time));
+    if (!mine.length) return { name: p.name, lastSeen: p.lastSeen, rank: 'none', short: 'no check-in', text: 'no check-in (not set up, or a toolkit before 1.11.9)' };
+    const latest = {};
+    for (const c of mine) latest[c.machine || ''] = c;
+    const machines = Object.values(latest);
+    const live = machines.filter((c) => now - new Date(c.time) <= machineDays * DAY);
+    if (!live.length) {
+      const last = new Date(Math.max(...machines.map((c) => new Date(c.time))));
+      return { name: p.name, lastSeen: p.lastSeen, rank: 'quiet', short: 'no check-in lately', text: `no check-in since ${md(last)} (${machines.map((c) => c.machine).join(', ')})` };
+    }
+    const graded = live.map((c) => ({ c, ...grade(c) })).sort((a, b) => RANK.indexOf(a.rank) - RANK.indexOf(b.rank));
+    const worst = graded[0];
+    const text = graded.length === 1
+      ? `${worst.text}   ${worst.c.machine}, checked ${when(worst.c.time)}`
+      : graded.map((g) => `${g.c.machine}: ${g.text}`).join('; ');
+    return { name: p.name, lastSeen: p.lastSeen, rank: worst.rank, short: worst.short, text };
+  });
+  return { main: mainV, source: fetched ? 'fetched now' : 'newest seen; GitHub not reachable', out, rows };
+}
+
+// `toolkit` = the reviewer's own version (a fallback for main when GitHub cannot be reached). `checkins` =
+// parsed version check-in rows; `main` = { version } from the review's own fetch, or { error }.
+function summarize({ now = new Date(), days = 7, access, logs, events, people = {}, toolkit = null, checkins = [], main = null, machineDays = 14, pendingDays = 3 }) {
   const from = new Date(now - days * DAY);
   const inWindow = (t) => new Date(t) >= from;
   const expected = Object.entries((access && access.people) || {})
     .filter(([, p]) => Object.values(p.envs || {}).some((l) => atLeast(l, 'write')))
     .map(([email]) => email);
-  const emails = [...new Set([...expected, ...logs.map((l) => l.email), ...events.map((e) => e.email)])].filter(Boolean);
+  const emails = [...new Set([...expected, ...logs.map((l) => l.email), ...events.map((e) => e.email), ...checkins.map((c) => c.email)])].filter(Boolean);
 
   const open = foldHealth(events).map((e) => ({ ...e, plan: e.planid ? logs.find((l) => l.planid === e.planid) || null : null }));
 
   const ppl = emails.map((email) => {
     const mine = logs.filter((l) => l.email === email);
     const evs = events.filter((e) => e.email === email);
-    const times = [...mine, ...evs].map((x) => new Date(x.time));
+    const times = [...mine, ...evs, ...checkins.filter((c) => c.email === email)].map((x) => new Date(x.time));
     const lastSeen = times.length ? new Date(Math.max(...times)) : null;
     const applied = mine.filter((l) => inWindow(l.time) && l.outcome !== 'cancelled');
     const health = evs.filter((e) => e.kind === 'health check').sort((a, b) => new Date(b.time) - new Date(a.time))[0] || null;
     const latestEv = evs.slice().sort((a, b) => new Date(b.time) - new Date(a.time))[0];
     const granted = (access && access.people && access.people[email]) || {};
-    const name = people[email] || (mine[0] && mine[0].name) || (evs[0] && evs[0].name) || granted.name || email;
+    const ck = checkins.find((c) => c.email === email);
+    const name = people[email] || (mine[0] && mine[0].name) || (evs[0] && evs[0].name) || (ck && ck.name) || granted.name || email;
     const canWrite = expected.includes(email);
     const silent = canWrite && lastSeen && now - lastSeen > SILENT_DAYS * DAY;
     return {
@@ -90,6 +138,7 @@ function summarize({ now = new Date(), days = 7, access, logs, events, people = 
   const routine = {};
   const blocks = {}; // guard blocks this period, by rule (1.11.6): the headline is "Blocked [<rule>]: <tool>"
   for (const e of events.filter((x) => inWindow(x.time) && !x.signal && x.kind !== 'health check')) {
+    if (e.code === 'checkin') continue; // graded in the Toolkit block, never counted
     if (e.code === 'blocked') {
       const rule = (/^Blocked \[([^\]]+)\]/.exec(e.headline || '') || [])[1] || 'unknown';
       blocks[rule] = (blocks[rule] || 0) + 1;
@@ -97,15 +146,8 @@ function summarize({ now = new Date(), days = 7, access, logs, events, people = 
     }
     routine[e.code || 'unclassified'] = (routine[e.code || 'unclassified'] || 0) + 1;
   }
-  // Behind on the toolkit (1.11.6, DESIGN.md §11, candidate 2): a person whose LATEST event names an older
-  // version, or none (before 1.11.6). Usually: they did not quit Claude Code completely after an update.
-  const seen = events.map((e) => toolkitOf(e.versions)).filter(Boolean);
-  const valid = [toolkitOf(`toolkit ${toolkit}`), ...seen].filter(Boolean);
-  const current = valid.length ? valid.reduce((a, b) => (cmpVersion(a, b) >= 0 ? a : b)) : null;
-  const behind = current ? ppl.filter((p) => p.lastSeen && p.versions !== null)
-    .map((p) => ({ name: p.name, version: toolkitOf(p.versions), lastSeen: p.lastSeen }))
-    .filter((p) => !p.version || cmpVersion(p.version, current) < 0) : [];
-  return { from, to: now, days, people: ppl, open, problems, routine, blocks, toolkit: current, behind };
+  const tk = gradeToolkit({ now, people: ppl, checkins, events, toolkit, main, machineDays, pendingDays });
+  return { from, to: now, days, people: ppl, open, problems, routine, blocks, toolkit: tk };
 }
 
 // Open events, oldest first, with each person's open health checks on one machine folded into ONE item:
@@ -188,9 +230,10 @@ function render(s, { generatedBy = null } = {}) {
   const hc = s.people.filter((p) => p.health).map((p) => `${first(p.name)} ${md(p.health.time)} ${p.health.code === 'health_passed' ? 'pass' : p.health.code === 'drift' ? 'DRIFT' : 'FAIL'}`);
   out.push(`Health checks: ${hc.length ? hc.join(', ') : 'none on record'}`);
   if (s.toolkit) {
-    out.push((s.behind || []).length
-      ? `Behind on the toolkit (now ${s.toolkit}): ${s.behind.map((p) => `${p.name} (last seen ${md(p.lastSeen)} on ${p.version || 'a version before 1.11.6'})`).join('; ')}. If they have not updated since: quit Claude Code completely and reopen it`
-      : `Toolkit: everyone seen is on ${s.toolkit}.`);
+    const t = s.toolkit;
+    out.push('', `Toolkit (main ${t.main}, ${t.source}; ${t.out ? `out since ${when(t.out)}` : 'no machine has it yet'})`);
+    for (const r of t.rows) out.push(`  ${r.name.padEnd(18)} ${r.text}`);
+    out.push('');
   }
   const silent = s.people.filter((p) => p.silent);
   out.push(silent.length
@@ -213,8 +256,13 @@ function brief(s) {
   if (unset.length) parts.push(`${unset.join(', ')} not set up`);
   const silent = s.people.filter((p) => p.silent).map((p) => first(p.name));
   if (silent.length) parts.push(`${silent.join(', ')} silent ${SILENT_DAYS}+ days`);
-  if ((s.behind || []).length) parts.push(`${s.behind.map((p) => first(p.name)).join(', ')} behind on the toolkit (now ${s.toolkit})`);
+  if (s.toolkit) {
+    // People never seen are already "not set up" above; everyone else is graded.
+    const graded = s.toolkit.rows.filter((r) => r.rank !== 'none' || r.lastSeen);
+    if (graded.length && graded.every((r) => r.rank === 'current')) parts.push(`toolkit: everyone checked in is on ${s.toolkit.main}`);
+    else if (graded.length) parts.push(`toolkit ${s.toolkit.main}: ${graded.map((r) => `${first(r.name)} ${r.short}`).join(', ')}`);
+  }
   return `Dataverse toolkit, ${md(s.from)} to ${md(s.to)}: ${parts.join(', ')}. "dataverse review" for detail.`;
 }
 
-module.exports = { summarize, render, brief, foldHealth, SILENT_DAYS };
+module.exports = { summarize, render, brief, foldHealth, parseCheckin, SILENT_DAYS };

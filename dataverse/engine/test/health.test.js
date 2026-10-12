@@ -81,6 +81,19 @@ test('a healthy machine passes, and the pass is the heartbeat', () => {
   assert.ok(r.checks.some((c) => c.label === 'Write Log: Donor App' && c.status === 'ok'));
 });
 
+test('the Toolkit line (1.11.9): current is ok; a restart or an update not yet pulled is the person\'s (info); only a stuck auto-update fails', () => {
+  const line = (t) => doctor(base({ toolkit: () => t })).checks.find((c) => c.label === 'Toolkit');
+  assert.equal(line({ running: '1.11.9', installed: '1.11.9', main: '1.11.9', state: 'current' }).status, 'ok');
+  const restart = line({ running: '1.11.8', installed: '1.11.9', main: '1.11.9', state: 'restart-needed' });
+  assert.equal(restart.status, 'info');
+  assert.match(restart.detail, /quit Claude Code completely and reopen it/);
+  assert.equal(line({ running: '1.11.8', installed: '1.11.8', main: '1.11.9', state: 'pending' }).status, 'info');
+  const stale = doctor(base({ toolkit: () => ({ running: '1.11.8', installed: '1.11.8', main: '1.11.9', state: 'stale' }) }));
+  assert.equal(stale.code, 'health_failed');
+  assert.match(render(stale), /FAIL {2}Toolkit: 1\.11\.8 installed, 1\.11\.9 on main: the automatic update is not pulling it\n {8}fix: with the person's OK, run: claude plugin marketplace update sbrm-claude-toolkit/);
+  assert.equal(doctor(base({ toolkit: () => { throw new Error('x'); } })).checks.find((c) => c.label === 'Toolkit').status, 'info', 'a broken read never fails the check');
+});
+
 test('no CLI: fails, and stops before trying to reach Dataverse', () => {
   let connected = false;
   const r = doctor(base({ cli: () => { throw new Error('The Dataverse CLI was not found on this machine.'); }, connect: () => { connected = true; } }));

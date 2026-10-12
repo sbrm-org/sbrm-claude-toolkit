@@ -207,6 +207,19 @@ function doctor(deps) {
     else add('Guard', 'ok', 'blocks a test bypass of the approval; hooks are on');
   } else add('Guard', 'info', 'not checked');
 
+  // 8. the toolkit's own version (1.11.9, DESIGN.md §12c): running vs installed vs main. Only a stuck automatic
+  // update FAILS (it opens an item for Dylan); a restart or an update not yet pulled is the person's to act on.
+  if (deps.toolkit) {
+    let t = null;
+    try { t = deps.toolkit(); } catch { t = null; }
+    if (!t) add('Toolkit', 'info', 'version not checked');
+    else if (t.state === 'current') add('Toolkit', 'ok', `${t.running} (current)`);
+    else if (t.state === 'restart-needed') add('Toolkit', 'info', `running ${t.running}, ${t.installed} installed: quit Claude Code completely and reopen it`);
+    else if (t.state === 'stale') add('Toolkit', 'fail', `${t.installed} installed, ${t.main} on main: the automatic update is not pulling it`, 'with the person\'s OK, run: claude plugin marketplace update sbrm-claude-toolkit   then: claude plugin update sbrm-toolkit@sbrm-claude-toolkit   then quit Claude Code completely and reopen it');
+    else if (t.state === 'pending') add('Toolkit', 'info', `${t.installed} installed, ${t.main} on main: the automatic update should bring it at the next Claude Code start`);
+    else add('Toolkit', 'info', `running ${t.running}; the install record could not be read (a dev copy, or installed_plugins.json moved)`);
+  }
+
   const failed = checks.filter((c) => c.status === 'fail');
   const code = drift.length ? 'drift' : failed.length ? 'health_failed' : 'health_passed';
   return { checks, failed, code, person, reached };

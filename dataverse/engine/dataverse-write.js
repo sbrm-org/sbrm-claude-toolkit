@@ -28,6 +28,7 @@ const { validateJob } = require('./lib/contract');
 const { readConnection, resolveCli, launchError, DataverseError } = require('./lib/cli');
 const health = require('./lib/health');
 const review = require('./lib/review');
+const checkin = require('./lib/checkin');
 const log = require('./lib/log');
 const merge = require('./lib/merge');
 const { readAccess, resolveAccess, mergeAccessLists } = require('./lib/access');
@@ -131,6 +132,8 @@ function realAuthList() {
 const DEFAULT_DEPS = {
   readConnection, writeConnection, eventConnection: events.eventConnection,
   cli: realCli, io: realIo, guard: realGuard,
+  fetchMain: (url) => checkin.fetchMainSync(url), // the review's own look at main (1.11.9); tests leave it out
+  toolkitStatus: () => checkin.status(), // the health check's Toolkit line (1.11.9)
 };
 
 // The approval for one key (a plan id, or resolve-D-1003): the guard's ticket is USED UP as the command
@@ -686,6 +689,7 @@ function cmdDoctor(run, deps, args = []) {
   const checkEnvs = chosen ? Object.fromEntries(Object.entries(envs).filter(([k]) => chosen.includes(k) || used.includes(k) || (apps || []).includes(k))) : envs;
   const result = health.doctor({
     envs: checkEnvs, access, apps, cli: deps.cli, connect: conn, io: deps.io(), pin: toolkitConfig().cli_version || null, guard: deps.guard,
+    toolkit: deps.toolkitStatus || null,
     used,
     chosen: chosen ? chosen.filter((a) => envs[a]) : null,
     profiles: chosen ? (deps.authList || realAuthList)() : null,
@@ -850,7 +854,11 @@ function readEnvRows(dv, env, since) {
   const evFilter = encodeURIComponent(`createdon ge ${since} or sbrm_status eq 'open'`);
   const evs = (dv.get(`sbrm_dataverseevents?$select=sbrm_number,sbrm_name,sbrm_kind,sbrm_reasoncode,sbrm_signal,sbrm_status,sbrm_words,sbrm_planid,sbrm_versions,sbrm_machine,_createdby_value,createdon&$filter=${evFilter}`).value || [])
     .map((r) => ({ env, ...who(r._createdby_value), time: r.createdon, number: r.sbrm_number, kind: r.sbrm_kind, code: r.sbrm_reasoncode, signal: !!r.sbrm_signal, status: r.sbrm_status, headline: r.sbrm_name, words: r.sbrm_words, planid: r.sbrm_planid, versions: r.sbrm_versions, machine: r.sbrm_machine }));
-  return { logs, events: evs };
+  // Version check-ins (1.11.9, DESIGN.md §12d): the detail carries the versions; time is the server's.
+  const ckFilter = encodeURIComponent(`sbrm_kind eq 'version check-in' and createdon ge ${since}`);
+  const checkins = (dv.get(`sbrm_dataverseevents?$select=sbrm_detail,sbrm_machine,_createdby_value,createdon&$filter=${ckFilter}`).value || [])
+    .map((r) => ({ env, ...who(r._createdby_value), time: r.createdon, machine: r.sbrm_machine, ...review.parseCheckin(r.sbrm_detail) }));
+  return { logs, events: evs, checkins };
 }
 
 function cmdReview(run, deps, args) {
@@ -864,6 +872,7 @@ function cmdReview(run, deps, args) {
   const logs = [];
   const lists = [];
   const evs = [];
+  const checkins = [];
   const notes = [];
   for (const [env, info] of Object.entries(envs)) {
     try {
@@ -873,13 +882,19 @@ function cmdReview(run, deps, args) {
       try { lists.push(resolveAccess(access, dv, env)); } catch (e) { notes.push(`Could not read the ${info.name} Write Access list: ${e.message.slice(0, 120)}`); }
       logs.push(...got.logs);
       evs.push(...got.events);
+      checkins.push(...(got.checkins || []));
     } catch (e) {
       notes.push(`Could not read the ${info.name}: ${e.message.slice(0, 160)}`);
     }
   }
   const people = {};
-  for (const r of [...logs, ...evs]) if (r.email) people[r.email] = r.name;
-  const s = review.summarize({ now, days, access: mergeAccessLists(lists), logs, events: evs, people, toolkit: blocks.toolkitVersion() });
+  for (const r of [...logs, ...evs, ...checkins]) if (r.email) people[r.email] = r.name;
+  // Main as the reviewer knows it: fetched now (5 s), else the review falls back to the newest version seen.
+  const ck = checkin.settings();
+  let main = null;
+  try { main = deps.fetchMain ? deps.fetchMain(ck.release_url) : null; } catch (e) { main = { error: e.message }; }
+  const s = review.summarize({ now, days, access: mergeAccessLists(lists), logs, events: evs, people, toolkit: blocks.toolkitVersion(),
+    checkins, main, machineDays: ck.checkin_machine_days, pendingDays: ck.checkin_pending_days });
   if (opt.brief) console.log(review.brief(s) + (notes.length ? ` (${notes.length} app(s) could not be read)` : ''));
   else {
     console.log('\n' + review.render(s, { generatedBy: run.person ? run.person.fullname : null }));

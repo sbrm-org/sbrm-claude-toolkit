@@ -193,12 +193,21 @@ already attached it). One report per block: a repeat says "already reported".
 **After the tools work again, run `doctor`** so what was waiting gets sent and the record of the
 failure reaches Dylan.
 
+**When an "SBRM toolkit:" note arrives with the person's prompt** (1.11.9): it is the toolkit's own version
+check, not something the person typed. Do what it says, once, in plain words, and move on. "Updated while this
+session was open" needs nothing run: they quit Claude Code completely and reopen it at a good stopping point.
+"The automatic update is not pulling it": offer to update; only on their yes, run the two `claude plugin`
+lines it gives, one at a time, then tell them to quit and reopen. If Claude Code will not let you run them,
+give them the two lines to type, each starting with `!` (the one exception to the rule below about asking
+them to run a command). Never update unasked. If the person asks "am I up to date?", run `doctor` and read
+its Toolkit line; don't guess from a folder name.
+
 ## The health check
 
 `doctor` checks this machine: the CLI, sign-in to each app, the person's access, whether their
 Dataverse role can actually customize an app where they hold develop or admin, the log tables,
-anything waiting to be sent, and that the toolkit's connections are the only Dataverse connections on
-the machine. Run it when the person asks whether their Dataverse setup works, after a tools failure is
+anything waiting to be sent, that the toolkit's connections are the only Dataverse connections on
+the machine, and whether this session runs the newest toolkit (the Toolkit line). Run it when the person asks whether their Dataverse setup works, after a tools failure is
 fixed, and at the end of setup, as `doctor --apps <the apps they use>` when you know them (an app that
 does not answer is a failure only where they use it). Read the result back in plain words. If it reports an extra Dataverse
 connection or hook, don't remove it yourself: tell the person, and suggest `/dataverse-setup`, which
@@ -209,7 +218,8 @@ cleans up with their OK.
 - Answer, click or approve Claude Code's prompt for the person, or write anything they did not ask for.
   Never chain an apply to another command or hide it inside one.
 - Hide a "Before you approve" warning: mention it, in a few words, before the apply.
-- Ask the person to run or paste a command.
+- Ask the person to run or paste a command (one exception: the toolkit update lines, when Claude Code will
+  not let you run them; see "When something goes wrong").
 - Write to Dataverse any other way (the read connections, the CLI's own write commands, the maker
   tools of a Dataverse connection, a script).
 - Edit anything in `~/.sbrm-dataverse/` (except job files in `jobs/`) or in this plugin's folder.

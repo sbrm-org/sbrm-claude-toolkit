@@ -1,6 +1,12 @@
 {
-  "_about": "Toolkit-wide settings for the Dataverse write path. cli_version: the Dataverse CLI version doctor expects (pinned 1.0.81 on 10/7/26: pin current, update as we see fit in the toolkit. On SBRM Windows machines each new version is a new file ThreatLocker must approve). warn_rows: there is NO cap on how much one approval may change (ruled 10/7/26); a change to more than this many rows, pairs or objects is flagged 'Large change' at plan and in the pop-up (DESIGN.md 10j). dev_dirs: folders where the engine itself is developed; the guard lets code there reference the engine's write side, which it refuses everywhere else. Ships EMPTY (no internal paths in the public repo). Since 1.10.0 a developer's folders live in ~/.sbrm-dataverse/config/dev_dirs.json on their own machine (guard-protected, survives toolkit updates); this list is still read for older setups.",
+  "_about": "Toolkit-wide settings for the Dataverse write path. cli_version: the Dataverse CLI version doctor expects (pinned 1.0.81 on 10/7/26: pin current, update as we see fit in the toolkit. On SBRM Windows machines each new version is a new file ThreatLocker must approve). warn_rows: there is NO cap on how much one approval may change (ruled 10/7/26); a change to more than this many rows, pairs or objects is flagged 'Large change' at plan and in the pop-up (DESIGN.md 10j). dev_dirs: folders where the engine itself is developed; the guard lets code there reference the engine's write side, which it refuses everywhere else. Ships EMPTY (no internal paths in the public repo). Since 1.10.0 a developer's folders live in ~/.sbrm-dataverse/config/dev_dirs.json on their own machine (guard-protected, survives toolkit updates); this list is still read for older setups. Version check-ins (1.11.9, DESIGN.md 12, knobs ruled 10/12/26): release_url is where main's plugin.json is read; checkin_grace_min is how long a session must run with the install behind main before the automatic update counts as stuck; checkin_interval_min is how often each machine re-checks; checkin_pending_days is how long a release may go uninstalled before the review warns; checkin_machine_days is how long a silent machine stays graded; reload_plugins_applies turns the nudge's wording from 'quit and reopen' to '/reload-plugins' once that is measured to load an update (DESIGN.md 12f).",
   "cli_version": "1.0.81",
   "warn_rows": 50,
-  "dev_dirs": []
+  "dev_dirs": [],
+  "release_url": "https://raw.githubusercontent.com/sbrm-org/sbrm-claude-toolkit/main/.claude-plugin/plugin.json",
+  "checkin_grace_min": 60,
+  "checkin_interval_min": 60,
+  "checkin_pending_days": 3,
+  "checkin_machine_days": 14,
+  "reload_plugins_applies": false
 }
