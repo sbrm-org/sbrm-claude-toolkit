@@ -137,8 +137,18 @@ function summarize({ now = new Date(), days = 7, access, logs, events, people = 
   const problems = logs.filter((l) => inWindow(l.time) && l.outcome === 'applied with problems');
   const routine = {};
   const blocks = {}; // guard blocks this period, by rule (1.11.6): the headline is "Blocked [<rule>]: <tool>"
+  // The next guard model's shadow (1.11.10, lib/shadow.js): disagreements, split by direction. The ones it would
+  // newly stop are ALSO open items (signal), so they are counted here whatever their status.
+  let shadow = null;
+  for (const e of events.filter((x) => inWindow(x.time) && x.code === 'guard_shadow')) {
+    shadow = shadow || { total: 0, unblocked: 0, newStops: 0 };
+    shadow.total += 1;
+    if (/^Shadow \[old (?:block|ask) \/ next allow\]/.test(e.headline || '')) shadow.unblocked += 1;
+    else if (/^Shadow \[old allow \/ next/.test(e.headline || '')) shadow.newStops += 1;
+  }
   for (const e of events.filter((x) => inWindow(x.time) && !x.signal && x.kind !== 'health check')) {
     if (e.code === 'checkin') continue; // graded in the Toolkit block, never counted
+    if (e.code === 'guard_shadow') continue; // its own line
     if (e.code === 'blocked') {
       const rule = (/^Blocked \[([^\]]+)\]/.exec(e.headline || '') || [])[1] || 'unknown';
       blocks[rule] = (blocks[rule] || 0) + 1;
@@ -147,7 +157,7 @@ function summarize({ now = new Date(), days = 7, access, logs, events, people = 
     routine[e.code || 'unclassified'] = (routine[e.code || 'unclassified'] || 0) + 1;
   }
   const tk = gradeToolkit({ now, people: ppl, checkins, events, toolkit, main, machineDays, pendingDays });
-  return { from, to: now, days, people: ppl, open, problems, routine, blocks, toolkit: tk };
+  return { from, to: now, days, people: ppl, open, problems, routine, blocks, shadow, toolkit: tk };
 }
 
 // Open events, oldest first, with each person's open health checks on one machine folded into ONE item:
@@ -227,6 +237,10 @@ function render(s, { generatedBy = null } = {}) {
   out.push('', r.length ? `Routine refusals: ${r.reduce((n, [, c]) => n + c, 0)}   (${r.map(([k, c]) => `${k} ${c}`).join(', ')})` : 'Routine refusals: none');
   const b = Object.entries(s.blocks || {}).sort((x, y) => y[1] - x[1]);
   out.push(b.length ? `Guard blocks: ${b.reduce((n, [, c]) => n + c, 0)}   (${b.map(([k, c]) => `${k} ${c}`).join(', ')}; any Claude judged wrong are under Open)` : 'Guard blocks: none');
+  if (s.shadow) {
+    const o = s.shadow;
+    out.push(`Guard shadow (next model): ${o.total} disagreement${o.total === 1 ? '' : 's'} (${o.unblocked} the redesign unblocks, ${o.newStops} it would newly stop${o.newStops ? ': each is an Open item to judge' : ''}${o.total - o.unblocked - o.newStops ? `, ${o.total - o.unblocked - o.newStops} other` : ''})`);
+  }
   const hc = s.people.filter((p) => p.health).map((p) => `${first(p.name)} ${md(p.health.time)} ${p.health.code === 'health_passed' ? 'pass' : p.health.code === 'drift' ? 'DRIFT' : 'FAIL'}`);
   out.push(`Health checks: ${hc.length ? hc.join(', ') : 'none on record'}`);
   if (s.toolkit) {

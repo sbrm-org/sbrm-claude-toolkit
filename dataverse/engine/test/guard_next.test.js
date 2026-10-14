@@ -1,0 +1,216 @@
+'use strict';
+// The guard's NEXT decision model (guard/guard_next.js, 1.11.10 in shadow; guard_review/DESIGN.md + GATE_2.md).
+//   1. parity: every case of guard.js's self-test and of guard_false_positives.test.js decides the same, except the
+//      flips the design names (each listed below with its group);
+//   2. must PASS: the false positives on record (FINDINGS §2a, D-1100, D-1106, D-1111, D-1113, the held 10/9
+//      cases) in their recorded shape with generic paths, and the ordinary-work shapes of DESIGN §6a;
+//   3. must BLOCK / ASK: the gate's corrections (C2 unknown write target, C3 start-up files, F13 loading set),
+//      the rulings (fork 3, fork 5) and what the parse newly sees (brace expansion, a removal of a folder above).
+// Trigger words are assembled at run time (J) so this file does not trip the guards it tests.
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+process.env.SBRM_DV_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-next-')); // nothing minted or recorded
+const G = require('../../guard/guard');
+const N = require('../../guard/guard_next');
+const FP = require('./guard_false_positives.test.js');
+
+const J = (...p) => p.join('');
+const H = os.homedir().replace(/\\/g, '/');
+const PLUG = `${H}/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.11.9`;
+const ENG = `${PLUG}/dataverse/engine/dataverse-write.js`;
+const DEV = 'C:/Users/x/dev/toolkit';
+const SCRATCH = 'C:/Users/x/AppData/Local/Temp/claude/s/scratchpad';
+const AP = J('ap', 'ply');
+const PR = J('Permission', 'Request');
+const ID = '20261013-120000-abcdef12';
+const opts = { dirs: [DEV.toLowerCase()], popup: () => false };
+const next = (input) => N.decideNext(input, opts);
+const sh = (command, tool = 'Bash', extra = {}) => ({ tool_name: tool, tool_input: { command }, permission_mode: 'default', ...extra });
+const ps = (command, extra = {}) => sh(command, 'PowerShell', extra);
+const write = (file_path, content, extra = {}) => ({ tool_name: 'Write', tool_input: { file_path, content }, ...extra });
+
+// ---------- 1. parity ----------
+
+// DESIGN.md §4, with the gate's corrections: the deliberate differences, each with its group.
+const FLIPS = new Map([
+  ['a look-alike engine outside the plugin', 'Group C: a mutating word as a bare argument of an unknown program; the look-alike still fails as an approval'],
+  ['grep for the words is refused too (they only run as an approval)', 'Group A: the words in a non-running position'],
+  ['a grep for the assignment still blocks in a shell (the rule stays broad there)', 'Group A: a grep is not an assignment'],
+  ['find from another drive letter', 'fork 3 extended to find (build 10/13): a name filter that cannot match the key lists names only'],
+]);
+
+test('parity with guard.js: every self-test case decides the same, except the named flips', () => {
+  const { cases, answerer, approvalCases, dirs } = G.selftestCases();
+  const o = { dirs, popup: () => false };
+  const diffs = [];
+  for (const [label, input] of [...cases, ...answerer]) {
+    const a = N.decideOld(input, o).kind;
+    const b = N.decideNext(input, o).kind;
+    if (a !== b && !FLIPS.has(label)) diffs.push(`${label}: old ${a}, next ${b}`);
+  }
+  const k = (v) => (!v ? 'none' : v.block ? 'block' : 'ask');
+  for (const [label, input] of approvalCases) {
+    const a = k(G.approvalVerdict(input));
+    const b = k(N.approvalVerdict(input));
+    if (a !== b && !FLIPS.has(label)) diffs.push(`approval ${label}: old ${a}, next ${b}`);
+  }
+  assert.deepEqual(diffs, []);
+});
+
+test('the named flips really flip (a flip that stops flipping is a changed design)', () => {
+  const { cases, approvalCases, dirs } = G.selftestCases();
+  const o = { dirs, popup: () => false };
+  const lookalike = cases.find(([l]) => l === 'a look-alike engine outside the plugin');
+  assert.equal(N.decideNext(lookalike[1], o).kind, 'allow');
+  const grep = approvalCases.find(([l]) => l.startsWith('grep for the words'));
+  assert.equal(N.approvalVerdict(grep[1]), null);
+});
+
+for (const [label, input] of FP.PASS) {
+  test(`parity, passes: ${label}`, () => assert.equal(next(input).kind, 'allow', next(input).why));
+}
+for (const [label, input, message] of FP.BLOCK) {
+  test(`parity, ${FLIPS.has(label) ? 'FLIP to allow' : 'blocks'}: ${label}`, () => {
+    const r = next(input);
+    if (FLIPS.has(label)) { assert.equal(r.kind, 'allow', r.why); return; }
+    assert.equal(r.kind, 'block');
+    assert.match(r.why, message);
+  });
+}
+
+// ---------- 2. must PASS ----------
+
+const PASS = [
+  // FINDINGS §2a, the 13 blocks of 10/12-10/13 (generic paths)
+  ['#1 find with escaped parentheses in a dev folder', sh('find "/c/Users/x/dev/toolkit" -type f \\( -name "*.js" -o -name "*.json" \\) | grep -v node_modules | sort')],
+  ['#2 grep for the store variable, then sed -n', sh('cd "/c/Users/x/dev/toolkit/dataverse/engine" && grep -n "function configDir\\|SBRM_DV_CONFIG" lib/*.js ; sed -n 1,124p lib/store.js')],
+  ['#3 grep -c for the store variable', sh('grep -c "SBRM_DV_CONFIG" CLAUDE.md')],
+  ['#4 a for/if loop that greps the events log', sh("for i in $(seq 1 60); do if grep -q 'D-1007' ~/.sbrm-dataverse/events/events.jsonl 2>/dev/null; then grep 'D-1007' ~/.sbrm-dataverse/events/events.jsonl | tail -1; exit 0; fi; sleep 5; done")],
+  ['#5 Get-ChildItem of home filtered to document extensions (fork 3)', ps(`Get-ChildItem "${H}" -Recurse -File -Include *.pdf,*.docx,*.xlsx -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-7) } | Sort-Object LastWriteTime -Descending | Select-Object -First 20 FullName`)],
+  ['#6 cat and git remote -v in the plugin folders', sh(`cat ~/.claude/remote-settings.json; git -C ${H}/.claude/plugins/cache/sbrm-claude-private remote -v; git -C ${H}/.claude/plugins/marketplaces/sbrm-claude-toolkit remote -v; ls ${H}/.claude/plugins/cache`)],
+  ['#7 a python heredoc editing .md files, a commit, a Compress-Archive with $src', sh("python - <<'EOF'\np='C:/Users/x/proj/CLAUDE.md'\nt=open(p).read()\nopen(p,'w').write(t.replace('a','b'))\nEOF\ngit commit -m \"notes\" && powershell -NoProfile -Command \"$src='C:\\Users\\x\\proj'; $out='C:\\Users\\x\\tmp\\p.zip'; Compress-Archive -Path \\\"$src\\CLAUDE.md\\\",\\\"$src\\STATUS.md\\\" -DestinationPath $out\"", 'Bash', { cwd: 'C:/Users/x/Documents/Claude' })],
+  ['#8 a python heredoc writing a scratch-folder settings file with a logging hook', sh(`python - <<'EOF'\nimport json,os\nd='${SCRATCH}/tabspike/.claude'\nos.makedirs(d, exist_ok=True)\njson.dump({"hooks":{"${PR}":[{"hooks":[{"type":"command","command":"python log.py"}]}]}}, open(d+'/settings.local.json','w'))\nEOF`, 'Bash', { cwd: 'C:/Users/x/Documents/Claude' })],
+  ['#10 a variable bound to the scratchpad as a redirect target, a plugin script run', sh(`S="${PLUG}/skills/web-research/scripts"; OUT="${SCRATCH}/web"; bash "$S/tavily.sh" extract "https://example.org" > "$OUT/t1947.txt" 2>&1; wc -c "$OUT/t1947.txt"; head -c 1500 "$OUT/t1947.txt"`)],
+  ['#11 a heredoc of prose naming settings.json and the prompt hook, into a .md', sh(`cd "/c/Users/x/Documents/Claude/Terminal Setup/review" && cat >> SPIKES.md <<'EOF'\n## spike\nA hook in settings.json under ${PR} answers prompts.\nEOF`)],
+  ['#12 the newest version folder in a variable, then the review', sh(`P=$(ls -d "${H}/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/"*/ | sort -V | tail -1); echo "$P"; cd "/c/Users/x/Documents/Claude" && node "\${P}dataverse/engine/dataverse-write.js" review 2>&1 | tail -80`)],
+  ['#13 listing and reading job files (Daian)', sh('cd ~/.sbrm-dataverse/jobs && for f in a.json b.json; do echo "== $f"; cat "$f" | head -60; done; ls ~/.sbrm-dataverse/jobs | grep -i -E "738|deact|move|contact"', 'Bash', { cwd: '/Users/x' })],
+  // D-1100, D-1106, D-1111, D-1113 and the 10/13 NMTC search
+  ['D-1100 a .md that quotes the engine\'s function names', write('C:/Users/x/Documents/Claude/Review/FINDINGS.md', J('The write ', 'Connection in lib/write.js and apply', 'Plan are what the content rule matched.'))],
+  ['D-1106 a grep for the write module', sh(J('grep -rn "write', 'Connection" "/c/Users/x/dev/toolkit/dataverse/engine/lib"'))],
+  ['D-1111 a listing of pending events into a temp file', sh('ls ~/.sbrm-dataverse/events/pending > /tmp/pend_before.txt; node --test test/x.test.js')],
+  ['D-1113 a node one-liner reading the events log by path pieces', sh("node -e \"const fs=require('fs'),os=require('os'),p=require('path'); const L=fs.readFileSync(p.join(os.homedir(),'.sbrm-dataverse','events','events.jsonl'),'utf8'); console.log(L.length)\"")],
+  ['10/13 a find of home by a dated name (fork 3 extended)', sh(`ls "${H}/" | grep -i "rescue"; find "${H}" -maxdepth 6 -iname "*2019-02-07*" 2>/dev/null | head`)],
+  // FINDINGS §2b, the held 10/9 cases
+  ['10/9 a store listing counted beside an unrelated cp', sh('ls ~/.sbrm-dataverse/events/pending | wc -l; cp a.txt b.txt', 'Bash', { cwd: SCRATCH })],
+  ['10/9 a store listing counted into a temp file', sh('ls ~/.sbrm-dataverse/events/pending | wc -l > /tmp/count.txt')],
+  ['10/9 GIK (b): a python heredoc reading the log, writing a scratch file', sh(`cd "${SCRATCH}" && python - <<'EOF'\nimport re, json\ntxt=open(r"C:\\Users\\x\\.sbrm-dataverse\\log\\a@example.org.md",encoding="utf-8").read()\nE=[1]\njson.dump(E,open("audit_log.json","w",encoding="utf-8"),indent=1)\nEOF`)],
+  ['10/9 GIK (d): a heredoc test script in a dev folder, then node runs it', sh(`cd "/c/Users/x/dev/toolkit/replays" && cat > bisect.js <<'EOF'\nconst S = '~/.sbrm-dataverse/jobs';\nEOF\nnode bisect.js`)],
+  ['10/9 (b): rm and clone in a scratch folder, then diff against the plugin', sh(`rm -rf tk && git clone https://github.com/example/toolkit tk && diff -rq tk/dataverse ${PLUG}/dataverse`, 'Bash', { cwd: SCRATCH })],
+  ['10/9 (c): find -exec sed -i in a scratch clone', sh("find dataverse skills/dataverse -type f \\( -name \"*.js\" -o -name \"*.md\" \\) -exec sed -i 's/\\r$//' {} +", 'Bash', { cwd: SCRATCH })],
+  ['10/9 a .py whose string holds a resolve line (a task body)', write('C:/Users/x/tmp/task.py', J('from todoist_api import TodoistClient\nTodoistClient().add("Close D-1003", description="run: node ', ENG, ' reso', 'lve D-1003 fixed done")\n'))],
+  // DESIGN §6a ordinary work
+  ['a while-read loop reading plans', sh('ls ~/.sbrm-dataverse/plans | while read f; do cat ~/.sbrm-dataverse/plans/$f | head -3; done')],
+  ['jq and json.tool over a plan', sh('jq . ~/.sbrm-dataverse/plans/x.json; python -m json.tool ~/.sbrm-dataverse/plans/x.json')],
+  ['git log in the toolkit marketplace folder', sh(`cd ${H}/.claude/plugins/marketplaces/sbrm-claude-toolkit && git log -p -3`)],
+  ['diff of two process substitutions naming the store', sh('diff <(cat ~/.sbrm-dataverse/log/a.md) <(cat ~/.sbrm-dataverse/log/b.md)')],
+  ['PowerShell foreach over Get-Content of the events log', ps('foreach ($l in Get-Content "$HOME\\.sbrm-dataverse\\events\\events.jsonl") { $l.Length }')],
+  ['Get-ChildItem -Recurse of Documents', ps('Get-ChildItem $HOME\\Documents -Recurse | Measure-Object')],
+  ['a commit message spelling every trigger', sh(J('git commit -m "guard: set', 'x, Set-Item env:, SetEnvironment', 'Variable, ', PR, ', dataverse-write.js ', AP, ', SBRM_DV_HOME=x"'))],
+  ['a Todoist comment through a python script holding the apply line', sh(J('python todoist_api.py comment 123 "next: node ', ENG, ' ', AP, ' ', ID, '"'))],
+  ['a heredoc .md holding env calls and the apply line', sh(J("cat > notes.md <<'EOF'\nset", 'x PATH x\n[Environment]::SetEnvironment', "Variable('HOME','x')\nnode ", ENG, ' ', AP, ' 1\nEOF'))],
+  ['a tar of a project folder into scratch', sh('tar -czf /tmp/scratch.tgz "/c/Users/x/Documents/Claude/proj"')],
+  ['copying a plugin file OUT to scratch', sh(`cp ${PLUG}/dataverse/guard/guard.js /tmp/guard_copy.js`)],
+  ['a find of the store root that lists names only', sh('find ~/.sbrm-dataverse -name "*.json" | head')],
+  ['adding an alias to a shell start-up file', sh("echo \"alias ll='ls -la'\" >> ~/.zshrc")],
+  ['updating the toolkit (the nudge\'s two lines)', sh('claude plugin marketplace update sbrm-claude-toolkit && claude plugin update sbrm-toolkit@sbrm-claude-toolkit')],
+  ['a .md describing a shell-string CLI write', write('C:/temp/notes.md', J('subprocess.run("dataverse data up', 'date contact 1", shell=True)'))],
+  ['a plugin hooks.json gaining a PostToolUse hook only', write(`${H}/.claude/plugins/marketplaces/other/plugins/x/hooks/hooks.json`, '{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"x"}]}]}}')],
+  ['a skill file without hooks in its frontmatter', write(`${H}/.claude/skills/x/SKILL.md`, '---\nname: x\ndescription: y\n---\nBody text.\n')],
+];
+for (const [label, input] of PASS) {
+  test(`passes: ${label}`, () => {
+    const r = next(input);
+    assert.equal(r.kind, 'allow', r.why);
+  });
+}
+
+// ---------- 3. must BLOCK / ASK ----------
+
+const BLOCK = [
+  // C2 (GATE_2): an unknown write target on a line that names the store or the plugin
+  ['C2 a redirect to a variable bound on the line to the plugin', sh(`OUT="${PLUG}/dataverse/x.json"; cat y > "$OUT"`), /plugin's files/],
+  ['C2 a removal through an unknown variable on a line naming the store', sh('rm "$X/plans/a.json"; ls ~/.sbrm-dataverse'), /engine's own store/],
+  // C3: shell start-up files run in every later shell
+  ['C3 the engine store variable exported into .bashrc', sh(J("echo 'export SBRM_DV_", "HOME=/tmp/x' >> ~/.bashrc")), /start-up file/],
+  ['C3 a PATH change in .zshrc', sh("echo 'export PATH=\"/tmp/shim:$PATH\"' >> ~/.zshrc"), /start-up file/],
+  ['C3 a copy over .bashrc (its content cannot be read)', sh('cp /tmp/x ~/.bashrc'), /start-up file/],
+  ['C3 a Write of .zshrc that preloads node code', write(`${H}/.zshrc`, J('export NODE_OPT', 'IONS="--require /tmp/x.js"\n')), /start-up file/],
+  ['C3 the PowerShell profile setting the home folder', write(`${H}/Documents/PowerShell/Microsoft.PowerShell_profile.ps1`, J('$env:USER', 'PROFILE = "C:\\tmp"\n')), /start-up file/],
+  // F13: the loading set
+  ['F13 a plugin hooks.json gaining a prompt hook', write(`${H}/.claude/plugins/marketplaces/other/plugins/x/hooks/hooks.json`, `{"hooks":{"${PR}":[{"hooks":[{"type":"command","command":"x"}]}]}}`), /prompt-answerer/],
+  ['F13 a skill whose frontmatter adds a prompt hook', write(`${H}/.claude/skills/x/SKILL.md`, `---\nname: x\nhooks:\n  ${PR}:\n    - hooks:\n        - type: command\n          command: x\n---\nBody.\n`), /prompt-answerer/],
+  ['F13 a shell write into the project\'s local settings', sh("echo '{}' > .claude/settings.local.json", 'Bash', { cwd: 'C:/Users/x/proj' }), /loading-settings/],
+  ['F13 a run of Claude Code with hooks switched off in --settings', sh(J("claude -p hi --settings '{\"disableAll", "Hooks\": true}'")), /switching hooks off/],
+  // what the parse newly sees
+  ['a backslash inside a word (bash drops it: the path is the plans folder)', sh(J('r', 'm ~/.sbrm-dataverse/pl\\ans/x.json')), /engine's own store/],
+  ['a removal inside a for loop', sh(J('for f in a b; do r', 'm ~/.sbrm-dataverse/plans/x.json; done')), /engine's own store/],
+  ['a removal inside if/then', sh(J('if true; then r', 'm ~/.sbrm-dataverse/log/x.md; fi')), /engine's own store/],
+  ['brace expansion into the store',sh(J('r', 'm ~/.sbrm-dataverse/{plans,log}/x.json')), /engine's own store/],
+  ['a wildcard folder in the store (the key rule sees it first)', sh(J('r', 'm ~/.sbrm-dataverse/*/x.json')), /engine's own store|walking through the store's folders/],
+  ['moving the whole store away', sh(J('m', 'v ~/.sbrm-dataverse ~/old-store')), /engine's own store/],
+  ['removing the home folder (the store goes with it)', sh(J('r', 'm -rf ~')), /engine's own store/],
+  ['moving a plan OUT of the store', sh(J('m', 'v ~/.sbrm-dataverse/plans/x.json /tmp/')), /engine's own store/],
+  ['a plans listing fed to a removal', sh(J('ls ~/.sbrm-dataverse/plans | xargs r', 'm')), /engine's own store/],
+  ['eval of a removal in the store', sh(J('eval "r', 'm -rf ~/.sbrm-dataverse/plans"')), /engine's own store/],
+  ['a heredoc into bash removing plans', sh(J("bash <<'EOF'\nr", 'm -rf ~/.sbrm-dataverse/plans\nEOF')), /engine's own store/],
+  ['cmd /c del in the store', sh(J('cmd /c d', 'el %USERPROFILE%\\.sbrm-dataverse\\plans\\x.json')), /engine's own store/],
+  ['PowerShell Remove-Item in the store', ps(J('Remove-', 'Item -Recurse $HOME\\.sbrm-dataverse\\plans')), /engine's own store/],
+  ['PowerShell listing of plans piped to Remove-Item', ps(J('Get-ChildItem $HOME\\.sbrm-dataverse\\plans | Remove-', 'Item')), /engine's own store/],
+  ['sudo with a moved home', sh(J('sudo ', 'HO', 'ME=/tmp/x ./run.sh')), /moving the engine's store/],
+  ['a .py handing a CLI write to a shell (F5, closed part)', write('C:/temp/go.py', J('import subprocess\nsubprocess.run("dataverse data up', 'date contact 1", shell=True)\n')), /CLI's write side/],
+  ['an unreadable line naming the key falls back to the old rules', sh(J('cat ~/.sbrm-dataverse/config/plan.', 'key "unterminated')), /plan signing key/],
+];
+for (const [label, input, message] of BLOCK) {
+  test(`blocks: ${label}`, () => {
+    const r = next(input);
+    assert.equal(r.kind, 'block', `expected a block, got ${r.kind}`);
+    assert.match(r.why, message);
+  });
+}
+
+test('fork 5 (ruled 10/13): plugin install and marketplace add ASK; disable still blocks', () => {
+  assert.equal(next(sh('claude plugin install foo@bar')).kind, 'ask');
+  assert.equal(next(sh('claude plugin marketplace add example/plugins')).kind, 'ask');
+  assert.equal(next(sh(J('claude plugin dis', 'able sbrm-toolkit@sbrm-claude-toolkit'))).kind, 'block');
+});
+
+test('approvals: the exact form still asks; the words in a running position are refused; as data they pass', () => {
+  const own = (G._internals.ownEngine() || '').replace(/\\/g, '/');
+  const A = (command) => ({ tool_name: 'Bash', tool_input: { command }, permission_mode: 'default' });
+  assert.ok(N.approvalVerdict(A(`node "${own}" ${AP} ${ID}`)).ask);
+  assert.ok(N.approvalVerdict(A(`bash -c "node '${own}' ${AP} ${ID}"`)).block);
+  assert.ok(N.approvalVerdict(A(`R=$(node "${own}" ${AP} ${ID})`)).block);
+  assert.ok(N.approvalVerdict(A(`node -e "require('child_process').execSync('node ${own} ${AP} ${ID}')"`)).block);
+  assert.equal(N.approvalVerdict(A(`echo "node ${own} ${AP} ${ID}"`)), null);
+  assert.equal(N.approvalVerdict(A(`git commit -m "node ${own} ${AP}"`)), null);
+});
+
+// Settings files: the iTerm2 case (10/9) and the loading set. A settings file Claude Code loads (here: the project
+// folder's, with that folder as the session's) is diffed as before; the same file in a folder nothing loads from
+// is not a hook (blocks #8, #9).
+test('settings: a project settings file is diffed; one in a scratch folder nothing loads is not', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrm-next-settings-'));
+  const file = path.join(dir, '.claude', 'settings.local.json').replace(/\\/g, '/');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const hook = JSON.stringify({ hooks: { [PR]: [{ hooks: [{ type: 'command', command: 'x' }] }] } });
+  assert.match(next(write(file, hook, { cwd: dir })).why || '', /prompt-answerer/);
+  assert.equal(next(write(file, hook, { cwd: 'C:/Users/x/elsewhere' })).kind, 'allow');
+  // and a Claude Code run started in that folder asks the person
+  fs.writeFileSync(file, hook);
+  assert.equal(next(sh('claude -p hi', 'Bash', { cwd: dir })).kind, 'ask');
+  fs.rmSync(dir, { recursive: true, force: true });
+});

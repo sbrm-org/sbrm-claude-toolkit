@@ -84,20 +84,24 @@ function line(b) {
   return `  ${b.time}  ${b.block_id}  ${b.tool}  [${b.rule}]  ${cut(String(b.call).replace(/\s+/g, ' '), 160)}`;
 }
 
-// The third block by this rule today, and Claude has not reported one: open an item. Exactly the third, so
-// one item per rule per machine per day however many follow.
+// The third block by this rule in 24 hours, and no session's Claude has reported one: open an item. Exactly the
+// third, so one item per rule per machine per day however many follow. 1.11.10 (F12, guard_review/FINDINGS.md):
+// the window was the calendar day, so repeats either side of midnight never added up.
 function repeatCheck(b, now) {
-  const today = note.history({ tailBytes: TAIL }).filter((x) => note.sameDay(x.time, now));
-  const same = today.filter((x) => x.kind === 'blocked' && x.block && x.block.rule === b.rule);
+  const recent = note.history({ tailBytes: TAIL }).filter((x) => {
+    const t = Date.parse(x.time);
+    return now.getTime() - t < note.DAY;
+  });
+  const same = recent.filter((x) => x.kind === 'blocked' && x.block && x.block.rule === b.rule);
   if (same.length !== REPEAT) return null;
-  if (today.some((x) => (x.reason_code === 'false_block' && x.block_rule === b.rule) || (x.reason_code === 'repeat_block' && x.rule === b.rule))) return null;
+  if (recent.some((x) => (x.reason_code === 'false_block' && x.block_rule === b.rule) || (x.reason_code === 'repeat_block' && x.rule === b.rule))) return null;
   const envsSeen = [...new Set(same.map((x) => x.env))];
   return note.note({
     id: note.newId('R', now), time: now, kind: 'repeated block', code: 'repeat_block', signal: true,
     env: envsSeen.length === 1 ? envsSeen[0] : 'machine', by: 'guard',
-    headline: `Blocked ${REPEAT} times today by one rule [${b.rule}], and Claude has not reported it`,
+    headline: `Blocked ${REPEAT} times in 24 hours by one rule [${b.rule}], and Claude has not reported it`,
     detail: [
-      `The guard blocked ${REPEAT} calls by the same rule on this machine today, and the person's Claude did not report any of them.`,
+      `The guard blocked ${REPEAT} calls by the same rule on this machine in 24 hours, and the person's Claude did not report any of them.`,
       'Either the calls were real attempts the guard was right to stop, or a false positive nobody flagged.', '',
       ...same.map((x) => describe(x.block)).join('\n\n').split('\n'),
     ].join('\n'),
@@ -148,6 +152,6 @@ function reported(id, all = note.history()) {
 }
 
 module.exports = {
-  record, find, recent, reported, describe, line, callText, ruleOf, envOf, ID, REPEAT,
+  record, find, recent, reported, describe, line, callText, ruleOf, envOf, readEnvs, ID, REPEAT,
   toolkitVersion: note.toolkitVersion,
 };

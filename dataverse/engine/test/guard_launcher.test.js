@@ -86,3 +86,10 @@ test('hooks.json runs the launcher through bash, never bare node', () => {
   const cmd = h.hooks.PreToolUse[0].hooks[0].command;
   assert.match(cmd, /^bash "\$\{CLAUDE_PLUGIN_ROOT\}\/dataverse\/guard\/run\.sh"$/);
 });
+
+// GATE_2 C4 (verified 10/13 in the hooks docs: "Requires Claude Code v2.1.295 or later"): a guard that cannot
+// start, crashes or times out BLOCKS the call. Without it Claude Code lets the call through (documented).
+test('the guard hook fails closed when it cannot run (onFailure: block)', () => {
+  const h = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', '..', 'hooks', 'hooks.json'), 'utf8'));
+  assert.equal(h.hooks.PreToolUse[0].hooks[0].onFailure, 'block');
+});

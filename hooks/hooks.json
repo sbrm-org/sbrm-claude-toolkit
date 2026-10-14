@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/dataverse/guard/run.sh\""
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/dataverse/guard/run.sh\"",
+            "onFailure": "block"
           }
         ]
       }

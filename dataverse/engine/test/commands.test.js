@@ -229,6 +229,79 @@ test('resolve: bad arguments are a usage refusal', () => {
   assert.equal(go(['resolve', 'D-1003', 'duplicate of D-1001', 'same as the first'], deps(fakeDv())).run.events[0].reason_code, 'not_found');
 });
 
+// ---- batch resolve (1.11.10; Dylan 10/14: "can we group some of these?") ----
+
+test('batch resolve: several numbers, ONE approval showing every number, each reads back resolved', () => {
+  const dv = fakeDv();
+  const rows = [openReport(dv), openReport(dv), openReport(dv)];
+  const nums = rows.map((r) => r.sbrm_number);
+  const shown = [];
+  const { code, out } = go(['resolve', ...nums, 'fixed', 'signed in, health check passed', '--fixed-in', '1.11.10'],
+    deps(dv, { confirm: (x) => { shown.push(x); return { approved: true }; } }));
+  assert.equal(code, 0);
+  assert.equal(shown.length, 1, 'one approval for the whole set');
+  assert.match(shown[0].summaryText, /^Resolve 3 items in the Donor App/);
+  for (const n of nums) assert.match(shown[0].summaryText, new RegExp(`\\n {2}${n} {2}Report: "please look"`));
+  for (const r of rows) {
+    assert.deepEqual([r.sbrm_status, r.sbrm_resolution, r.sbrm_resolutionnote, r.sbrm_fixedinversion],
+      ['resolved', 'fixed', 'signed in, health check passed', '1.11.10']);
+  }
+  assert.match(out, new RegExp(`Resolved 3 of 3: ${nums.join(', ')}`));
+});
+
+test('batch resolve: cancel leaves every item open', () => {
+  const dv = fakeDv();
+  const rows = [openReport(dv), openReport(dv)];
+  assert.equal(go(['resolve', ...rows.map((r) => r.sbrm_number), 'fixed', 'x'], deps(dv, { confirm: () => ({ approved: false }) })).code, 1);
+  assert.deepEqual(rows.map((r) => r.sbrm_status), ['open', 'open']);
+});
+
+test('batch resolve: with no approval injected every number needs its ticket; one missing refuses all', () => {
+  const ticket = require('../lib/ticket');
+  const dv = fakeDv();
+  const rows = [openReport(dv), openReport(dv)];
+  const nums = rows.map((r) => r.sbrm_number);
+  const bare = deps(dv, { confirm: undefined });
+  ticket.mint(`resolve-${nums[0]}`);
+  const first = go(['resolve', ...nums, 'fixed', 'x'], bare);
+  assert.equal(first.code, 1);
+  assert.equal(first.run.events[0].reason_code, 'no_approval');
+  assert.deepEqual(rows.map((r) => r.sbrm_status), ['open', 'open'], 'nothing written');
+  for (const n of nums) ticket.mint(`resolve-${n}`);
+  assert.equal(go(['resolve', ...nums, 'fixed', 'x'], bare).code, 0);
+  assert.deepEqual(rows.map((r) => r.sbrm_status), ['resolved', 'resolved']);
+});
+
+test('batch resolve: a number that does not exist refuses the whole set before anything is written', () => {
+  const dv = fakeDv();
+  const row = openReport(dv);
+  const { code, run } = go(['resolve', row.sbrm_number, 'D-9999', 'fixed', 'x'], deps(dv));
+  assert.equal(code, 1);
+  assert.equal(run.events[0].reason_code, 'not_found');
+  assert.equal(row.sbrm_status, 'open');
+});
+
+test('batch resolve: an item already closed is skipped and named; the rest close', () => {
+  const dv = fakeDv();
+  const rows = [openReport(dv), openReport(dv)];
+  go(['resolve', rows[0].sbrm_number, 'not a bug', 'closed earlier'], deps(dv));
+  const { code, out } = go(['resolve', ...rows.map((r) => r.sbrm_number), 'fixed', 'x'], deps(dv));
+  assert.equal(code, 0);
+  assert.equal(rows[0].sbrm_resolution, 'not a bug', 'the earlier close is not overwritten');
+  assert.equal(rows[1].sbrm_status, 'resolved');
+  assert.match(out, new RegExp(`Skipped ${rows[0].sbrm_number}: already closed`));
+  assert.match(out, new RegExp(`Resolved 1 of 2: ${rows[1].sbrm_number}`));
+});
+
+test('batch resolve: two apps, a repeated number or more than 20 is a usage refusal', () => {
+  const many = Array.from({ length: 21 }, (_, i) => `D-${1100 + i}`);
+  for (const argv of [['resolve', 'D-1082', 'R-1001', 'fixed', 'n'], ['resolve', 'D-1082', 'D-1082', 'fixed', 'n'], ['resolve', ...many, 'fixed', 'n']]) {
+    const r = go(argv, deps(fakeDv()));
+    assert.equal(r.code, 2, argv.slice(0, 3).join(' '));
+    assert.equal(r.run.events[0].reason_code, 'usage');
+  }
+});
+
 test("resolve: a health check closes the same person's earlier open checks on that machine, and nothing else", () => {
   const dv = fakeDv();
   const mk = (machine, minutesAgo, over = {}) => {

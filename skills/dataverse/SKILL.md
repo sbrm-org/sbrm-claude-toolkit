@@ -195,7 +195,8 @@ failure reaches Dylan.
 
 **When an "SBRM toolkit:" note arrives with the person's prompt** (1.11.9): it is the toolkit's own version
 check, not something the person typed. Do what it says, once, in plain words, and move on. "Updated while this
-session was open" needs nothing run: they quit Claude Code completely and reopen it at a good stopping point.
+session was open" needs nothing from you: at a good stopping point they type `/reload-plugins` (or quit Claude
+Code completely and reopen it).
 "The automatic update is not pulling it": offer to update; only on their yes, run the two `claude plugin`
 lines it gives, one at a time, then tell them to quit and reopen. If Claude Code will not let you run them,
 give them the two lines to type, each starting with `!` (the one exception to the rule below about asking

@@ -122,6 +122,11 @@ older hand-built connection and guard were removed (<date>)." Change nothing els
 Then **quit Claude Code completely and reopen it** (hooks and connections load at start) and run
 `doctor` again.
 
+If the connections failed earlier in this setup (for example at the start of this session, before the person
+signed in), Claude Code remembers that failure for 15 minutes, across a restart, and shows "Skipping
+connection (recent failure cached...)" instead of trying again (Kayleen's Mac, 10/13). Then have the person
+type `/mcp`, pick each `dataverse` connection they use and choose Reconnect, rather than restarting again.
+
 Known starting points on 10/6/26, so you recognise them:
 - a `dataverse-donorapp` connection at local scope plus `~/.claude/hooks/dataverse-readonly-guard.sh`;
 - `~/.claude/hooks/donorapp-readonly-guard.js` with no connection at all;

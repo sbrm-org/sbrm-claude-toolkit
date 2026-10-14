@@ -99,6 +99,44 @@ test('an approval answered after the ticket ran out is refused as routine approv
   assert.equal(e.signal, false);
 });
 
+// 1.11.10 (guard_review/DESIGN.md §2a): the engine hands the approval it took into the write connection it opens,
+// and lib/write.js checks it on every write. Here the connection is wrapped so each write asks: is the approval I
+// was handed one ticket.verify() accepts, right now?
+function gatedDeps(dv, seen) {
+  const WRITES = ['create', 'update', 'remove', 'merge', 'metadata', 'publish'];
+  return {
+    ...deps(dv),
+    writeConnection: (host, cli, o) => new Proxy(dv, {
+      get(t, k) {
+        if (WRITES.includes(k)) return (...a) => { seen.push(!!(o && typeof o.approval === 'function' && ticket.verify(o.approval()))); return t[k](...a); };
+        return typeof t[k] === 'function' ? t[k].bind(t) : t[k];
+      },
+    }),
+  };
+}
+
+test('the write connection holds the approval the apply took, verified at every write (1.11.10)', async () => {
+  const dv = fakeDv({ email: 'dgross@example.org' });
+  const id = await planId(dv);
+  ticket.mint(id);
+  const seen = [];
+  assert.equal(await quiet(() => cli.runCli(['apply', id], gatedDeps(dv, seen))), 0);
+  assert.ok(seen.length >= 1, 'it wrote');
+  assert.ok(seen.every(Boolean), 'every write carried a verified approval');
+});
+
+test('a batch: each plan\'s writes carry that plan\'s verified approval (1.11.10)', async () => {
+  const dv = fakeDv({ email: 'dgross@example.org' });
+  const a = await planId(dv);
+  const b = await planId(dv, IDS.bob, 'Bob Sample');
+  ticket.mint(a);
+  ticket.mint(b);
+  const seen = [];
+  assert.equal(await quiet(() => cli.runBatch(['apply', a, b], gatedDeps(dv, seen))), 0);
+  assert.ok(seen.length >= 2);
+  assert.ok(seen.every(Boolean));
+});
+
 test('a batch takes every ticket as it starts, so a slow early plan cannot make a later one expire', async () => {
   const dv = fakeDv({ email: 'dgross@example.org' });
   const a = await planId(dv);
@@ -111,4 +149,11 @@ test('a batch takes every ticket as it starts, so a slow early plan cannot make 
   assert.equal(ticket.check(a).ok || ticket.check(b).ok, false, 'both used');
   assert.equal(firstTake, a);
   assert.equal(writes(dv).length, 2);
+});
+
+test('the prompt for a batch resolve names every item it closes (1.11.10)', () => {
+  const { approvalText } = require('../../guard/guard');
+  assert.equal(approvalText({ verb: 'resolve', keys: ['resolve-D-1003'] }), 'Close D-1003');
+  assert.equal(approvalText({ verb: 'resolve', keys: ['resolve-D-1082', 'resolve-D-1083', 'resolve-D-1084'] }),
+    'Close 3 items: D-1082, D-1083, D-1084');
 });
