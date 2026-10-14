@@ -818,8 +818,14 @@ function approvalCommand(command, engine = ownEngine()) {
     return { verb, keys: ids };
   }
   // --fixed-in <version> may sit anywhere, as the engine allows (blind review 10/8).
-  const num = /^([DHRSF]-\d{4,})\s/i.exec(rest.replace(/--fixed-in\s+\S+\s*/i, '') + ' ');
-  return num ? { verb, keys: [`resolve-${num[1].toUpperCase()}`] } : null;
+  // Several numbers may lead (batch resolve, 1.11.10): one prompt, a ticket each. Like a batch apply: at most
+  // 20, none twice, and all from one app (each app keeps its own event table, so one run reaches one app).
+  const words = rest.replace(/--fixed-in\s+\S+\s*/i, '').trim().split(/\s+/);
+  const nums = [];
+  while (nums.length < words.length && /^[DHRSF]-\d{4,}$/i.test(words[nums.length])) nums.push(words[nums.length].toUpperCase());
+  if (!nums.length || nums.length === words.length || nums.length > 20 || new Set(nums).size !== nums.length) return null;
+  if (new Set(nums.map((x) => x[0])).size !== 1) return null;
+  return { verb, keys: nums.map((x) => `resolve-${x}`) };
 }
 
 // null (not an approval), { block } or { ask: { verb, keys } }.
@@ -830,7 +836,7 @@ function approvalVerdict(input, { engine } = {}) {
   const ap = approvalCommand(command, engine === undefined ? ownEngine() : engine);
   if (!ap) {
     if (APPLY_ANYWHERE.test(command)) {
-      return { block: 'an apply or resolve that is not exactly the approval form, so Claude Code cannot ask the person about it. The form: its own command, nothing before or after it, `node "<this plugin>/dataverse/engine/dataverse-write.js" apply <plan-id> [<plan-id> ...]` (at most 20 plans, none twice) or `... resolve <number> <resolution> "<note>"`, with no $ ` * ? [ ] { } ! % ^ ; & | < > characters anywhere (reword a note that has them)' };
+      return { block: 'an apply or resolve that is not exactly the approval form, so Claude Code cannot ask the person about it. The form: its own command, nothing before or after it, `node "<this plugin>/dataverse/engine/dataverse-write.js" apply <plan-id> [<plan-id> ...]` (at most 20 plans, none twice) or `... resolve <number> [<number> ...] <resolution> "<note>"` (at most 20 numbers, none twice, all from one app), with no $ ` * ? [ ] { } ! % ^ ; & | < > characters anywhere (reword a note that has them)' };
     }
     return null;
   }
@@ -871,12 +877,17 @@ function describePlan(id) {
   }
 }
 
+// What the prompt says it approves: every plan's headline, or every item a resolve closes.
+function approvalText({ verb, keys }) {
+  if (verb !== 'resolve') return keys.map(describePlan).join(' | ');
+  const nums = keys.map((k) => k.slice('resolve-'.length));
+  return nums.length === 1 ? `Close ${nums[0]}` : `Close ${nums.length} items: ${nums.join(', ')}`;
+}
+
 function askPerson({ verb, keys }) {
   const T = require('../engine/lib/ticket');
   for (const k of keys) T.mint(k);
-  const what = verb === 'resolve'
-    ? `Close ${keys[0].slice('resolve-'.length)}`
-    : keys.map(describePlan).join(' | ');
+  const what = approvalText({ verb, keys });
   const shown = what.length > 900 ? `${what.slice(0, 900)}...` : what.replace(/\.+$/, '');
   const reason = `SBRM Dataverse: ${shown}. Yes writes it; No stops it.`;
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } }));
@@ -1052,6 +1063,22 @@ function recordBlock(input, what) {
   try { return require('../engine/lib/blocks').record(input, what); } catch { return null; }
 }
 
+// The next decision model in SHADOW (1.11.10; guard_review/DESIGN.md §6d, ruled 10/13: shadow first, cut-over in
+// 1.11.11 after a clean week). It judges the same call; a different answer is recorded (engine/lib/shadow.js) and
+// nothing else happens. Never throws, never decides: a crash in the next model is recorded as a disagreement.
+function shadow(input, decided, { next = null } = {}) {
+  if (!input || process.env.SBRM_GUARD_PROBE === '1') return;
+  let got;
+  try {
+    got = (next || require('./guard_next')).decideNext(input, { popup: popupOpen });
+  } catch (e) {
+    got = { kind: 'crash', why: String((e && e.stack) || e).slice(0, 600) };
+  }
+  try {
+    if (got.kind !== decided.kind) require('../engine/lib/shadow').record(input, decided, got);
+  } catch { /* recording is best effort; the decision stands either way */ }
+}
+
 function blockMessage(what, rec) {
   let msg = `BLOCKED by the SBRM toolkit Dataverse guard: ${what}. `
     + 'A change to Dataverse goes through the shared write path: Claude plans it, runs `apply` on its own '
@@ -1076,7 +1103,9 @@ function block(what, input = null) {
 
 // ---------- self-test (trigger strings assembled at runtime) ----------
 
-function selftest() {
+// The cases, apart from running them, so the next decision model (guard_next.js, 1.11.10) is tested on the same
+// set with its deliberate differences named (guard_review/DESIGN.md §4).
+function selftestCases() {
   const J = (...p) => p.join('');
   const ENG = '"C:/Users/x/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.9.0/dataverse/engine/dataverse-write.js"';
   const B = (command, tool = 'Bash') => ({ tool_name: tool, tool_input: { command } });
@@ -1311,14 +1340,6 @@ function selftest() {
   const screen = { tool_name: 'mcp__computer-use__left_click', tool_input: { x: 1, y: 2 } };
   const popupCases = [['screen tool while an approval is waiting', true, true], ['screen tool with none waiting is fine', false, false]];
   const dirs = [norm(DEV)];
-  let fails = 0;
-  const report = (label, v, expectBlocked) => {
-    const ok = (v !== null) === expectBlocked;
-    if (!ok) fails += 1;
-    console.log(`${ok ? 'PASS' : 'FAIL'}  ${expectBlocked ? 'block' : 'allow'}  ${label}${!ok ? `   (got: ${v || 'allowed'})` : ''}`);
-  };
-  for (const [label, input, expectBlocked] of cases) report(label, verdict(input, dirs, { popup: () => false }), expectBlocked);
-  for (const [label, open, expectBlocked] of popupCases) report(label, verdict(screen, dirs, { popup: () => open }), expectBlocked);
 
   // The approval (1.11.0): which lines Claude Code is told to ASK about (and mint tickets for), which are
   // refused, and which are not approvals at all. approvalVerdict decides only; nothing is minted here.
@@ -1359,21 +1380,41 @@ function selftest() {
     ['a resolve with --fixed-in before the number asks', A(`node ${OWN} ${J('reso', 'lve')} --fixed-in 1.11.0 D-1003 fixed "done"`), 'ask', ['resolve-D-1003']],
     ['a resolve asks, keyed by its number', A(`node ${OWN} ${J('reso', 'lve')} D-1003 fixed "gift skill asks now"`), 'ask', ['resolve-D-1003']],
     ['a resolve note carrying a command separator is refused', A(`node ${OWN} ${J('reso', 'lve')} D-1003 fixed "x; echo y"`), 'block'],
+    // Batch resolve (1.11.10, Dylan 10/14 "can we group some of these?"): one prompt, a ticket per number.
+    ['a batch resolve asks once, a ticket per number', A(`node ${OWN} ${J('reso', 'lve')} D-1082 D-1083 D-1084 fixed "signed in"`), 'ask', ['resolve-D-1082', 'resolve-D-1083', 'resolve-D-1084']],
+    ['a batch resolve with --fixed-in after the note asks', A(`node ${OWN} ${J('reso', 'lve')} D-1082 D-1083 fixed "done" --fixed-in 1.11.11`), 'ask', ['resolve-D-1082', 'resolve-D-1083']],
+    ['a batch resolve with a two-word resolution asks', A(`node ${OWN} ${J('reso', 'lve')} D-1082 D-1083 "not a bug" "the gate was right"`), 'ask', ['resolve-D-1082', 'resolve-D-1083']],
+    ['a batch resolve naming one item twice is refused', A(`node ${OWN} ${J('reso', 'lve')} D-1082 D-1082 fixed "x"`), 'block'],
+    ['a batch resolve across two apps is refused (one event table per app)', A(`node ${OWN} ${J('reso', 'lve')} D-1082 R-1001 fixed "x"`), 'block'],
+    ['a batch resolve of more than 20 items is refused', A(`node ${OWN} ${J('reso', 'lve')} ${Array.from({ length: 21 }, (_, i) => `D-${1100 + i}`).join(' ')} fixed "x"`), 'block'],
     ['grep for the words is refused too (they only run as an approval)', A(J('grep -n "dataverse-write.js ', 'ap', 'ply" JOBS.md')), 'block'],
     ['an unrelated command is not an approval', A('git status'), 'none'],
   ];
-  for (const [label, input, want, keys] of approvalCases) {
-    const v = approvalVerdict(input);
-    const ok = kind(v) === want && (!keys || JSON.stringify(v.ask.keys) === JSON.stringify(keys));
-    if (!ok) fails += 1;
-    console.log(`${ok ? 'PASS' : 'FAIL'}  ${want.padEnd(5)}  ${label}${!ok ? `   (got: ${kind(v)}${v && v.block ? `: ${v.block}` : ''}${v && v.ask ? ` ${JSON.stringify(v.ask.keys)}` : ''})` : ''}`);
-  }
   // A hook that answers prompts by itself would approve with nobody looking: only the person adds one.
   const answerer = [
     ['Write a PermissionRequest hook into settings', { tool_name: 'Write', tool_input: { file_path: `${H}/.claude/settings.json`, content: J('{"hooks":{"Permission', 'Request":[{"hooks":[{"type":"command","command":"x"}]}]}}') } }, true],
     ['echo a PermissionRequest hook into settings', B(J("echo '{\"hooks\":{\"Permission", "Request\":[]}}' > ", H, '/.claude/settings.local.json')), true],
     ['a settings edit without one is fine', { tool_name: 'Edit', tool_input: { file_path: `${H}/.claude/settings.json`, old_string: '"a": 1', new_string: '"a": 2' } }, false],
   ];
+  return { cases, screen, popupCases, dirs, approvalCases, answerer, kind };
+}
+
+function selftest() {
+  const { cases, screen, popupCases, dirs, approvalCases, answerer, kind } = selftestCases();
+  let fails = 0;
+  const report = (label, v, expectBlocked) => {
+    const ok = (v !== null) === expectBlocked;
+    if (!ok) fails += 1;
+    console.log(`${ok ? 'PASS' : 'FAIL'}  ${expectBlocked ? 'block' : 'allow'}  ${label}${!ok ? `   (got: ${v || 'allowed'})` : ''}`);
+  };
+  for (const [label, input, expectBlocked] of cases) report(label, verdict(input, dirs, { popup: () => false }), expectBlocked);
+  for (const [label, open, expectBlocked] of popupCases) report(label, verdict(screen, dirs, { popup: () => open }), expectBlocked);
+  for (const [label, input, want, keys] of approvalCases) {
+    const v = approvalVerdict(input);
+    const ok = kind(v) === want && (!keys || JSON.stringify(v.ask.keys) === JSON.stringify(keys));
+    if (!ok) fails += 1;
+    console.log(`${ok ? 'PASS' : 'FAIL'}  ${want.padEnd(5)}  ${label}${!ok ? `   (got: ${kind(v)}${v && v.block ? `: ${v.block}` : ''}${v && v.ask ? ` ${JSON.stringify(v.ask.keys)}` : ''})` : ''}`);
+  }
   for (const [label, input, expectBlocked] of answerer) report(label, verdict(input, dirs, { popup: () => false }), expectBlocked);
   const total = cases.length + popupCases.length + approvalCases.length + answerer.length;
   console.log(fails ? `\n${fails} of ${total} checks FAILED.` : `\nAll ${total} checks passed.`);
@@ -1389,16 +1430,31 @@ if (require.main === module) {
     process.stdin.on('end', () => {
       let input;
       try { input = JSON.parse(raw); } catch { block('an unreadable tool call (the guard could not parse it, so it failed closed)'); }
+      // This guard decides; the next model only watches (1.11.10, shadow()).
       const ap = approvalVerdict(input);
+      const what = ap ? null : verdict(input);
+      const decided = ap && ap.block ? { kind: 'block', why: ap.block } : ap && ap.ask ? { kind: 'ask', why: 'approval' } : what ? { kind: 'block', why: what } : { kind: 'allow', why: null };
+      shadow(input, decided);
       if (ap && ap.block) block(ap.block, input);
       if (ap && ap.ask) {
         try { askPerson(ap.ask); } catch (e) { block(`an apply the guard could not prepare an approval for (${e.message})`, input); }
       }
-      const what = verdict(input);
       if (what) block(what, input);
       process.exit(0);
     });
   }
 }
 
-module.exports = { verdict, shellVerdict, writeVerdict, cliVerdict, approvalVerdict, approvalCommand, blockMessage };
+module.exports = {
+  verdict, shellVerdict, writeVerdict, cliVerdict, approvalVerdict, approvalCommand, approvalText, blockMessage, selftestCases, shadow,
+  // The layers the next decision model (guard_next.js, 1.11.10) keeps unchanged, and the helpers it shares.
+  _internals: {
+    READ_TOOLS, mcpParts, DV_SERVER, DV_WRITE_TOOLS, SHELL_MCP, CODE_MCP, XRM_WRITE, SCREEN_TOOL, targetsDataverse, cliVerdict, judgeCli,
+    ENGINE_INTERNALS, CLI_LIST, LIST_WRITE, OTHER_DV_WRITERS, MUTATING_HTTP, DV_HOST, shellInjection, injectMatch, isExecFile, EXEC_FILE,
+    HIDDEN_CODE, PLUGIN_OFF_SHELL, PLUGIN_OFF_SETTINGS, HOME, HOME_N, norm, real, STORE, PROTECTED_STORE, inProtectedStore, pluginRoot, inPlugin,
+    SETTINGS_FILE, HOOKS_OFF, PROMPT_ANSWERER, ENV_DENY, ENV_SAFE, STORE_MOVE, HOME_VARS, homeMoved, storeMoveCode, DV_RELATED, runsClaude,
+    KEY_NAMED, keyPathVerdict, SWEEP_ALWAYS, SWEEP_FLAGGED, PATTERN_FIRST, PS_RECURSE, FIND_WRITES, STORE_IN_TEXT, STORE_ANY, PLUGIN_IN_TEXT,
+    devDirs, inDevDir, HARMLESS_REDIRECT, isEngineRun, APPLY_ANYWHERE, ASK_MODES, ownEngine, CODE_FILE, contentOf, answererHooks, readSettings,
+    addsAnswerer, settingsHasAnswerer, popupOpen, recordBlock, askPerson, block, sweepsHome,
+  },
+};

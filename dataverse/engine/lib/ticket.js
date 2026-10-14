@@ -111,9 +111,27 @@ function take(key, opts = {}) {
     return c;
   }
   const claimed = `${c.file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.used`;
-  try { fs.renameSync(c.file, claimed); } catch { return { ok: false, why: 'already used' }; }
-  fs.rmSync(claimed, { force: true });
-  return { ok: true };
+  let t;
+  try {
+    fs.renameSync(c.file, claimed);
+    t = JSON.parse(fs.readFileSync(claimed, 'utf8'));
+  } catch { return { ok: false, why: 'already used' }; } finally { fs.rmSync(claimed, { force: true }); }
+  // The approval the write connection checks on every write it sends (1.11.10, guard_review/DESIGN.md §2a):
+  // the used ticket's own signed fields, so only a ticket the guard minted (or the plan key) can produce one.
+  return { ok: true, approval: Object.freeze({ key: t.key, created: t.created, nonce: t.nonce, sig: t.sig }) };
+}
+
+// Is this an approval take() handed back on this machine? Signature only: freshness was checked when the ticket
+// was taken, and a long apply (a merge, a schema run) must not run out part-way.
+function verify(approval, { env } = {}) {
+  try {
+    const a = approval || {};
+    if (!KEY.test(String(a.key)) || typeof a.sig !== 'string' || typeof a.created !== 'string' || typeof a.nonce !== 'string') return false;
+    const want = sign(a.key, a.created, a.nonce, env);
+    return a.sig.length === want.length && crypto.timingSafeEqual(Buffer.from(a.sig), Buffer.from(want));
+  } catch {
+    return false;
+  }
 }
 
 // An approval is waiting on this machine (a fresh ticket exists): the guard keeps screen-driving tools off
@@ -135,4 +153,4 @@ function refusalText(why) {
   return `this change was not approved in Claude Code's permission prompt (${why}). Run it as its own command so Claude Code asks, and approve it there.`;
 }
 
-module.exports = { mint, check, take, sweep, pending, refusalText, TTL_MS, KEY };
+module.exports = { mint, check, take, verify, sweep, pending, refusalText, TTL_MS, KEY };

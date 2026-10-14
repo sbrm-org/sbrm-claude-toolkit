@@ -8,5 +8,5 @@
   "checkin_interval_min": 60,
   "checkin_pending_days": 3,
   "checkin_machine_days": 14,
-  "reload_plugins_applies": false
+  "reload_plugins_applies": true
 }

@@ -227,7 +227,7 @@ test('1. the THIRD block by one rule in a day opens one item; a fourth adds noth
   const items = ofCode('repeat_block').filter((x) => x.rule === 'alpha');
   assert.equal(items.length, 1);
   assert.deepEqual([items[0].kind, items[0].signal, items[0].env], ['repeated block', true, 'machine']);
-  assert.match(items[0].headline, /^Blocked 3 times today by one rule \[alpha\], and Claude has not reported it$/);
+  assert.match(items[0].headline, /^Blocked 3 times in 24 hours by one rule \[alpha\], and Claude has not reported it$/);
   for (const c of ['ls a', 'ls b', 'ls c']) assert.ok(items[0].detail.includes(`The call, as the guard saw it:\n${c}`));
   blocks.record(bash('ls d'), what('alpha'), { envs: {}, now: at });
   assert.equal(ofCode('repeat_block').filter((x) => x.rule === 'alpha').length, 1, 'one item per rule per day');
@@ -237,6 +237,24 @@ test('1. the THIRD block by one rule in a day opens one item; a fourth adds noth
   blocks.record(bash('ls f'), what('beta'), { envs: {}, now: at });
   blocks.record(bash('ls g'), what('beta'), { envs: {}, now: at });
   assert.equal(ofCode('repeat_block').filter((x) => x.rule === 'beta').length, 0);
+});
+
+// F12 (guard_review/FINDINGS.md, 1.11.10): the window was the calendar day, so repeats either side of midnight
+// never added up. It is the last 24 hours now.
+test('1b. the repeat window is the last 24 hours, not the calendar day', () => {
+  const what = (r) => `a test rule [rule: ${r}; matched: "x"]`;
+  const t = (s) => new Date(s);
+  blocks.record(bash('ls a'), what('gamma'), { envs: {}, now: t('2026-10-11T23:20:00') });
+  blocks.record(bash('ls b'), what('gamma'), { envs: {}, now: t('2026-10-11T23:40:00') });
+  blocks.record(bash('ls c'), what('gamma'), { envs: {}, now: t('2026-10-12T00:30:00') });
+  const items = ofCode('repeat_block').filter((x) => x.rule === 'gamma');
+  assert.equal(items.length, 1, 'three in 70 minutes across midnight is a pattern');
+  assert.match(items[0].headline, /^Blocked 3 times in 24 hours by one rule \[gamma\]/);
+  // more than a day apart is not
+  blocks.record(bash('ls d'), what('delta'), { envs: {}, now: t('2026-10-01T09:00:00') });
+  blocks.record(bash('ls e'), what('delta'), { envs: {}, now: t('2026-10-01T10:00:00') });
+  blocks.record(bash('ls f'), what('delta'), { envs: {}, now: t('2026-10-02T11:00:00') });
+  assert.equal(ofCode('repeat_block').filter((x) => x.rule === 'delta').length, 0);
 });
 
 test('2. review: the 1.11.6 "behind" sighting line is superseded by check-in grading (1.11.9, DESIGN.md §12d); with no check-ins and GitHub unreachable, main is the newest version any event names', () => {
@@ -288,6 +306,18 @@ test('4. a read connection that cannot start is recorded once per app per day, f
   assert.deepEqual(got.map((x) => [x.reason_code, x.app, x.signal, x.env]), [['mcp_failed', 'donorapp', true, 'machine'], ['mcp_failed', 'hgs', true, 'machine']]);
   assert.match(got[0].headline, /^The Donor App read connection could not start: SBRM_DATAVERSE_CLI points at a missing file/);
   assert.equal(fs.readdirSync(path.join(store, 'events', 'pending')).length, 2);
+});
+
+test('4b. launchers starting TOGETHER still record one item per app per day (Kayleen 10/13: one start, 15 items)', async () => {
+  const { spawn } = require('child_process');
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-mcprace-'));
+  const LAUNCH = path.join(__dirname, '..', '..', 'mcp', 'launch.js');
+  const env = { ...process.env, SBRM_DV_HOME: store, SBRM_DATAVERSE_CLI: path.join(os.tmpdir(), 'no-such-dataverse.exe') };
+  const once = (app) => new Promise((resolve) => { const c = spawn(process.execPath, [LAUNCH, app], { env, stdio: 'ignore' }); c.on('exit', resolve); });
+  const codes = await Promise.all(['donorapp', 'donorapp', 'donorapp', 'hgs', 'hgs', 'hgs'].map(once));
+  assert.ok(codes.every((c) => c === 1));
+  const got = fs.readFileSync(path.join(store, 'events', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  assert.deepEqual(got.map((x) => x.app).sort(), ['donorapp', 'hgs']);
 });
 
 test('5. an approval Claude Code asked for that never ran is counted once (routine); one given too late is not counted again', () => {

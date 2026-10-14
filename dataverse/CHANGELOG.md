@@ -3,6 +3,49 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.10 (unreleased; ships with the engine ticket check and the new guard in shadow, guard_review/)**
+  **The engine checks the approval itself.** `lib/write.js`'s write connection refuses every write that does not
+  carry the approval `ticket.take()` hands back for a ticket the guard minted (signed with this machine's plan key);
+  the engine passes it in. Before this only the CLI's apply took a ticket, so a script that loaded the write module
+  with its own "confirm" could write. The one write that needs none is a NEW Write Log row (doctor sends on a parked
+  one). Tests: `engine/test/write_approval.test.js`, `approval.test.js` (every write of an apply and of a batch
+  carries a verified approval).
+  **The next guard model runs in shadow.** `guard/shellparse.js` reads a shell line (bash/zsh/Git Bash, PowerShell,
+  `cmd /c`) into simple commands; `guard/guard_next.js` judges each by its command word, its arguments resolved as
+  paths and its redirects, instead of by which words the line holds (every false positive on record came from
+  that). guard.js still decides every call, unchanged; it also asks the next model and records any disagreement
+  (`engine/lib/shadow.js`: `events/guard_shadow.jsonl`, plus an event per disagreement; the next model newly
+  stopping a call opens an item for the review, at most 5 a day per machine). The review gains a "Guard shadow"
+  line. Cut-over is 1.11.11, after a clean shadow week. Replayed: all 22 blocks recorded on Dylan's machine and the
+  10/9 GIK cases would pass; every self-test case decides the same but 4 named flips. Tests:
+  `engine/test/guard_next.test.js`, `shadow.test.js`; 26 of 26 mutants killed (`guard_review/mutate_next.js`).
+  **The guard hook fails closed** when it cannot start, crashes or times out (`"onFailure": "block"`, Claude Code
+  2.1.295+). **A repeated block** is counted over the last 24 hours, not the calendar day.
+  **Read connections** no longer crash
+  the Dataverse CLI. On Kayleen's Mac (10/13, CLI 1.0.81 osx-arm64, the newest) the CLI's `mcp` server died
+  (SIGABRT, .NET AccessViolationException) whenever two requests were in flight, and Claude Code sends
+  tools/list, prompts/list and resources/list together at every connect, so every connection showed "tools
+  fetch failed". The launcher now runs the CLI behind `mcp/proxy.js`: prompts/list, resources/list,
+  resources/templates/list and ping are answered there (the toolkit uses no prompts or resources; on Windows
+  the CLI only answered them with an error), initialize's answer drops those two capabilities, every other
+  request goes to the CLI one at a time (parallel reads run one after another), a cancelled request is
+  dropped from the queue or, in flight, given 10 s, and the CLI's non-JSON "warn:" stdout lines go to stderr.
+  `/dataverse-setup` now says to use `/mcp` Reconnect after a first sign-in (Claude Code caches a failed
+  connection for 15 minutes, across restarts). A failed start is recorded once per app per day even when the
+  five launchers start together (an exclusive claim file; one start on Kayleen's Mac had filed 15). Tests:
+  `engine/test/blocks.test.js` 4b, and `engine/test/mcp_proxy.test.js` (a stand-in CLI that
+  dies on overlap, with a control proving it does), and the launcher test's stand-in now answers `auth list`
+  (it could never pass on a Mac before). Live on Windows: the connect burst plus two parallel read_query calls
+  against the Donor App, all answered. Verified on Kayleen's Mac 10/14 (CLI 1.0.81, Claude Code 2.1.300): the
+  burst and two concurrent reads all answered, up 60 s, exit 0, no crash.
+  **Batch resolve.** `resolve <number> [<number> ...] <resolution> "<note>"` closes up to 20 items from one app on
+  ONE Claude Code prompt ("Close 3 items: D-1082, D-1083, D-1084"); the guard mints a ticket per number and the
+  engine takes them all as it starts, as a batch apply does. Every number is looked up first (one that does not
+  exist refuses the set, nothing written); an item already closed is skipped and named; each is re-read open just
+  before its write. One number behaves exactly as before. Why: on 10/14 sixteen stale items took sixteen prompts,
+  and five run side by side lost three to "approval expired". Tests: `engine/test/commands.test.js` (batch
+  resolve x6), `approval.test.js` (the prompt text), guard self-test (6 cases: asks with every key; refuses a
+  repeat, two apps, more than 20).
 - **1.11.9** (2026-10-12) Version check-ins: the review knows who is behind, and a quietly failed automatic
   update is caught (DESIGN.md §12). On 10/12 nobody had 1.11.8 three days after it shipped and nothing said so:
   Claude Code updates a plugin in the background once per session start, fails quietly, and the running session

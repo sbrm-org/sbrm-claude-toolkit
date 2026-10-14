@@ -93,12 +93,13 @@ test('check-in: the launcher schedules it only AFTER the connection is spawned',
   assert.ok(spawnAt > 0 && schedAt > spawnAt, 'scheduled after the MCP child exists');
 });
 
-test('it hands the session to the CLI as `mcp <host>`, stdio straight through', (t) => {
-  // A stand-in "CLI": echoes its arguments and one line of stdin, as an MCP server would answer.
+test('it hands the session to the CLI as `mcp <host>`, through the proxy', (t) => {
+  // A stand-in "CLI": answers `auth list` with one profile row (before 1.11.10 it did not, so on a Mac this test
+  // failed at the sign-in check), and as `mcp` echoes its arguments and its stdin once stdin closes.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-mcp-'));
   const fake = path.join(dir, process.platform === 'win32' ? 'fake.cmd' : 'fake.sh');
   const script = path.join(dir, 'fake.js');
-  fs.writeFileSync(script, "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{process.stdout.write(JSON.stringify({args:process.argv.slice(2),stdin:s}));});");
+  fs.writeFileSync(script, "if(process.argv[2]==='auth'){console.log('[1]  UNIVERSAL  x@example.org  Public User SBRM HGS  https://sbrmhgs.crm.dynamics.com/');process.exit(0);}let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{process.stdout.write(JSON.stringify({args:process.argv.slice(2),stdin:s}));});");
   if (process.platform === 'win32') fs.writeFileSync(fake, `@"${process.execPath}" "${script}" %*\r\n`);
   else { fs.writeFileSync(fake, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`); fs.chmodSync(fake, 0o755); }
   const r = spawnSync(process.execPath, [LAUNCH, 'hgs'], { input: '{"jsonrpc":"2.0","id":1,"method":"initialize"}', encoding: 'utf8', shell: false, env: { ...process.env, SBRM_DV_HOME: SCRATCH, SBRM_DATAVERSE_CLI: fake } });

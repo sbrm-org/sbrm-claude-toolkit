@@ -5,7 +5,7 @@
 //
 // It finds the Dataverse CLI on THIS machine (PATH, npm prefix, nvm; never a hard-coded path, the
 // failure an nvm-versioned path showed on a staff machine, F13) and hands the MCP session to the CLI's own
-// `mcp <url>` server, stdio straight through. What a person can read is decided by their Dataverse
+// `mcp <url>` server through mcp/proxy.js (one request at a time; 1.11.10, before that stdio straight through). What a person can read is decided by their Dataverse
 // security role; the guard keeps every MCP tool to the known reads.
 //
 // It fails FAST, with the reason, instead of hanging:
@@ -38,6 +38,13 @@ function recordFailure(envKey, name, msg) {
     const now = new Date();
     const app = envKey || 'unknown';
     if (note.history({ tailBytes: 512 * 1024 }).some((x) => x.reason_code === 'mcp_failed' && x.app === app && note.sameDay(x.time, now))) return;
+    // Next release: the history check alone races, since Claude Code starts all five connections at once (and
+    // retries them) and each read the history before any wrote it (Kayleen 10/13: one start, 15 items). An
+    // exclusive claim file per app per local day settles it; claims from earlier days are cleared.
+    const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const claims = require('../engine/lib/store').dir(path.join('events', 'mcp_failed_claims'));
+    try { fs.closeSync(fs.openSync(path.join(claims, `${app}-${day}`), 'wx')); } catch { return; }
+    for (const n of fs.readdirSync(claims)) if (!n.endsWith(`-${day}`)) fs.rmSync(path.join(claims, n), { force: true });
     note.note({
       id: note.newId('M', now), time: now, kind: 'read connection failed', code: 'mcp_failed', signal: true, by: 'launcher',
       headline: `The ${name || app} read connection could not start: ${msg}`,
@@ -151,11 +158,21 @@ function main(envKey) {
     fail(`nobody is signed in to Dataverse on this machine. The person signs in once: dataverse auth create --environment ${info.host}   then restart Claude Code. (/dataverse-setup walks it.)`, envKey, info.name);
   }
 
-  const child = spawn(cli.binary, ['mcp', info.host], { stdio: 'inherit', windowsHide: true });
+  // 1.11.10: no longer stdio straight through. mcp/proxy.js sits between Claude Code and the CLI, answers the
+  // prompts/resources lists itself and sends the CLI one request at a time (the CLI crashes on overlapping
+  // requests, Kayleen's Mac 10/13). stderr still goes straight through.
+  const child = spawn(cli.binary, ['mcp', info.host], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true });
   child.on('error', (e) => fail(launchError(cli.binary, e).message, envKey, info.name));
-  child.on('exit', (code, signal) => {
+  require('./proxy').bridge({
+    clientIn: process.stdin,
+    clientOut: process.stdout,
+    child,
+    log: (s) => process.stderr.write(`SBRM toolkit Dataverse connection: ${s}\n`),
+  });
+  // 'close', not 'exit': the CLI's last answers are read and passed on before the launcher goes.
+  child.on('close', (code, signal) => {
     if (signal) process.kill(process.pid, signal);
-    else process.exit(code === null ? 1 : code);
+    else process.stdout.write('', () => process.exit(code === null ? 1 : code));
   });
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => child.kill(sig));
   scheduleCheckin({ app: envKey, host: info.host });

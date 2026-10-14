@@ -18,6 +18,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { request, resolveCli, getMany, FORMATTED } = require('./cli');
 const store = require('./store');
+const ticket = require('./ticket');
 
 // Metadata paths the engine may write. The first group are definition sets (any method, DELETE included);
 // the second are unbound actions (POST only).
@@ -67,8 +68,24 @@ function publishXml({ entities = [], optionsets = [], sitemaps = [], appmodules 
   return `<importexportxml>${body}</importexportxml>`;
 }
 
-function writeConnection(host, cli = resolveCli()) {
+// The approval, checked HERE on every write this connection sends (1.11.10, guard_review/DESIGN.md §2a, ruled
+// 10/13): the object ticket.take() hands back for a ticket the guard minted when Claude Code asked the person.
+// Before this only the CLI's apply took a ticket, so a script that loaded this module could write with its own
+// "approval". `approval` is the object, or a function that returns it when the write is sent (resolve opens its
+// connection before it takes its ticket). The one write that needs none: a NEW Write Log row, which is how the
+// health check sends on a row parked by an earlier apply (lib/log.js flushPending). It does not stop a script that
+// runs the CLI itself (the design's stated residual).
+const LOG_ROW = 'sbrm_dataversewritelogs';
+function approved(approval) {
+  const a = typeof approval === 'function' ? approval() : approval;
+  return ticket.verify(a);
+}
+
+function writeConnection(host, cli = resolveCli(), { approval = null } = {}) {
   const send = (method, apiPath, body, headers) => {
+    if (!(method === 'POST' && apiPath === LOG_ROW) && !approved(approval)) {
+      throw new Error(`refusing to ${method} ${String(apiPath).slice(0, 60)} without an approval from Claude Code's permission prompt (no ticket for this change)`);
+    }
     if (body === undefined) return request(cli, host, apiPath, { method, headers });
     const tmp = path.join(store.dir('tmp'), `body-${process.pid}-${crypto.randomBytes(4).toString('hex')}.json`);
     fs.writeFileSync(tmp, JSON.stringify(body), 'utf8');

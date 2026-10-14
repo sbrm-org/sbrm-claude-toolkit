@@ -12,7 +12,7 @@
 //   doctor              the health check for this machine (DESIGN.md §7 D4, D4a)
 //   report "<words>" [--plan <id>] [--env <env>]   the person says something is wrong (§7 D3)
 //   review [--days N] [--brief]                    Dylan's view of the whole toolkit (§7 D5)
-//   resolve <number> <resolution> "<note>" [--fixed-in <version>]   Dylan closes an open item (§7 D7)
+//   resolve <number> [<number> ...] <resolution> "<note>" [--fixed-in <version>]   Dylan closes open items (§7 D7; several at once on one prompt since 1.11.10)
 //
 // The job file is a REQUEST; nothing in it is trusted. Everything shown for approval is
 // computed here from the job plus live reads.
@@ -141,10 +141,13 @@ const DEFAULT_DEPS = {
 // earlier plans of a batch, outlive the ticket, and logged that as the person's "cancel"). The ticket's
 // clock therefore covers only the time the person took to answer. A batch takes all its tickets at once
 // (runBatch) and hands them in as `deps.approved`. No good ticket: refused before anything is read.
-function approvalFor(deps, key) {
+// Since 1.11.10 the approval take() hands back is also kept on the run, and the write connection checks it on
+// every write it sends (lib/write.js; guard_review/DESIGN.md §2a).
+function approvalFor(deps, key, run = null) {
   if (deps.confirm) return deps.confirm;
   const r = deps.approved && deps.approved.has(key) ? deps.approved.get(key) : (deps.ticket || ticket).take(key);
   if (!r.ok) throw new ApplyRefused(ticket.refusalText(r.why), r.why === 'expired' ? 'approval_expired' : 'no_approval');
+  if (run) run.approval = r.approval;
   return () => ({ approved: true });
 }
 
@@ -223,7 +226,7 @@ function refuseIfExposed(reasons, nothing) {
 }
 
 function connect(run, deps, kind, host) {
-  const dv = kind === 'write' ? deps.writeConnection(host) : deps.readConnection(host);
+  const dv = kind === 'write' ? deps.writeConnection(host, undefined, { approval: () => run.approval }) : deps.readConnection(host);
   run.connected = true;
   return dv;
 }
@@ -458,7 +461,7 @@ function cmdApply(run, deps, id) {
   const { record } = loadPlan(id); // a missing plan refuses here, before anything else
   run.planId = id;
   run.env = record.env;
-  deps = { ...deps, confirm: approvalFor(deps, id) };
+  deps = { ...deps, confirm: approvalFor(deps, id, run) };
   const done = inflight(id, record);
   let out;
   try { out = applyAny(run, deps, id); } catch (e) { done(); throw e; }
@@ -931,60 +934,95 @@ function cmdApps(run, deps, args) {
 
 const RESOLUTIONS = ['fixed', 'not a bug', 'access granted', "won't fix"];
 
+// Several numbers close as one set (1.11.10; Dylan 10/14: "can we group some of these?"): one prompt, a
+// ticket per number, all taken as the command starts (as runBatch does for plans). Same limits the guard
+// asks under: at most 20, none twice, one app. One number behaves exactly as before.
+const RESOLVE_MAX = 20;
+const NUMBER_RE = /^[DHRSF]-\d{4,}$/;
+
 function cmdResolve(run, deps, args) {
   const { pos, opt } = options(args, ['fixed-in']);
-  const [number, resolution, ...rest] = pos;
+  const numbers = [];
+  while (numbers.length < pos.length && NUMBER_RE.test(String(pos[numbers.length]).toUpperCase())) numbers.push(String(pos[numbers.length]).toUpperCase());
+  const [resolution, ...rest] = pos.slice(numbers.length);
   const note = rest.join(' ').trim();
-  const m = /^([DHRSF])-(\d{4,})$/.exec(String(number || '').toUpperCase());
   const okResolution = RESOLUTIONS.includes(resolution) || /^duplicate of [DHRSF]-\d{4,}$/i.test(String(resolution || ''));
-  if (!m || !okResolution || !note) {
-    throw new Refusal('usage', 'resolve', [`resolve <number> <resolution> "<note>" [--fixed-in <version>]; number like D-1003; resolution one of: ${RESOLUTIONS.join(', ')}, "duplicate of D-1001"`], { exitCode: 2 });
+  const oneApp = new Set(numbers.map((x) => x[0])).size === 1;
+  if (!numbers.length || numbers.length > RESOLVE_MAX || new Set(numbers).size !== numbers.length || !oneApp || !okResolution || !note) {
+    throw new Refusal('usage', 'resolve', [`resolve <number> [<number> ...] <resolution> "<note>" [--fixed-in <version>]; number like D-1003 (at most ${RESOLVE_MAX}, none twice, all from one app); resolution one of: ${RESOLUTIONS.join(', ')}, "duplicate of D-1001"`], { exitCode: 2 });
   }
+  const batch = numbers.length > 1;
+  if (batch && !deps.confirm) deps = { ...deps, approved: new Map(numbers.map((x) => [`resolve-${x}`, (deps.ticket || ticket).take(`resolve-${x}`)])) };
   const { envs, access } = config();
-  const env = LETTER_ENV[m[1]];
-  if (!envs[env]) throw new Refusal('usage', 'resolve', [`${number}: no ${env} in the toolkit's environment list`], { exitCode: 2 });
+  const env = LETTER_ENV[numbers[0][0]];
+  if (!envs[env]) throw new Refusal('usage', 'resolve', [`${numbers[0]}: no ${env} in the toolkit's environment list`], { exitCode: 2 });
   run.env = env;
+  // A batch with a number whose ticket is missing is refused before anything is read (as a batch apply is).
+  if (batch && !deps.confirm) for (const x of numbers) approvalFor(deps, `resolve-${x}`, run);
   const dv = connect(run, deps, 'write', envs[env].host);
   const me = whoAmI(dv);
   run.person = me;
   if (!levels.atLeast(accessFor(resolveAccess(access, dv, env), me.email, env).level, 'admin')) {
     throw new Refusal('not_permitted', 'resolve', [`only a toolkit admin resolves (ruled 10/7); ${me.fullname} is not an admin in the ${envs[env].name}`], { nothing: 'changed' });
   }
-  const want = `${m[1]}-${m[2]}`;
-  const hits = dv.get(`${events.EVENT_SET}?$select=sbrm_dataverseeventid,sbrm_name,sbrm_status&$filter=${encodeURIComponent(`sbrm_number eq '${want}'`)}`).value || [];
-  if (hits.length !== 1) throw new Refusal('not_found', 'resolve', [`${want}: ${hits.length ? 'more than one row has that number' : 'no such item'} in the ${envs[env].name}`], { nothing: 'changed' });
-  const id = hits[0].sbrm_dataverseeventid;
-  const now = dv.get(`${events.EVENT_SET}(${id})?$select=sbrm_status,sbrm_name,sbrm_kind,sbrm_machine,_createdby_value,createdon`);
-  if (now.sbrm_status !== 'open') throw new Refusal('not_open', 'resolve', [`${want} is not open (status: ${now.sbrm_status || 'none'})`], { nothing: 'changed' });
-  // A health check describes the machine NOW: resolving one also closes the same person's earlier open
-  // checks on the same machine (the review folds them under it; the pop-up lists every number).
-  const repeats = now.sbrm_kind !== 'health check' ? [] : (dv.get(`${events.EVENT_SET}?$select=sbrm_dataverseeventid,sbrm_number,sbrm_kind,sbrm_machine,_createdby_value,createdon&$filter=${encodeURIComponent("sbrm_status eq 'open'")}`).value || [])
-    .filter((r) => r.sbrm_dataverseeventid !== id && r.sbrm_kind === 'health check' && r._createdby_value === now._createdby_value
-      && (r.sbrm_machine || '') === (now.sbrm_machine || '') && new Date(r.createdon) < new Date(now.createdon))
-    .sort((a, b) => new Date(a.createdon) - new Date(b.createdon));
+  // Every number is looked up before anything is written: one that does not exist refuses the set.
+  const items = [];
+  for (const want of numbers) {
+    const hits = dv.get(`${events.EVENT_SET}?$select=sbrm_dataverseeventid,sbrm_name,sbrm_status&$filter=${encodeURIComponent(`sbrm_number eq '${want}'`)}`).value || [];
+    if (hits.length !== 1) throw new Refusal('not_found', 'resolve', [`${want}: ${hits.length ? 'more than one row has that number' : 'no such item'} in the ${envs[env].name}${batch ? ' (nothing in this set was closed)' : ''}`], { nothing: 'changed' });
+    const id = hits[0].sbrm_dataverseeventid;
+    const now = dv.get(`${events.EVENT_SET}(${id})?$select=sbrm_status,sbrm_name,sbrm_kind,sbrm_machine,_createdby_value,createdon`);
+    if (now.sbrm_status !== 'open' && !batch) throw new Refusal('not_open', 'resolve', [`${want} is not open (status: ${now.sbrm_status || 'none'})`], { nothing: 'changed' });
+    // A health check describes the machine NOW: resolving one also closes the same person's earlier open
+    // checks on the same machine (the review folds them under it; the pop-up lists every number).
+    const repeats = now.sbrm_kind !== 'health check' ? [] : (dv.get(`${events.EVENT_SET}?$select=sbrm_dataverseeventid,sbrm_number,sbrm_kind,sbrm_machine,_createdby_value,createdon&$filter=${encodeURIComponent("sbrm_status eq 'open'")}`).value || [])
+      .filter((r) => r.sbrm_dataverseeventid !== id && r.sbrm_kind === 'health check' && r._createdby_value === now._createdby_value
+        && (r.sbrm_machine || '') === (now.sbrm_machine || '') && new Date(r.createdon) < new Date(now.createdon))
+      .sort((a, b) => new Date(a.createdon) - new Date(b.createdon));
+    items.push({ want, id, now, repeats });
+  }
   const body = { sbrm_status: 'resolved', sbrm_resolution: resolution.toLowerCase(), sbrm_resolutionnote: note };
   if (opt['fixed-in'] && opt['fixed-in'] !== true) body.sbrm_fixedinversion = String(opt['fixed-in']);
-  const text = [`Resolve ${want} in the ${envs[env].name}`, '', `  ${now.sbrm_name}`, '', `Resolution: ${body.sbrm_resolution}`, `Note: ${note}`,
+  const allRepeats = items.flatMap((it) => it.repeats.map((r) => r.sbrm_number)).filter((x) => !numbers.includes(x));
+  const head = batch
+    ? [`Resolve ${numbers.length} items in the ${envs[env].name}`, '', ...items.map((it) => `  ${it.want}  ${it.now.sbrm_name}${it.now.sbrm_status !== 'open' ? ' (already closed, will be skipped)' : ''}`)]
+    : [`Resolve ${numbers[0]} in the ${envs[env].name}`, '', `  ${items[0].now.sbrm_name}`];
+  const text = [...head, '', `Resolution: ${body.sbrm_resolution}`, `Note: ${note}`,
     ...(body.sbrm_fixedinversion ? [`Fixed in: ${body.sbrm_fixedinversion}`] : []),
-    ...(repeats.length ? ['', `Also closes the same machine's earlier health checks: ${repeats.map((r) => r.sbrm_number).join(', ')}`] : [])].join('\n');
+    ...(allRepeats.length ? ['', `Also closes the same machine's earlier health checks: ${[...new Set(allRepeats)].join(', ')}`] : [])].join('\n');
   console.log(`\n${text}`);
-  const answer = approvalFor(deps, `resolve-${want}`)({ summaryText: text, detailText: text, title: `SBRM: resolve ${want}?` });
-  if (!answer.approved) { console.log(`\nCancelled. ${want} is still open.\n`); return 1; }
-  dv.update(events.EVENT_SET, id, body, now['@odata.etag']);
-  const back = dv.get(`${events.EVENT_SET}(${id})?$select=sbrm_status,sbrm_resolution`);
-  if (back.sbrm_status !== 'resolved') throw new Error(`${want} did not read back as resolved (status ${back.sbrm_status})`);
+  const title = batch ? `SBRM: resolve ${numbers.length} items?` : `SBRM: resolve ${numbers[0]}?`;
+  const answer = approvalFor(deps, `resolve-${numbers[0]}`, run)({ summaryText: text, detailText: text, title });
+  if (!answer.approved) { console.log(`\nCancelled. ${batch ? 'Every item is' : `${numbers[0]} is`} still open.\n`); return 1; }
+  const closed = [];
+  const skipped = [];
   const also = [];
-  for (const r of repeats) {
-    const cur = dv.get(`${events.EVENT_SET}(${r.sbrm_dataverseeventid})?$select=sbrm_status`);
-    if (cur.sbrm_status !== 'open') continue;
-    dv.update(events.EVENT_SET, r.sbrm_dataverseeventid, { ...body, sbrm_resolutionnote: `${note} (closed with ${want}: same machine, earlier run)` }, cur['@odata.etag']);
-    if (dv.get(`${events.EVENT_SET}(${r.sbrm_dataverseeventid})?$select=sbrm_status`).sbrm_status === 'resolved') also.push(r.sbrm_number);
+  for (const { want, id, repeats } of items) {
+    // Re-read just before writing: an earlier item's health-check fold, or someone else, may have closed it.
+    const cur = dv.get(`${events.EVENT_SET}(${id})?$select=sbrm_status`);
+    if (cur.sbrm_status !== 'open') { skipped.push(want); continue; }
+    dv.update(events.EVENT_SET, id, body, cur['@odata.etag']);
+    const back = dv.get(`${events.EVENT_SET}(${id})?$select=sbrm_status,sbrm_resolution`);
+    if (back.sbrm_status !== 'resolved') throw new Error(`${want} did not read back as resolved (status ${back.sbrm_status})${closed.length ? `; already closed in this set: ${closed.join(', ')}` : ''}`);
+    closed.push(want);
+    for (const r of repeats) {
+      const rc = dv.get(`${events.EVENT_SET}(${r.sbrm_dataverseeventid})?$select=sbrm_status`);
+      if (rc.sbrm_status !== 'open') continue;
+      dv.update(events.EVENT_SET, r.sbrm_dataverseeventid, { ...body, sbrm_resolutionnote: `${note} (closed with ${want}: same machine, earlier run)` }, rc['@odata.etag']);
+      if (dv.get(`${events.EVENT_SET}(${r.sbrm_dataverseeventid})?$select=sbrm_status`).sbrm_status === 'resolved') also.push(r.sbrm_number);
+    }
   }
-  console.log(`\n${want} resolved: ${back.sbrm_resolution}. Recorded on the item (resolved by ${me.fullname}).${also.length ? ` Also closed: ${also.join(', ')}.` : ''}\n`);
+  const alsoText = also.length ? ` Also closed: ${also.join(', ')}.` : '';
+  if (!batch) {
+    console.log(`\n${numbers[0]} resolved: ${body.sbrm_resolution}. Recorded on the item (resolved by ${me.fullname}).${alsoText}\n`);
+  } else {
+    console.log(`\nResolved ${closed.length} of ${numbers.length}: ${closed.join(', ') || 'none'} (${body.sbrm_resolution}, by ${me.fullname}).${alsoText}`
+      + `${skipped.map((x) => `\nSkipped ${x}: already closed.`).join('')}\n`);
+  }
   return 0;
 }
 
-const USAGE = 'usage: dataverse-write.js check|plan <job.json> | show <plan-id> | apply <plan-id> [<plan-id> ...] | revert <plan-id> [env] | whoami <env> | snapshot <env> <set> <id> | doctor [--apps a,b] | report "<words>" | review [--days N] [--brief] | resolve <number> <resolution> "<note>" | apps [a,b | all] | query <app> <table> [--select ...] [--filter ...] [--max N] [--csv]';
+const USAGE = 'usage: dataverse-write.js check|plan <job.json> | show <plan-id> | apply <plan-id> [<plan-id> ...] | revert <plan-id> [env] | whoami <env> | snapshot <env> <set> <id> | doctor [--apps a,b] | report "<words>" | review [--days N] [--brief] | resolve <number> [<number> ...] <resolution> "<note>" | apps [a,b | all] | query <app> <table> [--select ...] [--filter ...] [--max N] [--csv]';
 
 function dispatch(run, deps, argv) {
   const [cmd, arg, arg2] = argv;

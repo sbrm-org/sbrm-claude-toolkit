@@ -24,6 +24,8 @@ const HM = J('HO', 'ME=');
 const ENGINE = `${os.homedir().replace(/\\/g, '/')}/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.11.6/dataverse/engine/dataverse-write.js`;
 const HOME = os.homedir().replace(/\\/g, '/');
 const judge = (input) => verdict(input, [], { popup: () => false });
+// guard_next.test.js (1.11.10) reuses these cases: required from there, this file registers no tests of its own.
+const T = require.main === module ? test : () => {};
 const sh = (command, tool = 'PowerShell', extra = {}) => ({ tool_name: tool, tool_input: { command }, ...extra });
 const write = (file_path, content) => ({ tool_name: 'Write', tool_input: { file_path, content } });
 
@@ -124,7 +126,7 @@ echo '{"hook_event_name":"Stop"}' | ~/.claude/hooks/tab-color.sh; echo "out-abov
 ];
 
 for (const [label, input] of PASS) {
-  test(`passes: ${label}`, () => {
+  T(`passes: ${label}`, () => {
     assert.equal(judge(input), null);
   });
 }
@@ -189,7 +191,7 @@ const BLOCK = [
 ];
 
 for (const [label, input, message] of BLOCK) {
-  test(`blocks: ${label}`, () => {
+  T(`blocks: ${label}`, () => {
     const v = judge(input);
     assert.ok(v, 'expected a block');
     assert.match(v, message);
@@ -198,7 +200,7 @@ for (const [label, input, message] of BLOCK) {
 
 // Settings already holding a PermissionRequest hook the person installed (iTerm2's Claude integration adds one, a
 // status reporter): keeping it is not adding one (10/9, Daian's Mac). Throwaway files, never the real settings.
-test('settings: keeping an existing PermissionRequest hook passes; adding or changing one is refused', () => {
+T('settings: keeping an existing PermissionRequest hook passes; adding or changing one is refused', () => {
   const PR = J('Permission', 'Request');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrm-settings-'));
   const file = path.join(dir, '.claude', 'settings.json').replace(/\\/g, '/');
@@ -230,7 +232,7 @@ test('settings: keeping an existing PermissionRequest hook passes; adding or cha
 });
 
 // The block message names the rule and the token through the real hook path (run.sh -> guard.js).
-test('the hook\'s message carries the rule and the matched token', (t) => {
+T('the hook\'s message carries the rule and the matched token', (t) => {
   const BASH = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : '/bin/bash';
   if (!fs.existsSync(BASH)) { t.skip('no bash at ' + BASH); return; }
   const RUN = path.join(__dirname, '..', '..', 'guard', 'run.sh');
@@ -240,3 +242,5 @@ test('the hook\'s message carries the rule and the matched token', (t) => {
   assert.equal(r.status, 2);
   assert.match(r.stderr, new RegExp(`\\[rule: injection; matched: "${SK}\\]::SendWait" in a call that sends input\\]`));
 });
+
+module.exports = { PASS, BLOCK };

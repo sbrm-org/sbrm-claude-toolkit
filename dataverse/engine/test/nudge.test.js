@@ -43,23 +43,30 @@ function writeState(l, st) {
   fs.writeFileSync(path.join(l.home, 'events', 'checkin.json'), JSON.stringify(st));
 }
 
+function cfgWith(o) {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-cfg-'));
+  fs.writeFileSync(path.join(d, 'toolkit.json'), JSON.stringify(o));
+  return d;
+}
+
 test('running behind installed: the restart text, once per session, as UserPromptSubmit additionalContext', () => {
   const l = layout({ running: '1.11.8', installed: '1.11.9' });
-  const a = nudge(l, { session: 's1' });
+  const off = cfgWith({ reload_plugins_applies: false });
+  const a = nudge(l, { session: 's1', config: off });
   assert.equal(a.code, 0);
   assert.equal(a.ctx.hookEventName, 'UserPromptSubmit');
   assert.match(a.ctx.additionalContext, /^SBRM toolkit: this computer now has toolkit 1\.11\.9 installed, but this session is still running 1\.11\.8\./);
   assert.match(a.ctx.additionalContext, /quit Claude Code completely and reopen it/);
-  assert.ok(!/reload-plugins/.test(a.ctx.additionalContext), 'until 12f measures it');
-  assert.equal(nudge(l, { session: 's1' }).ctx, null, 'once per session');
-  assert.ok(nudge(l, { session: 's2' }).ctx, 'a different session hears it too');
+  assert.ok(!/reload-plugins/.test(a.ctx.additionalContext), 'with the switch off');
+  assert.equal(nudge(l, { session: 's1', config: off }).ctx, null, 'once per session');
+  assert.ok(nudge(l, { session: 's2', config: off }).ctx, 'a different session hears it too');
 });
 
-test('the restart text names /reload-plugins once it is measured to work', () => {
+test('the restart text names /reload-plugins once it is measured to work (10/12: it is; the shipped switch is on)', () => {
   const l = layout({ running: '1.11.8', installed: '1.11.9' });
-  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-cfg-'));
-  fs.writeFileSync(path.join(cfg, 'toolkit.json'), JSON.stringify({ reload_plugins_applies: true }));
-  assert.match(nudge(l, { config: cfg }).ctx.additionalContext, /run \/reload-plugins, or quit Claude Code completely and reopen it/);
+  assert.match(nudge(l, { config: cfgWith({ reload_plugins_applies: true }) }).ctx.additionalContext, /run \/reload-plugins, or quit Claude Code completely and reopen it/);
+  const shipped = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'toolkit.json'), 'utf8'));
+  assert.equal(shipped.reload_plugins_applies, true, 'DESIGN.md §12f measured on 10/12');
 });
 
 test('running = installed: silent, whatever the last check said, unless the update is stuck', () => {
