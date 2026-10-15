@@ -5,8 +5,9 @@
 // who is asking, whether they may write, which columns exist and what they are called,
 // each target's CURRENT values, duplicates, and the linked records' real names.
 
-const { loadTable, choiceLabels, refTable, isChoice, NUMERIC } = require('./meta');
+const { loadTable, choiceLabels, refTable, dateBehaviours, isChoice, NUMERIC } = require('./meta');
 const closedYear = require('./closedyear');
+const { toLocalMidnight } = require('./localdate');
 const { resolveAccess, TOOLKIT_SETS, LOG_TABLES, APP_DEFINITION_SETS } = require('./access');
 const { BIND_KEY, BIND_VALUE } = require('./contract');
 const { DataverseError } = require('./cli');
@@ -210,6 +211,9 @@ function planJob(dv, job, { envs, access, warnRows }) {
   if (errs.length) throw new PlanRefused(errs, 'invalid_job');
   const choiceErrs = checkChoices(dv, table, job, columns);
   if (choiceErrs.length) throw new PlanRefused(choiceErrs, 'invalid_job');
+  // A date-only, user-local column (a gift's book date) is written as local midnight on the day it names, before
+  // the closed-year check reads it and before the plan is signed (lib/localdate.js; batch 2026_863, 10/14/26).
+  if (Object.values(columns).some((c) => c.kind === 'plain' && c.type === 'DateTime')) toLocalMidnight(job, columns, dateBehaviours(dv, table));
 
   const hasState = table.attrs.has('statecode');
   // The closed-year guard (DESIGN.md §8d): the book-date column of a guarded table, from envs.json.

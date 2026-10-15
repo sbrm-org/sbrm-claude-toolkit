@@ -46,6 +46,11 @@ const A = (LogicalName, AttributeType, label, extra = {}) => ({
   IsValidForCreate: true, IsValidForUpdate: true, IsValidForRead: true, AttributeOf: null, ...extra,
 });
 
+// Date column behaviour, as DateTimeAttributeMetadata reports it.
+const DT_LOCALDATE = { Format: 'DateOnly', DateTimeBehavior: { Value: 'UserLocal' } };
+const DT_DATEONLY = { Format: 'DateOnly', DateTimeBehavior: { Value: 'DateOnly' } };
+const DT_STAMP = { Format: 'DateAndTime', DateTimeBehavior: { Value: 'UserLocal' } };
+
 const ATTRS = {
   contact: [
     A('contactid', 'Uniqueidentifier', 'Contact', { IsValidForUpdate: false }),
@@ -60,8 +65,9 @@ const ATTRS = {
     A('creditlimit', 'Money', 'Credit Limit'),
     A('donotemail', 'Boolean', 'Do not allow Emails'),
     A('yomifullname', 'String', 'Yomi Full Name', { AttributeOf: 'fullname' }),
-    A('createdon', 'DateTime', 'Created On', { IsValidForCreate: false, IsValidForUpdate: false }),
-    A('birthdate', 'DateTime', 'Birthday'), // stands in for a gift's book date in the closed-year tests
+    A('createdon', 'DateTime', 'Created On', { IsValidForCreate: false, IsValidForUpdate: false, ...DT_STAMP }),
+    // stands in for a gift's book date in the closed-year tests; a true date-only column (no time zone), as in Dataverse
+    A('birthdate', 'DateTime', 'Birthday', DT_DATEONLY),
   ],
   account: [
     A('accountid', 'Uniqueidentifier', 'Account', { IsValidForUpdate: false }),
@@ -71,12 +77,12 @@ const ATTRS = {
     A('masterid', 'Lookup', 'Master ID', { IsValidForCreate: false, IsValidForUpdate: false }),
     A('telephone1', 'String', 'Main Phone'),
     A('description', 'Memo', 'Description'),
-    A('createdon', 'DateTime', 'Created On', { IsValidForCreate: false, IsValidForUpdate: false }),
+    A('createdon', 'DateTime', 'Created On', { IsValidForCreate: false, IsValidForUpdate: false, ...DT_STAMP }),
   ],
   msnfp_transaction: [
     A('msnfp_transactionid', 'Uniqueidentifier', 'Transaction', { IsValidForUpdate: false }),
     A('msnfp_name', 'String', 'Name'),
-    A('msnfp_bookdate', 'DateTime', 'Book Date'),
+    A('msnfp_bookdate', 'DateTime', 'Book Date', DT_LOCALDATE), // as live: date only, user local (schema_notes 8/11/26)
     A('msnfp_customerid', 'Customer', 'Donor'),
   ],
 };
