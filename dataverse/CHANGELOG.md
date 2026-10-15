@@ -3,7 +3,16 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
-- **1.11.10 (unreleased; ships with the engine ticket check and the new guard in shadow, guard_review/)**
+- **1.11.11 (unreleased)** **Book dates are written as local midnight.** A gift's book date (`msnfp_bookdate`) is a
+  date-only column stored in the person's time zone, so a bare date like "2026-10-12" was stored as midnight UTC,
+  which is 5 PM the day before in Pacific time, and the app showed every such gift a day early (batch 2026_863,
+  10/13/26: 46 gifts; Power BI then disagreed with the app by a day). The plan now reads each date column's
+  behaviour and, for a date-only user-local column, writes local midnight on the day the value names (daylight
+  saving included: 07:00Z in summer, 08:00Z in winter), before the closed-year check and before the plan is
+  signed. Values already at local midnight, real times of day, and true date-only columns are left alone. Tests:
+  `engine/test/resolve.test.js` (6, red first: the conversion incl. both 2026 DST change days, update, create,
+  midnight-UTC input, untouched values, a date-only column).
+- **1.11.10** (2026-10-14, PR #14)
   **The engine checks the approval itself.** `lib/write.js`'s write connection refuses every write that does not
   carry the approval `ticket.take()` hands back for a ticket the guard minted (signed with this machine's plan key);
   the engine passes it in. Before this only the CLI's apply took a ticket, so a script that loaded the write module

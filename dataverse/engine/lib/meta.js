@@ -106,10 +106,26 @@ function choiceLabels(dv, table, attrName) {
   return map;
 }
 
+// Date columns' format and time-zone behaviour (logical name -> { format, behaviour }), cached on the table.
+// Read only when a job writes a date column; lib/localdate.js uses it to store local midnight for a
+// date-only, user-local column (a gift's book date).
+function dateBehaviours(dv, table) {
+  if (table.dates) return table.dates;
+  const r = dv.get(`EntityDefinitions(LogicalName='${q(table.entity.logical)}')/Attributes/Microsoft.Dynamics.CRM.DateTimeAttributeMetadata`
+    + '?$select=LogicalName,Format,DateTimeBehavior');
+  const map = new Map();
+  for (const a of r.value || []) {
+    if (!a.DateTimeBehavior) continue;
+    map.set(a.LogicalName, { format: a.Format || null, behaviour: a.DateTimeBehavior.Value || null });
+  }
+  table.dates = map;
+  return map;
+}
+
 // Referenced table info for a lookup target (set name + primary name), cached on the table.
 function refTable(dv, table, logical) {
   if (!table.refs.has(logical)) table.refs.set(logical, loadEntityByLogical(dv, logical));
   return table.refs.get(logical);
 }
 
-module.exports = { loadTable, choiceLabels, refTable, isChoice, NUMERIC, label };
+module.exports = { loadTable, choiceLabels, refTable, dateBehaviours, isChoice, NUMERIC, label };

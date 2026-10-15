@@ -191,3 +191,46 @@ test('same(): narrow date rule, GUID case, numbers', () => {
   assert.ok(same(null, ''), 'reversed 10/7: Dataverse stores "" as null, so they are the same value');
   assert.ok(same(undefined, null));
 });
+
+// ---- book dates: a date-only, user-local column stores LOCAL midnight (10/14/26) ----
+// Batch 2026_863: a bare "2026-10-12" went in as 2026-10-12T00:00:00Z, which the app shows as 10/11 (5 PM the day
+// before in Pacific time). The plan now writes local midnight for such a column; a true date-only column is left alone.
+
+test('localMidnightUtc: Pacific midnight in UTC, daylight saving included', () => {
+  const { localMidnightUtc } = require('../lib/localdate');
+  assert.equal(localMidnightUtc('2026-10-12'), '2026-10-12T07:00:00Z');
+  assert.equal(localMidnightUtc('2026-12-15'), '2026-12-15T08:00:00Z');
+  assert.equal(localMidnightUtc('2026-03-08'), '2026-03-08T08:00:00Z', 'DST starts at 2 AM: midnight is still standard time');
+  assert.equal(localMidnightUtc('2026-11-01'), '2026-11-01T07:00:00Z', 'DST ends at 2 AM: midnight is still daylight time');
+});
+
+const bookJob = (mode, bookdate, extra = {}) => job({
+  mode, table: 'msnfp_transactions',
+  rows: [{ name: 'TRN-2', ...(mode === 'update' ? { id: IDS.t2 } : {}), body: { msnfp_bookdate: bookdate }, ...extra }],
+});
+
+test('book date: a bare date is written as local midnight on that day (update)', () => {
+  const { plan } = run(bookJob('update', '2099-10-12'));
+  assert.equal(plan.rows[0].body.msnfp_bookdate, '2099-10-12T07:00:00Z');
+  assert.equal(plan.rows[0].changes[0].new, '2099-10-12T07:00:00Z');
+});
+
+test('book date: midnight UTC is read as the date it names and moved to local midnight', () => {
+  const { plan } = run(bookJob('update', '2099-12-15T00:00:00Z'));
+  assert.equal(plan.rows[0].body.msnfp_bookdate, '2099-12-15T08:00:00Z');
+});
+
+test('book date: a value already at local midnight is kept as it is', () => {
+  const { plan } = run(bookJob('update', '2099-10-12T07:00:00Z'));
+  assert.equal(plan.rows[0].body.msnfp_bookdate, '2099-10-12T07:00:00Z');
+});
+
+test('book date: a create converts the same way', () => {
+  const { plan } = run(bookJob('create', '2099-10-12'));
+  assert.equal(plan.rows[0].body.msnfp_bookdate, '2099-10-12T07:00:00Z');
+});
+
+test('a true date-only column (no time zone) keeps its bare date', () => {
+  const { plan } = run(job({ mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { birthdate: '1980-05-01' } }] }));
+  assert.equal(plan.rows[0].body.birthdate, '1980-05-01');
+});
