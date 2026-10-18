@@ -56,7 +56,20 @@ const XRM_WRITE = /\bXrm\.WebApi\.(?:createRecord|updateRecord|deleteRecord|exec
 // URL first), or a relative /api/data path (a script on the app's own origin). A request to BookStack or
 // Graph whose BODY merely mentions the app's URL is not a Dataverse write (final re-verify false positive).
 const URL_RE = /https?:\/\/[^\s"'`)<>]+|(?<![\w.\/])\/api\/data\/v9[^\s"'`)<>]*/gi;
-function targetsDataverse(text) {
+// 1.11.12 (D-1152/D-1154, Daian 10/15): a text or file tool's short flag ending in d (uniq -d, cut -d, date -d)
+// matched the combined curl-flag spelling, so a GET whose URL sat in a variable was blocked by a duplicate check
+// later on the line. A segment whose command is one of these tools sends no request, so it is blanked before the
+// check. Not blanked: a segment that runs anything else inside it ($(...), backticks, <(...), -exec) or reads a
+// heredoc or here-string (<<). Not listed: tools that run commands (awk, sed, perl, find, xargs, git, env, shells)
+// and tools that carry text into the next command (echo, printf, cat, tee, base64: `echo "<code>" | python`).
+// SHELL TEXT ONLY: a code file being written keeps the strict check (`file = requests.patch(...)` in Python).
+const TEXT_TOOL_SEGMENT = /^\s*(?:(?:do|then|else|\{|\(|!)\s*)*(?:uniq|cut|sort|date|tr|paste|join|column|od|xxd|hexdump|head|tail|wc|file|md5|md5sum|sha1sum|sha256sum|shasum|sips|ls|du|df|mkdir|cp|mv|rm|touch|grep|egrep|fgrep|rg|diff|comm|stat|realpath|dirname|basename|nl|fold|fmt|expand|unexpand|rev|tac|seq|sleep|true|false)(?=\s|$)(?!\s*[-+*\/%:]?=)/;
+function blankTextTools(text) {
+  return String(text).split(/([\n;|&])/).map((seg, i) => (i % 2 === 0 && TEXT_TOOL_SEGMENT.test(seg)
+    && !/\$\(|`|[<>]\(|-exec|<</.test(seg) ? ' ' : seg)).join('');
+}
+function targetsDataverse(input, { shell = false } = {}) {
+  const text = shell ? blankTextTools(input) : String(input);
   let elsewhere = false;
   for (const line of String(text).split(/[\n;|&]/)) {
     if (!MUTATING_HTTP.test(line)) continue;
@@ -67,8 +80,9 @@ function targetsDataverse(text) {
     elsewhere = true; // a write whose target is another service
   }
   // A write whose URL is in a variable (`url = "https://x.crm..."` then `requests.patch(url, ...)`): Dataverse
-  // and a write method in the same text, and no write line aimed anywhere else.
-  return !elsewhere && DV_HOST.test(text) && MUTATING_HTTP.test(text);
+  // and a write method in the same text, and no write line aimed anywhere else. The host is looked for in the
+  // WHOLE text (an `echo` of the URL into a file is blanked above but still names the target).
+  return !elsewhere && DV_HOST.test(String(input)) && MUTATING_HTTP.test(text);
 }
 // While an approval is waiting, no tool may drive the screen, mouse or keyboard (it could press Yes).
 const SCREEN_TOOL = /computer|mouse|keyboard|left_click|right_click|double_click|key_press|type_text|cua\b|screen_control|click|shortcut|hotkey|keystroke|press_key|type-tool|type_tool|drag|scroll-tool|automation/i;
@@ -869,6 +883,12 @@ function describePlan(id) {
     else if (rec.kind === 'unmerge') head = `Undo a merge in the ${app}`;
     else if (rec.kind === 'component') head = `${rec.mode || 'change'} ${rec.component && rec.component.name ? `'${rec.component.name}'` : 'an app component'} in the ${app}`;
     else if (rec.kind === 'schema') head = `App change (tables, columns, choices) in the ${app}`;
+    else if (rec.kind === 'setting') {
+      // An environment variable's value (1.11.12): the prompt names the setting and both values.
+      const s = rec.setting || {};
+      const v = (x) => (typeof x === 'string' ? `"${x.length > 60 ? `${x.slice(0, 60)}...` : x}"` : 'nothing');
+      head = `Set ${s.schemaname ? `'${s.displayname || s.schemaname}' (${s.schemaname})` : 'an app setting'} from ${v((rec.before || {}).value)} to ${v((rec.after || {}).value)} in the ${app}`;
+    }
     else head = `A change in the ${app}`;
     const warn = (rec.severity && Array.isArray(rec.severity.lines)) ? rec.severity.lines : [];
     return `${head}${rec.reverts_plan_id ? ' (an undo)' : ''}${warn.length ? `. ${warn.join(' ')}` : ''}`;
@@ -911,7 +931,7 @@ function shellVerdict(text, cwd = null) {
   if (cli) return `${cli}, which writes to Dataverse`;
   if (CLI_LIST.test(rest) && LIST_WRITE.test(rest)) return "the Dataverse CLI's write side, called with a list of arguments";
   if (ENGINE_INTERNALS.test(rest)) return "code that reaches the engine's write side directly (it would skip the approval)";
-  if (targetsDataverse(text.replace(HARMLESS_REDIRECT, ' '))) return 'a raw writing HTTP call at Dataverse';
+  if (targetsDataverse(text.replace(HARMLESS_REDIRECT, ' '), { shell: true })) return 'a raw writing HTTP call at Dataverse';
   if (OTHER_DV_WRITERS.test(rest)) return 'another tool that writes to Dataverse (the Xrm PowerShell cmdlets or the Power Platform CLI)';
   const inj = shellInjection(text);
   if (inj) return `keystroke or click injection (approving is the person's alone) [rule: injection; matched: "${inj.token}" in ${inj.where}]`;

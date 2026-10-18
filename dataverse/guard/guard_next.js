@@ -1156,7 +1156,7 @@ function shellVerdict(command, cwd = null, shell = 'posix', { ctx = null, depth 
   const plain = textIn.replace(I.HARMLESS_REDIRECT, ' ');
   const cli = G.cliVerdict(plain);
   if (cli) return `${cli}, which writes to Dataverse`;
-  if (I.targetsDataverse(plain)) return MSG.http;
+  if (I.targetsDataverse(plain, { shell: true })) return MSG.http;
   const inj = I.shellInjection(textIn);
   if (inj) return `keystroke or click injection (approving is the person's alone) [rule: injection; matched: "${inj.token}" in ${inj.where}]`;
   if (/dataverse-write(?:\.js)?["']?\s+(?:apply|resolve)\b/i.test(textIn) && PATH_ON_APPLY.test(textIn)) {

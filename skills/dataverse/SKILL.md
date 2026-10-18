@@ -3,13 +3,15 @@ name: dataverse
 description: >
   Change SBRM's Dataverse apps (Donor App, Donor App Dev, HGS apps, Recovery app, Sober Living app)
   through the shared write path: records (add, update, make inactive, merge; records are never deleted)
-  AND the apps themselves (tables, columns, choices, views, forms, sitemaps, Power Automate flows). Claude
+  AND the apps themselves (tables, columns, choices, views, forms, sitemaps, Power Automate flows,
+  environment variable settings). Claude
   prepares the change as a job file, the engine plans it and works out how serious it is, Claude tells
   the person, and the person approves it when Claude Code asks, before anything is written. Also covers what to do when something goes wrong
   (report it to Dylan in the person's own words) and checking that the setup works (the health check).
   Triggers on "update the donor app", "change this contact", "fix the record", "add a gift",
   "write to Dataverse", "mark inactive", "deactivate", "delete these records", "add a column", "new table", "change
-  the view", "edit the form", "fix the flow", "turn the flow off", "undo that change", "revert", "the
+  the view", "edit the form", "fix the flow", "turn the flow off", "environment variable", "turn the
+  setting on", "undo that change", "revert", "the
   Dataverse tools aren't working", "is my Dataverse set up right", "report a problem with the donor app tools".
   Also covers READING MANY ROWS into a file with the engine's read-only `query` (hundreds or thousands of
   records): "pull every donor who", "export the list of", "all gifts in batch", "read hundreds of rows",
@@ -58,7 +60,7 @@ Each person has a level in each app, on that app's Dataverse Write Access list (
 | read | look only (anyone without a row) |
 | write | change records; merge only with a separate "may merge" yes |
 | develop | everything in write, plus change the app: tables, columns, choices, views, forms, sitemaps, flows |
-| admin | everything in develop, plus deleting app parts (a column, table, view, form, flow...), alternate keys, making a column required on a table that has rows, flow steps that reach beyond their connection (HTTP, child flows, a run-time table, someone else's connection, a changed trigger on a live flow), script or web content in views and forms, handing a flow to a new owner, the toolkit's own lists, and closing reported items |
+| admin | everything in develop, plus deleting app parts (a column, table, view, form, flow...), alternate keys, making a column required on a table that has rows, flow steps that reach beyond their connection (HTTP, child flows, a run-time table, someone else's connection, a changed trigger on a live flow), script or web content in views and forms, handing a flow to a new owner, changing an app setting (an environment variable's value), the toolkit's own lists, and closing reported items |
 
 There is no limit on how much one change may touch. Instead the engine flags a big or serious change
 (below), and the person decides knowing it. The level is the toolkit's; the person's own Dataverse role
@@ -78,8 +80,9 @@ Verify the path on first use and say it in full whenever you hand the person a c
 2. **Write the job file** (`sbrm-dv-job/1`; read `<toolkit>/dataverse/JOBS.md` for every kind's exact
    shape before writing one). Records: `kind: "rows"`, env, table, create or update, one row per record by its real
    name and id, the body, a one-sentence `reason` in plain words, and an `intent` that states exactly what
-   you are changing. App changes: `kind: "schema"` (tables, columns, relationships, keys, choices) or
-   `kind: "component"` (a view, form, sitemap or flow), see below. Save it in `~/.sbrm-dataverse/jobs/`,
+   you are changing. App changes: `kind: "schema"` (tables, columns, relationships, keys, choices),
+   `kind: "component"` (a view, form, sitemap or flow) or `kind: "setting"` (an environment variable's
+   value), see below. Save it in `~/.sbrm-dataverse/jobs/`,
    never in a git folder (Recovery job files there are refused), with your file-writing tool, not a
    shell command: the guard blocks a shell line that writes into that folder, so `plan` goes in a
    command of its own.
@@ -102,7 +105,9 @@ Verify the path on first use and say it in full whenever you hand the person a c
    drives the screen, mouse or keyboard (the guard refuses them). Never try to answer it, and never write
    some other way if they say No: ask what they want instead. If the guard says the session is in a mode where Claude Code does not
    ask, tell the person to switch modes (shift+tab) and run the apply again. Run applies from the main
-   conversation, never from a subagent (the guard refuses those). An approval lasts ten minutes: if
+   conversation, never from a subagent (the guard refuses those). One apply at a time: never start a
+   second apply while one is still waiting for its Yes (the prompts queue and the later approvals expire,
+   10/14 and 10/15); several plans for one request go on ONE apply line instead. An approval lasts ten minutes: if
    the engine says it expired, run the same apply again and they approve it again. If apply refuses because the
    change grew or moved since the plan, plan it again and go back to step 4.
 6. **After the apply, read the output back to them**: what was written, anything that was not, and
@@ -128,6 +133,11 @@ on its own. Never ask the person to run or paste a command.
   component after your read, the plan refuses and you read again.
   For a flow, the plan says who it RUNS AS: tell the person. Adding or swapping a flow's connection, or
   changing the trigger of a flow that is On, is an admin's.
+- **Settings** (`kind: "setting"`, admin): the value of an environment variable, such as a Yes/No switch
+  a flow checks before it acts. Name it by its schema name and give the value as the setting stores it (a
+  Yes/No setting takes "yes" or "no"). The plan names the flows that read it: tell the person which are on,
+  since they act on the new value straight away. If it lists solutions that carry the value, say that
+  importing one of them again can set it back.
 - A column's type cannot be changed (that is delete and recreate). Managed components (Microsoft's own
   `msnfp_` tables, forms and views) are not changed; add your own beside them.
 

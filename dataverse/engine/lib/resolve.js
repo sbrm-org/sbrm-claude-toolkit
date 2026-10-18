@@ -190,7 +190,11 @@ function planJob(dv, job, { envs, access, warnRows }) {
   // The app's own definitions (flows, forms, views, connections, solutions, roles, users) are never a
   // records job, at any level (10/7 review): kind component / schema, which check what they must.
   if (APP_DEFINITION_SETS.has(job.table)) {
-    throw new PlanRefused([`${job.table} holds the app's own definitions, not records. Change a view, form, sitemap or flow with an app change (kind "component"; tables and columns are kind "schema"), which takes develop access. Access, roles and users are changed in the admin portal.`], 'not_permitted');
+    // An environment variable's value has its own kind (1.11.12): say so, rather than send the person to the portal.
+    const settingHint = /^environmentvariable(?:value|definition)s$/.test(job.table)
+      ? ' A setting\'s current value (an environment variable) is changed with kind "setting", which takes admin access.'
+      : '';
+    throw new PlanRefused([`${job.table} holds the app's own definitions, not records. Change a view, form, sitemap or flow with an app change (kind "component"; tables and columns are kind "schema"), which takes develop access.${settingHint} Access, roles and users are changed in the admin portal.`], 'not_permitted');
   }
   // No cap on how many rows (ruled 10/7: "I dont think placing caps on writes makes sense"); a big change
   // is flagged by its severity instead, below.
@@ -219,6 +223,8 @@ function planJob(dv, job, { envs, access, warnRows }) {
   // The closed-year guard (DESIGN.md §8d): the book-date column of a guarded table, from envs.json.
   const guard = closedYear.guardFor(envInfo, job.table);
   if (guard && !table.attrs.has(guard)) throw new PlanRefused([`the closed-year guard names ${guard}, which ${table.entity.plural} does not have (envs.json)`], 'engine_bug');
+  // The lookups a closed-year record may still have set or cleared (the pledge link, closedyear.linkFix).
+  const links = guard ? closedYear.linksFor(envInfo, job.table) : [];
   // createdon rides along on a guarded table: the late-entry exception needs it (closedyear.lateEntry).
   const created = guard && table.attrs.has('createdon') ? 'createdon' : null;
   const readKeys = [...new Set([...verify.map((v) => v.readKey), ...(hasState ? ['statecode'] : []), table.entity.primaryName, guard, created].filter(Boolean))];
@@ -282,9 +288,11 @@ function planJob(dv, job, { envs, access, warnRows }) {
       const reactivates = r.body.statecode === 0 && Object.keys(r.body).every((k) => k === 'statecode' || k === 'statuscode');
       if (before && hasState && before.statecode !== 0 && !reactivates) why = 'the record is inactive (to make it active again, a job sets only statecode 0 and an active statuscode)';
       // A closed-year gift is never modified, and an open one is never moved INTO a closed year. The one edit
-      // allowed on a closed-year gift: late entry moves its book date alone into an open year.
+      // allowed on a closed-year gift: late entry moves its book date alone into an open year, and its pledge link
+      // alone may be set or cleared.
       if (!why && before && guard && !closedYear.isOpen(before[guard])) {
         if (closedYear.lateEntry(before[guard], before.createdon, r.body, guard)) warnings.push(closedYear.lateEntryNote(before[guard], before.createdon));
+        else if (closedYear.linkFix(r.body, links)) warnings.push(closedYear.linkFixNote(before[guard]));
         else why = `this record ${closedYear.why(before[guard])}`;
       }
       if (!why && before && guard && guard in r.body && !closedYear.isOpen(r.body[guard])) why = `the new book date ${closedYear.why(r.body[guard])}`;
@@ -360,6 +368,7 @@ function planJob(dv, job, { envs, access, warnRows }) {
     amount_field: job.amount_field,
     amount_total: amountTotal === null ? null : Math.round(amountTotal * 100) / 100,
     closed_year_column: guard, // apply re-checks it: a plan made Nov 30 and applied Dec 1 is caught
+    closed_year_links: links, // apply honours the pledge-link exception only from the signed plan
     severity: rowsSeverity(job.mode, rows.length, table.entity, warnRows),
     rows,
     refused,
