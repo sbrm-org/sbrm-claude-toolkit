@@ -3,7 +3,7 @@
 // Node engine and the Python jobs can never disagree about which gifts are closed.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { closedThrough, bookDay, isOpen, why, guardFor, lateEntry, lateEntryNote } = require('../lib/closedyear');
+const { closedThrough, bookDay, isOpen, why, guardFor, lateEntry, lateEntryNote, linksFor, linkFix, linkFixNote } = require('../lib/closedyear');
 
 const day = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d, 12); };
 
@@ -48,9 +48,33 @@ test('late entry: case for case with audited_fy.late_entry_fix (Dylan 10/8/26)',
   assert.match(lateEntryNote('2020-09-18T07:00:00Z', '2026-10-08T17:48:24Z'), /^book date moves out of closed FY20: entered 10\/8\/2026, after that year locked/);
 });
 
+test('pledge link: a closed-year gift may have ONLY its pledge link set or cleared (Dylan 10/16/26)', () => {
+  const navs = ['msnfp_DonorCommitmentId'];
+  const bind = 'msnfp_DonorCommitmentId@odata.bind';
+  assert.equal(linkFix({ [bind]: '/msnfp_donorcommitments(12b50cdc-2c46-ef11-8409-000d3a37c99f)' }, navs), true, 'set the link');
+  assert.equal(linkFix({ [bind]: null }, navs), true, 'clear the link');
+  assert.equal(linkFix({ [bind]: null, msnfp_amount: 1 }, navs), false, 'another column rides along');
+  assert.equal(linkFix({ 'msnfp_AppealId@odata.bind': '/msnfp_appeals(x)' }, navs), false, 'a lookup not on the list');
+  assert.equal(linkFix({ msnfp_DonorCommitmentId: null }, navs), false, 'not a bind key');
+  assert.equal(linkFix({}, navs), false, 'an empty body');
+  assert.equal(linkFix({ [bind]: null }, []), false, 'no list, no exception');
+  assert.equal(linkFix({ [bind]: null }, undefined), false, 'a plan made before 1.11.12 carries no list');
+  assert.match(linkFixNote('2025-07-31T07:00:00Z'), /^closed FY25 gift: only its pledge link changes/);
+});
+
 test('only tables listed in envs.json are guarded', () => {
   const env = { closed_year: { msnfp_transactions: 'msnfp_bookdate' } };
   assert.equal(guardFor(env, 'msnfp_transactions'), 'msnfp_bookdate');
   assert.equal(guardFor(env, 'contacts'), null);
   assert.equal(guardFor({}, 'msnfp_transactions'), null);
+  const links = { closed_year_links: { msnfp_transactions: ['msnfp_DonorCommitmentId'] } };
+  assert.deepEqual(linksFor(links, 'msnfp_transactions'), ['msnfp_DonorCommitmentId']);
+  assert.deepEqual(linksFor(links, 'contacts'), []);
+  assert.deepEqual(linksFor({}, 'msnfp_transactions'), []);
+});
+
+test('envs.json: both donor-app environments list exactly the pledge link', () => {
+  const envs = require('../../envs.json');
+  for (const k of ['donorapp', 'fedev']) assert.deepEqual(linksFor(envs[k], 'msnfp_transactions'), ['msnfp_DonorCommitmentId'], k);
+  for (const k of ['hgs', 'recovery', 'soberliving']) assert.equal(envs[k].closed_year_links, undefined, k);
 });

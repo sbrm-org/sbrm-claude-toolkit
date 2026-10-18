@@ -3,8 +3,9 @@
 //
 // HARD RULE (Dylan 7/30/26 for QBO, restated 9/24/26 for donor-app gifts): once a fiscal year is closed,
 // its gifts are CLOSED. No creating, deactivating, recoding or re-pointing a gift or soft credit whose book
-// date falls in a closed FY. Two exceptions: a MERGE may re-point closed-year gifts to the kept donor, because
-// it changes attribution, not finances (Dylan 10/7/26, lib/merge); and LATE ENTRY (Dylan 10/8/26, below).
+// date falls in a closed FY. Three exceptions: a MERGE may re-point closed-year gifts to the kept donor, because
+// it changes attribution, not finances (Dylan 10/7/26, lib/merge); LATE ENTRY (Dylan 10/8/26, below); and the
+// PLEDGE LINK (Dylan 10/16/26, below).
 //
 // WHEN A YEAR CLOSES (Dylan 9/29/26): SBRM's FY runs Oct 1 - Sep 30 and each FY locks on Dec 1 after it
 // ends. A rule of TIME computed from today's date, never a date anyone moves.
@@ -83,10 +84,36 @@ function lateEntryNote(oldBookdate, createdon) {
     + 'after that year locked, so it was never in its closed books (late-entry exception, Dylan 10/8/26)';
 }
 
+// THE THIRD EXCEPTION, pledge link (Dylan 10/16/26: "I dont think that would change the books really. because we
+// were accounting for it correctly in qbo, the donor app just needs to be fixed"). Pledges are CRM promises, not
+// booked income (QBO 1202 Pledge Receivable is $0), so which record carries a pledge link changes no books. A
+// closed-year gift may have ONLY a listed lookup (envs.json `closed_year_links`: the pledge) set or cleared;
+// amount, date, GL, donor and status stay locked. Case: PLDG-00002067 (Barry Goss), FY25 payment TRN-00291885
+// linked on the gift, whose soft credit is the record the pledge counts.
+const BIND = /^(.+)@odata\.bind$/;
+
+function linkFix(body, navs) {
+  const keys = Object.keys(body || {});
+  if (!keys.length || !Array.isArray(navs) || !navs.length) return false;
+  return keys.every((k) => { const m = BIND.exec(k); return !!m && navs.includes(m[1]); });
+}
+
+function linkFixNote(bookdate) {
+  const d = bookDay(bookdate);
+  return `closed FY${String(fyOf(d)).slice(2)} gift: only its pledge link changes, nothing booked moves `
+    + '(pledge-link exception, Dylan 10/16/26)';
+}
+
+// The lookups a closed-year record may still have set or cleared, for this env + table ([] when none).
+function linksFor(envInfo, table) {
+  const g = (envInfo && envInfo.closed_year_links) || {};
+  return Object.prototype.hasOwnProperty.call(g, table) ? [...g[table]] : [];
+}
+
 // The guarded book-date column for this env + table, or null.
 function guardFor(envInfo, table) {
   const g = (envInfo && envInfo.closed_year) || {};
   return Object.prototype.hasOwnProperty.call(g, table) ? g[table] : null;
 }
 
-module.exports = { closedThrough, bookDay, isOpen, why, guardFor, lateEntry, lateEntryNote, LOCK_MONTH };
+module.exports = { closedThrough, bookDay, isOpen, why, guardFor, lateEntry, lateEntryNote, linksFor, linkFix, linkFixNote, LOCK_MONTH };

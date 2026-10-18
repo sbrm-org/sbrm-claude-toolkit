@@ -144,6 +144,52 @@ test('kind component through the CLI: snapshot, plan (Not tried in Donor App Dev
   assert.equal(undo.code, 0, undo.out);
 });
 
+test('kind setting through the CLI: check, plan (the live flow warning first), show, apply, logged, revert (1.11.12)', async () => {
+  const T = require('./fake_setting');
+  writeConfig(T.ENVS);
+  const dv = withToolkitTables(T.fakeSettingDv(), T.ACCESS, 'hgs');
+  const job = file({
+    contract: 'sbrm-dv-job/1', kind: 'setting', env: 'hgs', setting: 'sbrm_SharePointDocumentsEnable', value: 'yes', source: 'claude-session',
+    reason: 'Turn the documents switch back on.', intent: { verb: 'set', setting: 'sbrm_SharePointDocumentsEnable', value: 'yes' },
+  });
+  const checked = await go(['check', job], deps(dv));
+  assert.equal(checked.code, 0, checked.out);
+  const planned = await go(['plan', job], deps(dv));
+  assert.equal(planned.code, 0, planned.out);
+  assert.match(planned.out, /Before you approve:\n {2}! Can't be fully undone: flows that read it \(Guest > Integrate Documents\)/);
+  assert.match(planned.out, /no -> yes/);
+  const id = planned.run.planId;
+  // What Claude Code's prompt says it approves: the setting, the old and new value, and the warning.
+  const { approvalText } = require('../../guard/guard');
+  assert.match(approvalText({ verb: 'apply', keys: [id] }), /^Set 'SharePoint Documents - Enable' \(sbrm_SharePointDocumentsEnable\) from "no" to "yes" in the HGS App\. Can't be fully undone: flows that read it/);
+  const shown = await go(['show', id], deps(dv));
+  assert.equal(shown.code, 0, shown.out);
+  assert.match(shown.out, /Value row: /);
+  const applied = await go(['apply', id], deps(dv));
+  assert.equal(applied.code, 0, applied.out);
+  assert.equal(dv.data.environmentvariablevalues.find((r) => r.environmentvariablevalueid === T.IDS.docsVal).value, 'yes');
+  assert.equal(dv.logs.length, 1);
+  assert.equal(dv.logs[0].sbrm_mode, 'setting');
+  assert.equal(dv.logs[0].sbrm_planid, id);
+  const undo = await go(['revert', id, 'hgs'], deps(dv));
+  assert.equal(undo.code, 0, undo.out);
+  assert.match(undo.out, /yes -> no/);
+});
+
+test('kind setting through the CLI: a develop-level person is refused and the refusal is recorded', async () => {
+  const T = require('./fake_setting');
+  writeConfig(T.ENVS);
+  const dv = withToolkitTables(T.fakeSettingDv({ email: 'dev@example.org' }), T.ACCESS, 'hgs');
+  const job = file({
+    contract: 'sbrm-dv-job/1', kind: 'setting', env: 'hgs', setting: 'sbrm_SharePointDocumentsEnable', value: 'yes', source: 'claude-session',
+    reason: 'x.', intent: { verb: 'set', setting: 'sbrm_SharePointDocumentsEnable', value: 'yes' },
+  });
+  const r = await go(['plan', job], deps(dv));
+  assert.equal(r.code, 1);
+  assert.match(r.out, /takes admin access/);
+  assert.equal(r.run.events[0].reason_code, 'not_permitted');
+});
+
 test('snapshot refuses a bad set or id without reading anything', async () => {
   writeConfig(K.ENVS);
   const dv = withToolkitTables(K.fakeComponentDv(), K.ACCESS, 'donorapp');

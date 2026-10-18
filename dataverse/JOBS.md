@@ -5,7 +5,7 @@ reads everything live, and refuses (never repairs) anything not exactly right. S
 `~/.sbrm-dataverse/jobs/`, never in a git folder. Every job has:
 
 - `contract`: `"sbrm-dv-job/1"`
-- `kind`: `rows`, `merge`, `schema` or `component`
+- `kind`: `rows`, `merge`, `schema`, `component` or `setting`
 - `env`: the app's key (`donorapp`, `fedev` = Donor App Dev, `hgs`, `recovery`, `soberliving`)
 - `source`: `"claude-session"` (or the script that made it)
 - `reason`: one plain sentence on why, one line, at most 500 characters
@@ -13,7 +13,7 @@ reads everything live, and refuses (never repairs) anything not exactly right. S
   difference, so the sentence you tell the person and the file always agree
 
 Who may run which kind is the person's level in that app (`whoami <env>`): write for `rows` (and `merge`
-with a merge grant), develop for `schema` and `component`, admin for deleting an app part (records are never deleted).
+with a merge grant), develop for `schema` and `component`, admin for `setting` and for deleting an app part (records are never deleted).
 
 ## Records: `kind: "rows"`
 
@@ -133,10 +133,36 @@ It prints the `snapshot_hash` and saves the current definition to `~/.sbrm-datav
   swapping a connection, or changing the trigger of a flow that is On, is admin. Turning a flow On fails
   unless the person owns its connections; the engine says who must do it.
 
+## App settings: `kind: "setting"` (admin)
+
+The current value of an environment variable (a setting a flow or app reads, like a Yes/No switch). Name it
+by its schema name (the environment variable's Name in the maker portal) and give the new value as text,
+exactly as the setting stores it.
+
+```json
+{ "contract": "sbrm-dv-job/1", "kind": "setting", "env": "hgs",
+  "setting": "sbrm_SharePointDocumentsEnable", "value": "yes",
+  "source": "claude-session", "reason": "Turn the guest documents folder button back on.",
+  "intent": { "verb": "set", "setting": "sbrm_SharePointDocumentsEnable", "value": "yes" } }
+```
+
+- Admin only: a setting can switch live automation on or off for everyone.
+- The value must fit the setting's type: a Yes/No setting takes `"yes"` or `"no"` (how every one in
+  SBRM's apps stores it; `"true"` is refused), a Number a number, JSON valid JSON, Text anything up to
+  2,000 characters.
+- Refused: a Secret or Data source setting (maker portal), a setting with no current value of its own
+  (its default applies; the first value is made in the maker portal for now), a managed value, and the
+  value it already has.
+- The plan names every cloud flow that reads the setting (on or off) and every solution its value sits
+  in. **Can't be fully undone** when a flow that is on reads it: the flow acts on the new value from its
+  next run. A solution carrying the value can set it back when it is imported again (that is how HGS's
+  documents switch went to "no" on 12/4/2024), so say so if the plan lists one.
+- Undo: `revert` sets the old value back, only while the setting still holds what the plan wrote.
+
 ## What the plan prints first
 
 `Before you approve:` lines, when there are any: **Large change** (over 50 rows, pairs or objects),
-**Can't be fully undone** (merges, deletes, a live flow's steps, turning a flow On), **Lasting** (a new
+**Can't be fully undone** (merges, deletes, a live flow's steps, turning a flow On, a setting a live flow reads), **Lasting** (a new
 table, column, view, form or flow stays until an admin deletes it), **Not tried in Donor App Dev first**
 (a change to something live in the Donor App without `proven_in`). Mention each in a few words before
 the apply; Claude Code's prompt shows them again. If the change grows between plan and apply, apply refuses.

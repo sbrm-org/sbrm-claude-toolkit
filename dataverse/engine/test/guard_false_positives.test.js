@@ -21,6 +21,7 @@ const PAG = J('py', 'autogui');
 const KBE = J('keybd', '_event');
 const AHK_EXT = J('.a', 'hk');
 const HM = J('HO', 'ME=');
+const DVH = J('sbrmdonorapp.crm.dyn', 'amics.com');
 const ENGINE = `${os.homedir().replace(/\\/g, '/')}/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.11.6/dataverse/engine/dataverse-write.js`;
 const HOME = os.homedir().replace(/\\/g, '/');
 const judge = (input) => verdict(input, [], { popup: () => false });
@@ -123,6 +124,13 @@ echo '{"hook_event_name":"Stop"}' | ~/.claude/hooks/tab-color.sh; echo "out-abov
   ['10b. the sbrm-ops-agents entrypoint, verbatim', write('/Users/tim/code-projects/sbrm-ops-agents/fly/docker-entrypoint.sh', J('#!/bin/sh\n# Prepare the Fly volume (mounted root-owned at /data) and drop privileges.\nset -eu\nDATA="${DATA_DIR:-/data}"\nfor d in state tailscale ledger queue transcripts; do mkdir -p "$DATA/$d"; done\nchown -R vigilance:vigilance "$DATA"\nchmod 0700 "$DATA/tailscale"\nexec setpriv --reuid=vigilance --regid=vigilance --init-groups env ', HM, '/home/vigilance "$@"\n'))],
   ['10c. a test script giving npm a scratch home, mentioning Claude only in a comment', write('C:/work/app/test.sh', J('#!/bin/sh\n# Claude Code runs this before a commit\n', HM, '"$(mktemp -d)" npm test\n'))],
   ['10d. an entrypoint whose user and home folder are named claude', write('C:/work/cc/entrypoint.sh', J('#!/bin/sh\nmkdir -p /home/claude\nchown claude /home/claude\necho "starting claude"\nexec setpriv --reuid=claude --regid=claude --init-groups env ', HM, '/home/claude "$@"\n'))],
+  // 1.11.12: a text tool's short flag ending in d (uniq -d, cut -d, date -d) read as curl's body flag when the
+  // request URL sat in a variable (D-1152/D-1154, Daian 10/15: GETs of file_download's signed URLs, then a
+  // duplicate check). The fallback for a URL in a variable now ignores segments that are plain text tools.
+  ['11a. D-1152: signed-URL GETs through a function, then uniq -D (was "a raw writing HTTP call at Dataverse")', sh(J('S=/private/tmp/claude-501/x/scratchpad/b865\nB="https://', DVH, '/api/filedownload"\nQ="sks=b&skv=2020-12-06&sv=2020-12-06&sr=b&rsct=application%2Foctet-stream"\ndl(){ curl -s -o "$S/$1.jpg" "$B/$2?sp=r&st=$3&se=$4&$Q&sig=$5"; }\ndl 561 "2020/4D/55/p/3121e6f9" 2026-10-15T16:39:09Z 2026-10-15T17:40:09Z "abc%3D"\ncd $S; file *.jpg | grep -vc JPEG; md5 -r *.jpg | sort | uniq -D -w32'), 'Bash', { cwd: '/Users/x' })],
+  ['11b. D-1154: the same with uniq -d and a sips resize loop', sh(J('S=/tmp/b865; cd $S\nB="https://', DVH, '/api/filedownload"\ndl(){ curl -s -o "$1.jpg" "$B/$2?sp=r&sig=$3"; }\ndl 571 "2018/68/55/p/42b8d568" "abc%3D"\nls | wc -l; md5 -r *.jpg | awk \'{print $1}\' | sort | uniq -d\nmkdir -p small; for f in *.jpg; do sips -Z 1400 "$f" --out small/$f >/dev/null; done'), 'Bash', { cwd: '/Users/x' })],
+  ['11c. a Dataverse GET and a cut -d on a pipe', sh(J('curl -s https://', DVH, '/api/data/v9.2/WhoAmI | cut -d , -f1'), 'Bash')],
+  ['11d. a Dataverse URL in a variable and a date -d on the next line', sh(J('U="https://', DVH, '/api/data/v9.2/WhoAmI"; curl -s "$U" > who.json\ndate -d "yesterday" +%F'), 'Bash')],
 ];
 
 for (const [label, input] of PASS) {
@@ -158,6 +166,16 @@ const BLOCK = [
   ['robocopy of C:\\', sh('robocopy C:\\ D:\\backup /E'), /rule: home-sweep/],
   ['cp -r of the home folder', sh('cp -r ~ /tmp/all', 'Bash'), /rule: home-sweep/],
   ['Compress-Archive of the home folder', sh('Compress-Archive -Path $env:USERPROFILE -DestinationPath C:\\temp\\h.zip'), /rule: home-sweep/],
+  // raw writes at Dataverse whose URL is in a variable, beside a text tool (1.11.12 narrowing must not open these)
+  ['a body write to a URL in a variable, after a uniq -d', sh(J('U="https://', DVH, '/api/data/v9.2/contacts"; uniq -d a.txt; curl -s', 'd @b.json "$U"'), 'Bash'), /raw writing HTTP call at Dataverse/],
+  ['a PATCH hidden in a command substitution behind sort -d', sh(J('U="https://', DVH, '/api/data/v9.2/contacts(1)"; sort -d $(curl -X PA', 'TCH "$U" -', 'd @b.json)'), 'Bash'), /raw writing HTTP call at Dataverse/],
+  ['a PATCH hidden in backticks behind cut -d', sh(J('U="https://', DVH, '/api/data/v9.2/contacts(1)"; cut -d , -f1 `curl -X PA', 'TCH "$U" -', 'd @b.json`'), 'Bash'), /raw writing HTTP call at Dataverse/],
+  ['the URL echoed into a file, then a body write reading it back', sh(J('echo "https://', DVH, '/api/data/v9.2/contacts" > u.txt; curl -s', 'd @b.json "$(cat u.txt)"'), 'Bash'), /raw writing HTTP call at Dataverse/],
+  ['code echoed into python, the URL in a variable', sh(J('U="https://', DVH, '/api/data/v9.2/contacts(1)"; echo "import requests,os; requests.pat', 'ch(os.environ[\'U\'], json={})" | U=$U python'), 'Bash'), /raw writing HTTP call at Dataverse/],
+  ['one python call echoed into python, nothing else in the quote', sh(J('U="https://', DVH, '/api/data/v9.2/contacts(1)"\necho "requests.pat', 'ch(U, json={})" | python'), 'Bash'), /raw writing HTTP call at Dataverse/],
+  ['the URL pulled out of a note by grep -o, then a body write', sh(J('grep -o \'https://', DVH, '/api/data/v9.2/contacts\' notes.md > u.txt; curl -s', 'd @b.json "$(< u.txt)"'), 'Bash'), /raw writing HTTP call at Dataverse/],
+  ['a here-string into grep feeding sh', sh(J('U="https://', DVH, '/api/data/v9.2/contacts"; grep -h . <<< \'curl -s', 'd @b.json "$U"\' | sh'), 'Bash'), /raw writing HTTP call at Dataverse/],
+  ['a write through a function, with uniq -D on the line', sh(J('B="https://', DVH, '/api/data/v9.2"\nup(){ curl -s -X PA', 'TCH "$B/$1" -', 'd "$2"; }\nup "contacts(1)" "{}"; sort f | uniq -D'), 'Bash'), /raw writing HTTP call at Dataverse/],
   ['cd home, then a relative recursive grep', sh('cd ~ && grep -r token .', 'Bash'), /rule: home-sweep/],
   ['a recursive command with no path, run from the home folder', sh('rg -n secret', 'Bash', { cwd: os.homedir() }), /rule: home-sweep/],
   ['the folder above home', sh('Get-ChildItem C:\\Users -Recurse'), /rule: home-sweep/],

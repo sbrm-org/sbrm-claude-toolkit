@@ -3,7 +3,45 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
-- **1.11.11 (unreleased)** **Book dates are written as local midnight.** A gift's book date (`msnfp_bookdate`) is a
+- **1.11.12** (2026-10-18, PR #16) **A text tool's `-d` no longer reads as a curl body flag.** When a request's URL sat in a
+  variable, the HTTP rule blocked if a Dataverse host and any write-shaped flag appeared anywhere in the shell text,
+  and the combined curl-flag spelling (`-sd`) also matched `uniq -d`, `cut -d` and `date -d` (D-1152, D-1154, Daian
+  10/15: GETs of `file_download`'s signed URLs, then a duplicate check with `uniq -D`; old and next guard both
+  blocked). Shell text only: a segment whose command is a plain text or file tool (uniq, cut, sort, date, grep, ls,
+  ...) is set aside before the check, unless it holds `$(`, backticks, `<(`, `-exec` or `<<`. Tools that run commands
+  or carry text into the next one (awk, sed, find, xargs, echo, cat, printf, tee, base64) are not set aside, the host
+  is still looked for in the whole text, and code files being written keep the strict check. Tests:
+  `engine/test/guard_false_positives.test.js` (4 must-pass, red first; 9 must-block), which guard_next.test.js
+  reuses; a mutation pass (`guard_review/mutate_texttools.js`) kills 4 of 5 mutants (the survivor, code files kept
+  strict, is defense in depth with no realistic input that differs).
+  **The dataverse skill now says one apply at a time** (step 5). Two applies started together queue two prompts
+  and the later approval expires: Dylan's five side-by-side resolves 10/14 lost three, and Daian's two applies
+  started 1 ms apart 10/15 both expired (D-1160, D-1161; she re-ran each alone and both applied). The rule lived
+  only in Dylan's project notes, out of reach of a staff member's Claude. Skill text only, no engine change.
+  **A closed-year gift may have its pledge link fixed** (Dylan 10/16/26). Pledges are not booked in QBO, so which
+  record carries a pledge link changes no books. A closed-year gift or soft credit may have ONLY a lookup listed in
+  envs.json's new `closed_year_links` (donorapp + fedev: `msnfp_DonorCommitmentId`, the pledge) set or cleared;
+  anything else in the same row is still refused, and the plan shows a "only its pledge link changes" note. Apply
+  honours it only from the signed plan, so a plan made before this release gets no exception. Case: PLDG-00002067,
+  whose FY25 payment TRN-00291885 is linked on the gift, not on the soft credit the pledge counts. Tests:
+  `engine/test/closedyear.test.js` and `closedyear_engine.test.js` (5, red first). Same rule in
+  `Donor App Reference\audited_fy.py` (`pledge_link_fix`).
+  **A new job kind, `setting`: change an app setting's value** (an environment variable; Dylan 10/18/26, "Lets build
+  that into the toolkit"). Admin only. Named by the setting's schema name, the value given as text exactly as the
+  setting stores it. The plan reads the setting and its one current value, checks the value fits the type (a Yes/No
+  setting takes "yes" or "no", as every one in SBRM's apps stores it; a Number a number; JSON valid JSON), names every
+  cloud flow that reads the setting, and names the solutions its value sits in, since importing one of them again can
+  set it back. It warns "Can't be fully undone" when a flow that is on reads it. Apply re-reads the setting and its
+  value, writes the one value with its version tag, and reads it back; revert sets the old value back only while the
+  setting still holds what the plan wrote. Refused: Secret and Data source settings, a setting with no value of its
+  own (its default applies; a first value is still made in the maker portal), a managed value, the value it already
+  has. Claude Code's prompt names the setting and both values. Why: HGS's `sbrm_SharePointDocumentsEnable` was set
+  to "no" by a 12/4/2024 solution import, the guest "Create Documents folder" button quietly did nothing for about 22
+  months, and turning it back on had no way through the toolkit (a records job on the value table is refused).
+  Tests: `engine/test/setting.test.js` (19, red first), `cli_app.test.js` (2: the whole path through the CLI, and a
+  develop-level refusal), on `fake_setting.js` (shapes read live from HGS 10/18); the mutation pass
+  `guard_review/mutate_setting.js` kills 19 of 19 mutants. A records job on the setting tables now names the new kind.
+- **1.11.11** (2026-10-14, PR #15) **Book dates are written as local midnight.** A gift's book date (`msnfp_bookdate`) is a
   date-only column stored in the person's time zone, so a bare date like "2026-10-12" was stored as midnight UTC,
   which is 5 PM the day before in Pacific time, and the app showed every such gift a day early (batch 2026_863,
   10/13/26: 46 gifts; Power BI then disagreed with the app by a day). The plan now reads each date column's

@@ -154,6 +154,55 @@ test('late entry at APPLY: the recheck honours it, and still refuses a new date 
   assert.equal(dv.data.contacts[IDS.jane].birthdate, CLOSED, 'nothing written');
 });
 
+// The pledge-link exception (Dylan 10/16/26): pledges are not booked in QBO, so fixing which record carries a
+// pledge link changes no books. A closed-year gift may have that ONE lookup set or cleared, nothing else.
+// Case: PLDG-00002067 (Barry Goss), whose FY25 payment TRN-00291885 is linked on the gift, not its soft credit.
+// The fake's contact lookup to an account stands in for the gift's pledge lookup.
+const ENVS_LINKS = { donorapp: { ...ENVS.donorapp, closed_year_links: { contacts: ['parentcustomerid_account'] } } };
+function planLinks(dv, raw) {
+  const fields = [...new Set(raw.rows.flatMap((r) => Object.keys(r.body)))].sort();
+  const res = validateJob({
+    contract: 'sbrm-dv-job/1', kind: 'rows', env: 'donorapp', table: 'contacts', source: 'test', reason: 'Test.',
+    intent: { verb: raw.mode, count: raw.rows.length, table: 'contacts', fields }, ...raw,
+  }, { envs: ENVS_LINKS });
+  assert.deepEqual(res.errors, []);
+  return planJob(dv, res.job, { envs: ENVS_LINKS, access: ACCESS });
+}
+const LINK = 'parentcustomerid_account@odata.bind';
+
+test('pledge link: a closed-year record may have only the listed link set or cleared, at plan AND apply', () => {
+  const dv = fakeDv();
+  dv.touch('contacts', IDS.jane, { birthdate: CLOSED });
+  const p = planLinks(dv, { mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { [LINK]: `/accounts(${IDS.acme})` } }] });
+  assert.equal(p.rows.length, 1);
+  assert.match(p.rows[0].warnings.join('\n'), /^closed FY\d\d gift: only its pledge link changes/m);
+  assert.deepEqual(p.closed_year_links, ['parentcustomerid_account']);
+  const { id } = savePlan(p);
+  const res = applyPlan(id, { access: ACCESS, connect: () => dv, confirm: () => ({ approved: true }) });
+  assert.equal(res.outcome, 'applied');
+  assert.equal(dv.data.contacts[IDS.jane]._parentcustomerid_value, IDS.acme);
+  const q = planLinks(dv, { mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { [LINK]: null } }] });
+  assert.equal(q.rows.length, 1, 'clearing it is allowed too');
+});
+
+test('pledge link is NARROW: another column, an unlisted env, or a moved book date are still refused', () => {
+  const dv = fakeDv();
+  dv.touch('contacts', IDS.jane, { birthdate: CLOSED });
+  assert.throws(() => planLinks(dv, { mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { [LINK]: `/accounts(${IDS.acme})`, address1_city: 'X' } }] }), /closed fiscal year/);
+  assert.throws(() => planLinks(dv, { mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { [LINK]: `/accounts(${IDS.acme})`, birthdate: OPEN } }] }), /closed fiscal year/);
+  assert.throws(() => plan(dv, { mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { [LINK]: `/accounts(${IDS.acme})` } }] }), /closed fiscal year/, 'ENVS lists no links');
+});
+
+test('pledge link at APPLY: a plan with no link list (made before 1.11.12) gets no exception', () => {
+  const dv = fakeDv();
+  dv.touch('contacts', IDS.jane, { birthdate: CLOSED });
+  const p = planLinks(dv, { mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { [LINK]: `/accounts(${IDS.acme})` } }] });
+  delete p.closed_year_links;
+  const { id } = savePlan(p);
+  assert.throws(() => applyPlan(id, { access: ACCESS, connect: () => dv, confirm: () => { throw new Error('no prompt'); } }), /closed fiscal year/);
+  assert.equal(dv.data.contacts[IDS.jane]._parentcustomerid_value, null, 'nothing written');
+});
+
 test('a revert cannot touch a closed-year record either (it is planned through the same guard)', () => {
   const dv = fakeDv();
   dv.touch('contacts', IDS.jane, { birthdate: CLOSED });
