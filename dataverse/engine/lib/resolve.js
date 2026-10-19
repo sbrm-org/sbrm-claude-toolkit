@@ -194,7 +194,11 @@ function planJob(dv, job, { envs, access, warnRows }) {
     const settingHint = /^environmentvariable(?:value|definition)s$/.test(job.table)
       ? ' A setting\'s current value (an environment variable) is changed with kind "setting", which takes admin access.'
       : '';
-    throw new PlanRefused([`${job.table} holds the app's own definitions, not records. Change a view, form, sitemap or flow with an app change (kind "component"; tables and columns are kind "schema"), which takes develop access.${settingHint} Access, roles and users are changed in the admin portal.`], 'not_permitted');
+    // So does a person's security roles (1.11.13).
+    const roleHint = /^(?:systemusers|roles|teams)$/.test(job.table)
+      ? ' A person\'s security roles are given or taken with kind "role", which takes admin access.'
+      : '';
+    throw new PlanRefused([`${job.table} holds the app's own definitions, not records. Change a view, form, sitemap or flow with an app change (kind "component"; tables and columns are kind "schema"), which takes develop access.${settingHint}${roleHint} Other access settings, and users themselves, are changed in the admin portal.`], 'not_permitted');
   }
   // No cap on how many rows (ruled 10/7: "I dont think placing caps on writes makes sense"); a big change
   // is flagged by its severity instead, below.

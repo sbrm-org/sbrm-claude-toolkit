@@ -889,6 +889,13 @@ function describePlan(id) {
       const v = (x) => (typeof x === 'string' ? `"${x.length > 60 ? `${x.slice(0, 60)}...` : x}"` : 'nothing');
       head = `Set ${s.schemaname ? `'${s.displayname || s.schemaname}' (${s.schemaname})` : 'an app setting'} from ${v((rec.before || {}).value)} to ${v((rec.after || {}).value)} in the ${app}`;
     }
+    else if (rec.kind === 'role') {
+      // Who holds a security role (1.11.13): the prompt names each person, the role, and add or remove.
+      const one = (r) => `${r.action === 'add' ? 'Add' : 'Remove'} '${(r.role || {}).name}' ${r.action === 'add' ? 'to' : 'from'} ${(r.user || {}).fullname} (${(r.user || {}).email})`;
+      const rows = Array.isArray(rec.rows) ? rec.rows : [];
+      head = rows.length === 1 ? `${one(rows[0])} in the ${app}`
+        : `${rows.length} security role changes in the ${app}: ${rows.slice(0, 4).map(one).join('; ')}${rows.length > 4 ? `; and ${rows.length - 4} more` : ''}`;
+    }
     else head = `A change in the ${app}`;
     const warn = (rec.severity && Array.isArray(rec.severity.lines)) ? rec.severity.lines : [];
     return `${head}${rec.reverts_plan_id ? ' (an undo)' : ''}${warn.length ? `. ${warn.join(' ')}` : ''}`;

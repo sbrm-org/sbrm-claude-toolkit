@@ -2,7 +2,26 @@
 // The write connection's allow-list for app development (lib/write.js, DESIGN.md §10f; 10/7 review finding 8).
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { checkMeta, publishXml } = require('../lib/write');
+const { checkMeta, publishXml, roleCall } = require('../lib/write');
+
+test('roles: a grant and a removal each reach exactly one fixed path, and only for two GUIDs', () => {
+  const u = '11111111-1111-1111-1111-111111111111';
+  const r = '22222222-2222-2222-2222-222222222222';
+  assert.deepEqual(roleCall('grant', u, r, 'https://sbrmhgs.crm.dynamics.com'), {
+    method: 'POST', path: `systemusers(${u})/systemuserroles_association/$ref`,
+    body: { '@odata.id': `https://sbrmhgs.crm.dynamics.com/api/data/v9.2/roles(${r})` },
+  });
+  assert.deepEqual(roleCall('revoke', u, r, 'https://sbrmhgs.crm.dynamics.com'), {
+    method: 'DELETE', path: `systemusers(${u})/systemuserroles_association(${r})/$ref`, body: undefined,
+  });
+  for (const [verb, uid, rid, host] of [
+    ['grant', 'x', r, 'https://a.crm.dynamics.com'],
+    ['grant', u, `${r})/../contacts(${r}`, 'https://a.crm.dynamics.com'],
+    ['revoke', u, '', 'https://a.crm.dynamics.com'],
+    ['delete', u, r, 'https://a.crm.dynamics.com'],
+    ['grant', u, r, 'http://evil.invalid/x'],
+  ]) assert.throws(() => roleCall(verb, uid, rid, host), /refusing/, `${verb} ${uid} ${rid} ${host}`);
+});
 
 test('metadata: the definition sets and the named actions pass, with the allowed headers', () => {
   assert.equal(checkMeta('POST', "EntityDefinitions(LogicalName='sbrm_x')/Attributes", ['MSCRM.SolutionUniqueName: SBRMAdHoc']), 'POST');

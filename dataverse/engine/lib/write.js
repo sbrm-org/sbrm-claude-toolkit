@@ -9,6 +9,8 @@
 //                              GlobalOptionSetDefinitions, solutions, and the option-value / solution / app
 //                              actions; DELETE only on the three definition sets (admin deletes)
 //   publish                    PublishXml for the named components only; there is no PublishAllXml
+//   grantRole / revokeRole     one security role given to or taken from one user (kind "role", 1.11.13): the
+//                              association $ref on systemuserroles_association, both ids checked as GUIDs
 //
 // Every PATCH or DELETE of a record carries If-Match with the version tag read at apply, so Dataverse itself
 // refuses the write (412) if anyone changed the record between the apply-time check and the write.
@@ -66,6 +68,19 @@ function publishXml({ entities = [], optionsets = [], sitemaps = [], appmodules 
     + tag('sitemaps', 'sitemap', sitemaps) + tag('appmodules', 'appmodule', appmodules);
   if (!body) throw new Error('nothing to publish');
   return `<importexportxml>${body}</importexportxml>`;
+}
+
+// One role association (kind "role"). The path is fixed and both ids must be GUIDs, so nothing a plan carries
+// can reach another endpoint; the role is named by its full URL on this connection's own host.
+const GUID_ONLY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function roleCall(verb, userId, roleId, host) {
+  if (!GUID_ONLY.test(String(userId)) || !GUID_ONLY.test(String(roleId))) throw new Error('refusing a role change whose user or role is not a GUID');
+  if (!/^https:\/\/[a-z0-9.-]+$/i.test(String(host))) throw new Error('refusing a role change on a host that is not a bare https address');
+  if (verb === 'grant') {
+    return { method: 'POST', path: `systemusers(${userId})/systemuserroles_association/$ref`, body: { '@odata.id': `${host}/api/data/v9.2/roles(${roleId})` } };
+  }
+  if (verb === 'revoke') return { method: 'DELETE', path: `systemusers(${userId})/systemuserroles_association(${roleId})/$ref`, body: undefined };
+  throw new Error(`refusing role verb ${verb}`);
 }
 
 // The approval, checked HERE on every write this connection sends (1.11.10, guard_review/DESIGN.md §2a, ruled
@@ -132,10 +147,19 @@ function writeConnection(host, cli = resolveCli(), { approval = null } = {}) {
     publish(components) {
       return send('POST', 'PublishXml', { ParameterXml: publishXml(components) }, []);
     },
+    // A security role given to or taken from one user (kind "role"). Admin level; the caller checks it.
+    grantRole(userId, roleId) {
+      const c = roleCall('grant', userId, roleId, host);
+      return send(c.method, c.path, c.body, []);
+    },
+    revokeRole(userId, roleId) {
+      const c = roleCall('revoke', userId, roleId, host);
+      return send(c.method, c.path, c.body, []);
+    },
     getMany(paths, concurrency) {
       return getMany(cli, host, paths, concurrency);
     },
   };
 }
 
-module.exports = { writeConnection, checkMeta, publishXml, META_ACTIONS };
+module.exports = { writeConnection, checkMeta, publishXml, roleCall, META_ACTIONS };

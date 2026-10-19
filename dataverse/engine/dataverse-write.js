@@ -61,6 +61,11 @@ const APP_KINDS = {
     const m = require('./lib/setting');
     return { label: 'app setting (environment variable value)', validate: m.validateSettingJob, plan: m.planSetting, summary: m.settingSummary, detail: m.settingDetail, apply: m.applySetting, revert: m.planSettingRevert };
   },
+  // Who holds a security role (1.11.13, Dylan 10/17/26), admin only.
+  role: () => {
+    const m = require('./lib/role');
+    return { label: 'security role change', validate: m.validateRoleJob, plan: m.planRole, summary: m.roleSummary, detail: m.roleDetail, apply: m.applyRole, revert: m.planRoleRevert };
+  },
 };
 const appKind = (kind) => (Object.prototype.hasOwnProperty.call(APP_KINDS, kind) ? APP_KINDS[kind]() : null);
 
@@ -198,7 +203,7 @@ function loadJob(file, envs) {
   } catch (e) {
     return { errors: [`cannot read ${file} as JSON: ${e.message}`] };
   }
-  // Five kinds: rows (CONTRACT.md §2a), merge (DESIGN.md §8c), schema and component (§10e), setting (1.11.12).
+  // Six kinds: rows (CONTRACT.md §2a), merge (DESIGN.md §8c), schema and component (§10e), setting (1.11.12), role (1.11.13).
   if (raw && raw.kind === 'merge') return merge.validateMergeJob(raw, { envs });
   const app = raw && appKind(raw.kind);
   return app ? app.validate(raw, { envs }) : validateJob(raw, { envs });
