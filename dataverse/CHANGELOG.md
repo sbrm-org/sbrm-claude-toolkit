@@ -3,6 +3,26 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.13** (2026-10-19) **A new job kind, `role`: give or take a person's security role** (Dylan 10/17/26, "can
+  we add role changes to toolkit?"). Admin only. Each row names ONE person by work email, ONE role by name, and add or
+  remove; up to 25 rows a job. The plan picks the role's copy in the person's own business unit (every role has one
+  per unit and a person can hold only theirs), reads their direct roles and the teams they are in (owner and Entra
+  teams; access teams never give roles), and for every removal says either "Access continues through the team X"
+  or "This ends their access", which is a new warning kind, **Ends access** (`lib/severity.js` `ends`; more of it at
+  apply than at plan refuses the apply, like any warning that grew). Rulings 10/19/26: System Administrator and
+  System Customizer are never given here (an admin gives them by hand) and only SBRM's own (unmanaged) roles are
+  given; any role may be taken away except System Administrator from the last enabled person who holds it (app
+  users do not count). Always refused: your own roles, and adding a role to a disabled account (taking one from a
+  disabled account is tidy-up and allowed). A row that cannot go is left out with its reason. Apply re-reads every
+  person, role copy and grant, then makes one association call per row (`lib/write.js` `grantRole` / `revokeRole`,
+  a fixed `$ref` path on two GUIDs), each read back; revert is the opposite change while nothing has moved.
+  Claude Code's prompt names each person, the role, and add or remove. A records job on `systemusers`, `roles` or
+  `teams` now names the new kind. Why: the 10/17 direct-grants review found role grants changeable only in the
+  Power Platform admin center, outside the Write Log. Tests: `engine/test/role.test.js` (22, red first) on
+  `fake_role.js` (shapes read live from HGS and Recovery 10/19), `cli_app.test.js` (3), `write.test.js` (1); suite
+  755 (754 + 1 skip); the mutation pass `guard_review/mutate_role.js` kills 33 of 33. Live read-only plans on HGS
+  and Recovery 10/19 (nothing applied): the Men's unit copy picked for a Recovery user; a direct grant with no team
+  behind it flagged Ends access; a Microsoft role and the planner's own row refused.
 - **1.11.12** (2026-10-18, PR #16) **A text tool's `-d` no longer reads as a curl body flag.** When a request's URL sat in a
   variable, the HTTP rule blocked if a Dataverse host and any write-shaped flag appeared anywhere in the shell text,
   and the combined curl-flag spelling (`-sd`) also matched `uniq -d`, `cut -d` and `date -d` (D-1152, D-1154, Daian

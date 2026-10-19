@@ -190,6 +190,65 @@ test('kind setting through the CLI: a develop-level person is refused and the re
   assert.equal(r.run.events[0].reason_code, 'not_permitted');
 });
 
+test('kind role through the CLI: check, plan (ends access first), show, the prompt headline, apply, logged, revert (1.11.13)', async () => {
+  const T = require('./fake_role');
+  writeConfig(T.ENVS);
+  const dv = withToolkitTables(T.fakeRoleDv(), T.ACCESS, 'hgs');
+  const job = file({
+    contract: 'sbrm-dv-job/1', kind: 'role', env: 'hgs', source: 'claude-session', reason: 'Tim steps back.',
+    rows: [{ user: 'tim@example.org', role: '#_ SBRM Normal', action: 'remove' }], intent: { verb: 'roles', add: 0, remove: 1 },
+  });
+  const checked = await go(['check', job], deps(dv));
+  assert.equal(checked.code, 0, checked.out);
+  const planned = await go(['plan', job], deps(dv));
+  assert.equal(planned.code, 0, planned.out);
+  assert.match(planned.out, /Before you approve:\n {2}! Ends access: Tim Molloy loses '#_ SBRM Normal' in the HGS apps/);
+  const id = planned.run.planId;
+  // What Claude Code's prompt says it approves: who, which role, and the warning.
+  const { approvalText } = require('../../guard/guard');
+  assert.match(approvalText({ verb: 'apply', keys: [id] }), /^Remove '#_ SBRM Normal' from Tim Molloy \(tim@example\.org\) in the HGS apps\. Ends access: Tim Molloy loses/);
+  const shown = await go(['show', id], deps(dv));
+  assert.equal(shown.code, 0, shown.out);
+  assert.match(shown.out, /Role copy: /);
+  const applied = await go(['apply', id], deps(dv));
+  assert.equal(applied.code, 0, applied.out);
+  assert.ok(!dv.data.userroles.some((g) => g.user === T.IDS.tim && g.role === T.IDS.normal));
+  assert.equal(dv.logs.length, 1);
+  assert.equal(dv.logs[0].sbrm_mode, 'role');
+  assert.equal(dv.logs[0].sbrm_planid, id);
+  const undo = await go(['revert', id, 'hgs'], deps(dv));
+  assert.equal(undo.code, 0, undo.out);
+  assert.match(undo.out, /Add '#_ SBRM Normal' to Tim Molloy/);
+});
+
+test('kind role through the CLI: a develop-level person is refused and the refusal is recorded', async () => {
+  const T = require('./fake_role');
+  writeConfig(T.ENVS);
+  const dv = withToolkitTables(T.fakeRoleDv({ email: 'dev@example.org' }), T.ACCESS, 'hgs');
+  const job = file({
+    contract: 'sbrm-dv-job/1', kind: 'role', env: 'hgs', source: 'claude-session', reason: 'x.',
+    rows: [{ user: 'tim@example.org', role: '#_ SBRM Normal', action: 'remove' }], intent: { verb: 'roles', add: 0, remove: 1 },
+  });
+  const r = await go(['plan', job], deps(dv));
+  assert.equal(r.code, 1);
+  assert.match(r.out, /takes admin access/);
+  assert.equal(r.run.events[0].reason_code, 'not_permitted');
+});
+
+test('a records job on systemusers or roles points at kind role (1.11.13)', async () => {
+  const T = require('./fake_role');
+  writeConfig(T.ENVS);
+  const dv = withToolkitTables(T.fakeRoleDv(), T.ACCESS, 'hgs');
+  const job = file({
+    contract: 'sbrm-dv-job/1', kind: 'rows', env: 'hgs', table: 'systemusers', mode: 'update', source: 'claude-session', reason: 'x.',
+    intent: { verb: 'update', table: 'systemusers', count: 1, fields: ['fullname'] },
+    rows: [{ id: T.IDS.tim, name: 'Tim Molloy', body: { fullname: 'X' } }],
+  });
+  const r = await go(['plan', job], deps(dv));
+  assert.equal(r.code, 1);
+  assert.match(r.out, /A person's security roles are given or taken with kind "role", which takes admin access/);
+});
+
 test('snapshot refuses a bad set or id without reading anything', async () => {
   writeConfig(K.ENVS);
   const dv = withToolkitTables(K.fakeComponentDv(), K.ACCESS, 'donorapp');

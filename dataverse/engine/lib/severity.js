@@ -10,6 +10,8 @@
 //                         form, flow...): only an admin can delete, so undo cannot take it back
 //   Can't be fully undone merges, deletes, and changes that alter existing data or live behaviour
 //   Not tried in Dev      a change to something live in an app that has a dev copy, not proven there first
+//   Ends access           a security role taken from someone whom no team still gives it (kind "role", 1.11.13;
+//                         Dylan 10/17/26: "I dont want to accidentally shut off anyones access")
 //
 // A plan with no warnings is routine: it can be reverted and touches `warn_rows` or fewer.
 
@@ -20,15 +22,16 @@ function plural(n, one, many) {
 }
 
 // count: rows / pairs / objects the plan changes. noun: what they are, plural form ("contacts").
-// lasting / irreversible: one plain phrase per item, no trailing period. unproven: a phrase or null.
-function assess({ count = 0, noun = 'records', lasting = [], irreversible = [], unproven = null } = {}, { warnRows = DEFAULT_WARN_ROWS } = {}) {
+// lasting / irreversible / ends: one plain phrase per item, no trailing period. unproven: a phrase or null.
+function assess({ count = 0, noun = 'records', lasting = [], irreversible = [], unproven = null, ends = [] } = {}, { warnRows = DEFAULT_WARN_ROWS } = {}) {
   const large = count > warnRows;
   const lines = [];
   if (large) lines.push(`Large change: ${count} ${noun}.`);
+  for (const x of ends) lines.push(`Ends access: ${x}.`);
   for (const x of irreversible) lines.push(`Can't be fully undone: ${x}.`);
   for (const x of lasting) lines.push(`Lasting: ${x}. Undo cannot remove it; only an admin delete can.`);
   if (unproven) lines.push(`${unproven}.`);
-  return { count, noun, large, warn_rows: warnRows, lasting: [...lasting], irreversible: [...irreversible], unproven: unproven || null, lines };
+  return { count, noun, large, warn_rows: warnRows, lasting: [...lasting], irreversible: [...irreversible], unproven: unproven || null, ends: [...ends], lines };
 }
 
 // The plain-words block that heads the plan output and the pop-up. Empty for a routine change.
@@ -46,6 +49,7 @@ function grew(planned, now) {
   if (now.lasting.length > planned.lasting.length) return true;
   if (now.irreversible.length > planned.irreversible.length) return true;
   if (now.unproven && !planned.unproven) return true;
+  if ((now.ends || []).length > (planned.ends || []).length) return true;
   return false;
 }
 

@@ -5,7 +5,7 @@ reads everything live, and refuses (never repairs) anything not exactly right. S
 `~/.sbrm-dataverse/jobs/`, never in a git folder. Every job has:
 
 - `contract`: `"sbrm-dv-job/1"`
-- `kind`: `rows`, `merge`, `schema`, `component` or `setting`
+- `kind`: `rows`, `merge`, `schema`, `component`, `setting` or `role`
 - `env`: the app's key (`donorapp`, `fedev` = Donor App Dev, `hgs`, `recovery`, `soberliving`)
 - `source`: `"claude-session"` (or the script that made it)
 - `reason`: one plain sentence on why, one line, at most 500 characters
@@ -13,7 +13,7 @@ reads everything live, and refuses (never repairs) anything not exactly right. S
   difference, so the sentence you tell the person and the file always agree
 
 Who may run which kind is the person's level in that app (`whoami <env>`): write for `rows` (and `merge`
-with a merge grant), develop for `schema` and `component`, admin for `setting` and for deleting an app part (records are never deleted).
+with a merge grant), develop for `schema` and `component`, admin for `setting`, `role` and for deleting an app part (records are never deleted).
 
 ## Records: `kind: "rows"`
 
@@ -158,6 +158,34 @@ exactly as the setting stores it.
   next run. A solution carrying the value can set it back when it is imported again (that is how HGS's
   documents switch went to "no" on 12/4/2024), so say so if the plan lists one.
 - Undo: `revert` sets the old value back, only while the setting still holds what the plan wrote.
+
+## Security roles: `kind: "role"` (admin)
+
+Give or take ONE security role for ONE person, several rows per job (at most 25). Name the person by their
+work email (their sign-in) and the role by its name exactly as Dataverse shows it.
+
+```json
+{ "contract": "sbrm-dv-job/1", "kind": "role", "env": "hgs",
+  "rows": [ { "user": "name@sbrm.org", "role": "#_ SBRM Normal", "action": "remove" } ],
+  "source": "claude-session", "reason": "Their direct grant ends; the Homeless Program team gives the same role.",
+  "intent": { "verb": "roles", "add": 0, "remove": 1 } }
+```
+
+- Admin only: a role decides what someone can see and change.
+- Every role has one copy per business unit, and a person can hold only their own unit's copy; the plan
+  picks it. Roles are compared by their root, so a team in another unit counts.
+- **Never given here** (ruled 10/19/26): System Administrator and System Customizer (an admin gives them by
+  hand in the Power Platform admin center), and any Microsoft (managed) role: only SBRM's own roles are given.
+  Any role may be taken away, except System Administrator from the last enabled person who holds it (app
+  users do not count).
+- Always refused: your own roles, and a role added to a disabled account. Taking a role from a disabled
+  account is allowed (tidy-up).
+- A row that cannot go is left out with its reason; the rest go ahead. Every row left out refuses the plan.
+- For every removal the plan says either **"Access continues through the team X"** or **"This ends their
+  access"**, which is a warning on its own line (**Ends access**). Team membership in Dataverse can lag Entra,
+  so check the Entra group before relying on a team. Entra team membership is out of scope here.
+- Undo: `revert` makes the opposite change, only while each grant still is what the plan left. Undoing the
+  removal of System Administrator or a Microsoft role is refused like any such add: an admin gives it back.
 
 ## What the plan prints first
 
