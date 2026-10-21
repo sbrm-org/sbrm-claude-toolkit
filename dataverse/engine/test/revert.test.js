@@ -87,6 +87,25 @@ test('a lookup cleared by the original write is restored to its old record (set 
   assert.equal(dv.data.contacts[IDS.bob]._parentcustomerid_value, IDS.acme);
 });
 
+// R-1035: the old owner comes back as a pointer at ITS table (the before image keeps only the id, and the abstract
+// owner table cannot be pointed at), a team as surely as a user.
+test('an owner change is undone back to the old owner, a team or a user', () => {
+  const dv = fakeDv();
+  dv.touch('contacts', IDS.jane, { _ownerid_value: IDS.team });
+  dv.touch('contacts', IDS.bob, { _ownerid_value: IDS.cm });
+  const { id: orig } = applied({ mode: 'update', rows: [
+    { name: 'Jane Example', id: IDS.jane, body: { 'ownerid@odata.bind': `/systemusers(${IDS.cm})` } },
+    { name: 'Bob Sample', id: IDS.bob, body: { 'ownerid@odata.bind': `/teams(${IDS.team})` } },
+  ] }, dv);
+  assert.equal(dv.data.contacts[IDS.jane]._ownerid_value, IDS.cm);
+  const { id, plan } = revertOf(orig, dv);
+  assert.deepEqual(plan.rows.find((r) => r.id === IDS.jane).body, { 'ownerid@odata.bind': `/teams(${IDS.team})` });
+  assert.deepEqual(plan.rows.find((r) => r.id === IDS.bob).body, { 'ownerid@odata.bind': `/systemusers(${IDS.cm})` });
+  run(id, dv);
+  assert.equal(dv.data.contacts[IDS.jane]._ownerid_value, IDS.team);
+  assert.equal(dv.data.contacts[IDS.bob]._ownerid_value, IDS.cm);
+});
+
 test('RULED 10/7: a record whose undone column changed since is LEFT OUT; the rest is undone', () => {
   const dv = fakeDv();
   const { id: orig } = applied({ mode: 'update', rows: [

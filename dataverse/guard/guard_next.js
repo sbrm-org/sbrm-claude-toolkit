@@ -16,7 +16,8 @@
 // install / marketplace add from a session ASK), fork 6 (all six store folders protected by resolved target).
 //
 // Returns: null (allow), a string (block, the reason), or { ask: reason } (Claude Code asks the person).
-// In 1.11.10 nothing here has authority: guard.js decides and calls shadow() so disagreements are recorded.
+// 1.11.10-1.11.13 ran this in shadow. From 1.11.14 (the cut-over) THIS decides: guard.js's hook entry calls it and
+// keeps its own verdict only as the watcher (shadowOld) and as the self-test's parity reference.
 // Trigger strings are spelled with character classes so this file does not trip other guards.
 
 const os = require('os');
@@ -482,6 +483,15 @@ function writeTargets(c) {
 
 // ---------- code (node -e, python -c, a heredoc into an interpreter, a PowerShell expression) ----------
 
+// A string literal in code is judged as a CLI call only when it is COMMAND-SHAPED: the CLI word, then one of the
+// verbs the CLI has (`--help`, 10/21: auth, org/env, api, erp, data, skill, mcp, install) or a flag. judgeCli fails
+// closed on an unknown verb, which is right for a shell line and wrong for prose in a string: a docstring opening
+// "<product> UserLocal DateOnly ..." (H-1028, 10/19) and a label "<product> hgs (secret)" (10/21) were stopped. A
+// literal handed straight to a shell is still read as a whole command line (SHELL_CALL below), unknown verbs refused.
+const CLI_VERBS = 'auth|org|env|api|erp|data|skill|mcp|install|help';
+const CLI_SHAPED = new RegExp(`(?:^|[\\s"'\`&|;(/\\\\])(?:npx\\s+(?:-y\\s+)?@microsoft/)?data[v]erse(?:cli)?(?:@[\\w.^~-]+)?(?:\\.exe|\\.cmd|\\.ps1|\\.js)?["'\`]?\\s+(?:-|(?:${CLI_VERBS})(?![\\w-]))`, 'i');
+const literalCli = (s) => (CLI_SHAPED.test(s) ? G.cliVerdict(s) : null);
+
 // The string literals of a piece of code: [{ value | null, start, end }]. Comments are skipped.
 function codeLiterals(code, lang) {
   const out = [];
@@ -593,7 +603,7 @@ function codeVerdict(code, lang, ctx, env, depth = 0) {
   const lits = codeLiterals(src, lang);
   for (const l of lits) {
     if (l.value === null) continue;
-    const v = G.cliVerdict(l.value);
+    const v = literalCli(l.value);
     if (v) return tag(`${v}, which writes to Dataverse`, 'cli-literal');
     if (I.KEY_NAMED.test(l.value)) return MSG.keyRead;
     if (/[\\/]|^~/.test(l.value) && /sbrm-dataverse|\.\./i.test(l.value)) {
@@ -624,6 +634,10 @@ function codeVerdict(code, lang, ctx, env, depth = 0) {
     let m;
     while ((m = re.exec(src)) !== null) {
       if (lits.some((l) => m.index >= l.start && m.index < l.end)) continue;
+      // `.replace(` as a METHOD is judged by RECEIVER_WRITES below (os.replace, Path(...).replace: its target, or
+      // unknown on code that names the store), never here, where a string's .replace(old, new) read its arguments as
+      // paths (D-1175, 10/17: `k.replace("/","\\")` read as moving the drive root). A bare replace( is still judged.
+      if (/^replace/i.test(m[0]) && /\.\s*$/.test(src.slice(0, m.index))) continue;
       const args = callArgs(src, m.index + m[0].length - 1, lits).filter((a) => !a.keyword);
       let targets = [];
       if (which === 'open') {
@@ -795,6 +809,47 @@ function redirectTargets(c) {
   return out;
 }
 
+// A `sed -i` on a skill file whose script the guard can read in full and that cannot write a hook (S-1005, 10/16: a
+// one-word change to a skill's body text was stopped as a prompt hook, because a shell edit's result cannot be read).
+// Passes only a literal script (no -e / -f) made of nothing but s/// commands with plain flags (no e, no w), whose
+// text names no hook, permission or request, and that re-inserts nothing it matched (no \1 or &) and decodes no
+// character escape (\x \u \o \d \c). Anything else on a skill file fails closed as before.
+function sedSubsOnly(script) {
+  const s = String(script);
+  const parts = [];
+  let i = 0;
+  while (i < s.length) {
+    while (i < s.length && /[\s;]/.test(s[i])) i += 1;
+    if (i >= s.length) break;
+    if (s[i] !== 's') return null;
+    const d = s[i + 1];
+    if (!d || /[\s\\]/.test(d)) return null;
+    i += 2;
+    const fields = [];
+    for (let f = 0; f < 2; f += 1) {
+      let v = '';
+      while (i < s.length && s[i] !== d) {
+        if (s[i] === '\\') { v += s[i] + (s[i + 1] || ''); i += 2; } else { v += s[i]; i += 1; }
+      }
+      if (s[i] !== d) return null;
+      i += 1;
+      fields.push(v);
+    }
+    // plain flags only: an e or w flag (or anything else) is left in place and fails the "s" check next round
+    i += /^[gIip0-9]*/.exec(s.slice(i))[0].length;
+    parts.push(fields);
+  }
+  return parts.length ? parts : null;
+}
+function sedEditSafe(c) {
+  if (c.name !== 'sed' && c.name !== 'gsed') return false;
+  const { pos, flags } = argsOf(c);
+  if (flagHas(flags, /^-[a-zA-Z]*[ef]$|^--(?:expression|file)/) || !pos.length) return false;
+  const subs = sedSubsOnly(literal(pos[0]) ?? '');
+  return !!subs && subs.every(([pat, rep]) => !/hook|permission|request/i.test(pat + rep)
+    && !/\\[0-9xuodc]/i.test(pat + rep) && !/(?:^|[^\\])&/.test(rep));
+}
+
 function targetVerdict(t, c, ctx, env) {
   if (!t.w) return env.protectedNamed ? tag(env.namesPlugin ? MSG.plugin : MSG.store, 'unknown-target', 'a redirect with no target') : null;
   const pl = places(t.w, ctx, c.shell);
@@ -811,7 +866,7 @@ function targetVerdict(t, c, ctx, env) {
     if (lk === 'settings' || lk === 'hooksjson') return MSG.loading;
     if (lk === 'skillmd') {
       const content = writtenContent(c, t);
-      if (content === null || /Permission[R]equest|\\u[0-9a-f]{4}|\\x[0-9a-f]{2}/i.test(content)) return MSG.answerer;
+      if (content === null ? !sedEditSafe(c) : /Permission[R]equest|\\u[0-9a-f]{4}|\\x[0-9a-f]{2}/i.test(content)) return MSG.answerer;
     }
     if (isProfile(p.path)) {
       const content = writtenContent(c, t);
@@ -1206,7 +1261,7 @@ function contentVerdict(file, t) {
   if (I.CLI_LIST.test(t) && I.LIST_WRITE.test(t)) return "writing code that calls the Dataverse CLI's write side";
   // F5 (closed part): the CLI's write side as a string the code hands to a shell
   for (const l of codeLiterals(t, /\.py$/i.test(file) ? 'py' : PS_SCRIPT.test(file) ? 'ps' : /\.(?:js|cjs|mjs|ts)$/i.test(file) ? 'js' : 'sh')) {
-    if (l.value !== null && G.cliVerdict(l.value)) return "writing code that calls the Dataverse CLI's write side [rule: cli-literal]";
+    if (l.value !== null && literalCli(l.value)) return "writing code that calls the Dataverse CLI's write side [rule: cli-literal]";
   }
   if (I.storeMoveCode(t)) return "writing code that moves the engine's store or settings";
   return null;
@@ -1263,13 +1318,19 @@ function writeVerdict(tool, ti, dirs, input = {}) {
 
 // ---------- the verdict ----------
 
+// While an approval waits, the browser tool may still LOOK (F-1009/F-1011, 10/20: two screenshots of a web page were
+// stopped because an apply was waiting in another session on the machine). Only these actions of that one tool;
+// a click, a key, typing, scrolling or a drag still blocks, and so does every other screen tool.
+const LOOK_ONLY = new Set(['screenshot', 'zoom']);
+const looksOnly = (mcp, ti) => !!mcp && mcp.server === 'claude-in-chrome' && mcp.name === 'computer' && LOOK_ONLY.has(String((ti || {}).action || ''));
+
 function verdict(input, dirs = I.devDirs(), { popup = I.popupOpen } = {}) {
   const tool = String(input.tool_name || '');
   const ti = input.tool_input || {};
   const mcp = I.mcpParts(tool);
   if (mcp && I.DV_SERVER.test(mcp.server)) return I.READ_TOOLS.has(mcp.name) ? null : `the Dataverse tool "${mcp.name}" (only known reads are allowed)`;
   if (mcp && I.DV_WRITE_TOOLS.test(mcp.name)) return `the tool "${mcp.name}" (a Dataverse write outside the approved path)`;
-  if (I.SCREEN_TOOL.test(tool) && popup()) return 'driving the screen while an approval is waiting (approving is the person\'s alone)';
+  if (I.SCREEN_TOOL.test(tool) && !looksOnly(mcp, ti) && popup()) return 'driving the screen while an approval is waiting (approving is the person\'s alone)';
   if (mcp) {
     const strings = [];
     const walk = (v) => { if (typeof v === 'string') strings.push(v); else if (v && typeof v === 'object') Object.values(v).forEach(walk); };

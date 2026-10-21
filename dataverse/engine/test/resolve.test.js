@@ -162,6 +162,36 @@ test('lookup binds: wrong table refused, missing target refused, good target sho
   assert.match(second.plan.refused[0].why, /the linked account .* does not exist/);
 });
 
+// R-1035 (10/20, Recovery): Owner is a lookup onto the abstract owner table, so pointing at users was refused as the
+// wrong table and pointing at owners could never be read ("does not exist" for every live case manager).
+test('an Owner lookup: a user or a team plans by name; another table, a missing or a disabled user is refused', () => {
+  const ok = run(job({ mode: 'update', rows: [
+    { name: 'Jane Example', id: IDS.jane, body: { 'ownerid@odata.bind': `/systemusers(${IDS.cm})` } },
+    { name: 'Bob Sample', id: IDS.bob, body: { 'ownerid@odata.bind': `/teams(${IDS.team})` } },
+  ] })).plan;
+  assert.deepEqual(ok.refused, []);
+  assert.deepEqual(ok.rows.map((r) => [r.changes[0].label, r.changes[0].new, r.changes[0].new_text]), [
+    ['Owner', IDS.cm, 'Casey Manager'],
+    ['Owner', IDS.team, 'Recovery Program Team'],
+  ]);
+  const bad = (bind) => run(job({ mode: 'update', rows: [
+    { name: 'Jane Example', id: IDS.jane, body: { 'ownerid@odata.bind': bind } },
+    { name: 'Bob Sample', id: IDS.bob, body: { address1_city: 'Z' } },
+  ] })).plan.refused[0].why;
+  assert.match(bad(`/owners(${IDS.cm})`), /Owner must point at a user \(systemusers\) or a team \(teams\), not owners/);
+  assert.match(bad(`/accounts(${IDS.acme})`), /Owner must point at a user \(systemusers\) or a team \(teams\), not accounts/);
+  assert.match(bad(`/systemusers(${IDS.gone})`), /Owner: the linked user .* does not exist/);
+  assert.match(bad(`/teams(${IDS.gone})`), /Owner: the linked team .* does not exist/);
+  assert.match(bad(`/systemusers(${IDS.cmOff})`), /Owner: the user Former Manager is disabled/);
+});
+
+test('an Owner lookup on create: the new record is planned with its owner', () => {
+  const { plan } = run(job({ mode: 'create', rows: [
+    { name: 'New', body: { lastname: 'New', 'ownerid@odata.bind': `/systemusers(${IDS.cm})` }, dup_filter: "lastname eq 'New'" },
+  ] }));
+  assert.equal(plan.rows[0].changes.find((c) => c.label === 'Owner').new_text, 'Casey Manager');
+});
+
 test('create: a duplicate hit is refused; a broken dup_filter refuses the row loudly', () => {
   const { plan } = run(job({ mode: 'create', rows: [
     { name: 'Dup', body: { lastname: 'Dup' }, dup_filter: "lastname eq 'Dup'" },

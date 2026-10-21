@@ -11,6 +11,10 @@ const { spawnSync } = require('child_process');
 
 const NUDGE = path.join(__dirname, '..', '..', 'nudge', 'nudge.js');
 const RUN_SH = path.join(__dirname, '..', '..', 'nudge', 'run.sh');
+// On Windows a bare `bash` from PowerShell is the WSL stub in System32, not Git Bash (10/21: the suite failed there
+// and passed from Git Bash). Claude Code runs hooks with Git Bash, so the test does too.
+const GIT_BASH = 'C:/Program Files/Git/bin/bash.exe';
+const BASH = process.platform === 'win32' && fs.existsSync(GIT_BASH) ? GIT_BASH : 'bash';
 
 function layout({ running = '1.11.8', installed = '1.11.9', name = 'sbrm-toolkit' } = {}) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-nudge-'));
@@ -108,10 +112,10 @@ test('a dev copy, bad input, missing files: silent, exit 0', () => {
 
 test('run.sh never blocks a prompt: no node means silence and exit 0', { skip: process.platform === 'win32' && !fs.existsSync('C:/Program Files/Git/bin/bash.exe') ? 'no bash' : false }, () => {
   const l = layout();
-  const r = spawnSync('bash', [RUN_SH], { input: '{}', encoding: 'utf8', env: { ...process.env, SBRM_DV_HOME: l.home, CLAUDE_PLUGIN_ROOT: l.root, SBRM_NUDGE_TEST_NO_NODE: '1' } });
+  const r = spawnSync(BASH, [RUN_SH], { input: '{}', encoding: 'utf8', env: { ...process.env, SBRM_DV_HOME: l.home, CLAUDE_PLUGIN_ROOT: l.root, SBRM_NUDGE_TEST_NO_NODE: '1' } });
   assert.equal(r.status, 0);
   assert.equal(r.stdout, '');
-  const ok = spawnSync('bash', [RUN_SH], { input: JSON.stringify({ session_id: 'z' }), encoding: 'utf8', env: { ...process.env, SBRM_DV_HOME: l.home, CLAUDE_PLUGIN_ROOT: l.root } });
+  const ok = spawnSync(BASH, [RUN_SH], { input: JSON.stringify({ session_id: 'z' }), encoding: 'utf8', env: { ...process.env, SBRM_DV_HOME: l.home, CLAUDE_PLUGIN_ROOT: l.root } });
   assert.equal(ok.status, 0);
   assert.match(ok.stdout, /"hookEventName":"UserPromptSubmit"/);
 });

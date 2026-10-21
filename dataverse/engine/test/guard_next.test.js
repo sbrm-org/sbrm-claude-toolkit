@@ -214,3 +214,64 @@ test('settings: a project settings file is diffed; one in a scratch folder nothi
   assert.equal(next(sh('claude -p hi', 'Bash', { cwd: dir })).kind, 'ask');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ---------- 4. the shadow's new stops, fixed before the cut-over (1.11.14) ----------
+// Calls the installed guard allowed and the next model would have stopped (events/guard_shadow.jsonl 10/16-10/21,
+// guard_review/replay_shadow.js), as they ran with generic paths, each beside the real thing its rule exists for.
+
+const SKILL = `${H}/.claude/skills/x`;
+const CLI = J('data', 'verse');
+const NEW_STOPS_PASS = [
+  ['S-1005 a sed edit of a skill\'s body text (no hooks in it)', sh(`cd "${SKILL}" && grep -n "recent runs used 3" SKILL.md && sed -i 's/run; recent runs used 3 at a time\\./run; the 10\\/16\\/26 run 4 at a time./' SKILL.md && grep -n "at a time" SKILL.md`)],
+  ['D-1175 a python heredoc that only READS Claude Code\'s user config', sh(`python - <<'EOF'\nimport json,os\nd=json.load(open(os.path.expanduser("~/.claude.json"),encoding="utf-8"))\ncwd=r"C:\\Users\\x\\Documents\\Claude"\nfor k,v in (d.get("projects") or {}).items():\n    if os.path.normcase(os.path.normpath(k.replace("/","\\\\")))==os.path.normcase(cwd):\n        print("disabledMcpServers:",v.get("disabledMcpServers"))\nEOF`)],
+  ['D-1175 shape: a JS string .replace of a slash, then a read', sh(`node -e "const p='a/b'.replace('/', '\\\\\\\\'); console.log(require('fs').readFileSync(p.replace(/x/g,'y'),'utf8'))"`)],
+  ['H-1028 a .py docstring that opens with the product name', write('C:/Users/x/Documents/Claude/EOM/prerec_check.py', `"""Checks.\n\n${J('Data', 'verse')} UserLocal DateOnly comes back as 07:00Z, so dates are read in UTC.\n"""\nprint(1)\n`)],
+  ['10/21 a python -c whose string names an app beside the product word', sh(`cd /c/Users/x/repos/tracker && python -c "\nfor name in [('sharepoint (cert)', 1), ('${CLI} hgs (secret)', 2)]:\n    print(name)\n" 2>&1 | tail -4`)],
+];
+for (const [label, input] of NEW_STOPS_PASS) {
+  test(`new stop now passes: ${label}`, () => {
+    const r = next(input);
+    assert.equal(r.kind, 'allow', r.why);
+  });
+}
+
+const NEW_STOPS_BLOCK = [
+  ['a sed edit that writes a prompt hook into a skill\'s frontmatter', sh(`sed -i 's/^name: x$/name: x\\nhooks:\\n  ${PR}:\\n    - hooks:\\n        - type: command\\n          command: y/' "${SKILL}/SKILL.md"`), /prompt-answerer/],
+  ['a python heredoc that WRITES into the store', sh(J(`python - <<'EOF'\nimport os\nopen(os.path.expanduser("~/.sbrm-dataverse/plans/x.json"),"w").wri`, `te("{}")\nEOF`)), /engine's own store/],
+  ['a .py holding a CLI write in a variable it hands to a shell', write('C:/temp/go2.py', J('import os\ncmd = "', CLI, ' data up', 'date contact 1"\nos.system(cmd)\n')), /CLI's write side/],
+  ['a python -c string naming a CLI write verb the guard knows', sh(`python -c "x = '${CLI} skill upload a'; print(x)"`), /writes to Dataverse/],
+  ['a python -c string with the CLI word then a flag', sh(`python -c "x = '${CLI} --bogus data up${J('', 'date')} a'; print(x)"`), /unknown option|writes to Dataverse/],
+  ['D-1184 (ruled 10/21: the rule stands) a names-only listing of the store\'s settings folder', sh('ls ~/.sbrm-dataverse/config/tickets | wc -l; ls ~/.sbrm-dataverse/config/'), /store's root or settings folder/],
+  ['os.replace INTO the store is still a move (only a string\'s .replace is not)', sh(J(`python - <<'EOF'\nimport os\nos.repl`, `ace("/tmp/x.json", "~/.sbrm-dataverse/plans/x.json")\nEOF`)), /engine's own store/],
+  ['a sed edit of a skill that re-inserts what it matched (&)', sh(`sed -i 's/^name: x$/&\\nmore: y/' "${SKILL}/SKILL.md"`), /prompt-answerer/],
+  ['a sed edit of a skill that decodes a character escape', sh(`sed -i 's/^name: x$/name: x\\n\\x68ooks:/' "${SKILL}/SKILL.md"`), /prompt-answerer/],
+  ['a sed edit of a skill that is not an s command (y, shaped like one)', sh(`sed -i 'y/abc/xyz/' "${SKILL}/SKILL.md"`), /prompt-answerer/],
+  ['a sed edit of a skill that reads another file in (r)', sh(`sed -i '1r /tmp/extra.yml' "${SKILL}/SKILL.md"`), /prompt-answerer/],
+  ['a sed edit of a skill with the w flag', sh(`sed -i 's/a/b/w /tmp/out.txt' "${SKILL}/SKILL.md"`), /prompt-answerer/],
+  ['a sed edit of a skill with the e flag (runs the result)', sh(`sed -i 's/a/b/e' "${SKILL}/SKILL.md"`), /prompt-answerer/],
+  ['a sed edit of a skill through -e (the script is not read)', sh(`sed -i -e 's/a/b/' "${SKILL}/SKILL.md"`), /prompt-answerer/],
+];
+for (const [label, input, message] of NEW_STOPS_BLOCK) {
+  test(`still blocks: ${label}`, () => {
+    const r = next(input);
+    assert.equal(r.kind, 'block', `expected a block, got ${r.kind}`);
+    assert.match(r.why, message);
+  });
+}
+
+// F-1009 / F-1011 (10/20): a read-only browser screenshot was stopped because an approval was waiting in ANOTHER
+// session on this machine. Looking cannot press Yes; a click, a key or typing still can.
+test('an approval waiting: a browser screenshot or zoom passes, a click, key or type still blocks', () => {
+  const waiting = { dirs: opts.dirs, popup: () => true };
+  const chrome = (action, extra = {}) => ({ tool_name: 'mcp__claude-in-chrome__computer', tool_input: { action, tabId: 1, ...extra } });
+  assert.equal(N.decideNext(chrome('screenshot'), waiting).kind, 'allow');
+  assert.equal(N.decideNext(chrome('zoom', { region: [0, 0, 10, 10] }), waiting).kind, 'allow');
+  for (const a of ['left_click', 'double_click', 'key', 'type', 'scroll', 'left_click_drag', 'hover']) {
+    const r = N.decideNext(chrome(a, { coordinate: [1, 1], text: 'y' }), waiting);
+    assert.equal(r.kind, 'block', `${a}: expected a block`);
+    assert.match(r.why, /approval is waiting/);
+  }
+  assert.equal(N.decideNext({ tool_name: 'mcp__claude-in-chrome__computer', tool_input: { tabId: 1 } }, waiting).kind, 'block');
+  assert.equal(N.decideNext({ tool_name: 'mcp__windows-mcp__Click-Tool', tool_input: { action: 'screenshot', loc: [1, 2] } }, waiting).kind, 'block');
+  assert.equal(N.decideNext(chrome('left_click', { coordinate: [1, 1] }), { dirs: opts.dirs, popup: () => false }).kind, 'allow');
+});

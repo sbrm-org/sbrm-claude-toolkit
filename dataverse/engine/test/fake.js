@@ -13,6 +13,11 @@ const ENTITIES = {
   msnfp_transaction: { LogicalName: 'msnfp_transaction', EntitySetName: 'msnfp_transactions', PrimaryIdAttribute: 'msnfp_transactionid', PrimaryNameAttribute: 'msnfp_name', DisplayName: L('Transaction'), DisplayCollectionName: L('Transactions') },
   task: { LogicalName: 'task', EntitySetName: 'tasks', PrimaryIdAttribute: 'activityid', PrimaryNameAttribute: 'subject', DisplayName: L('Task'), DisplayCollectionName: L('Tasks') },
   sbrm_contact_tag: { LogicalName: 'sbrm_contact_tag', EntitySetName: 'sbrm_contact_tags', PrimaryIdAttribute: 'sbrm_contact_tagid' },
+  // The Owner column's targets (R-1035, 10/21): ownerid is ONE navigation property onto the abstract owner table,
+  // which cannot be read by id; a pointer names a user or a team (read live, Recovery sbrm_client, 10/20).
+  owner: { LogicalName: 'owner', EntitySetName: 'owners', PrimaryIdAttribute: 'ownerid', PrimaryNameAttribute: 'name', DisplayName: L('Owner'), DisplayCollectionName: L('Owners') },
+  systemuser: { LogicalName: 'systemuser', EntitySetName: 'systemusers', PrimaryIdAttribute: 'systemuserid', PrimaryNameAttribute: 'fullname', DisplayName: L('User'), DisplayCollectionName: L('Users') },
+  team: { LogicalName: 'team', EntitySetName: 'teams', PrimaryIdAttribute: 'teamid', PrimaryNameAttribute: 'name', DisplayName: L('Team'), DisplayCollectionName: L('Teams') },
 };
 
 // One-to-many relationships for the merge inventory: two cascade-on-merge donor tables, one system table
@@ -62,6 +67,7 @@ const ATTRS = {
     A('statecode', 'State', 'Status'),
     A('statuscode', 'Status', 'Status Reason'),
     A('parentcustomerid', 'Customer', 'Company Name'),
+    A('ownerid', 'Owner', 'Owner'),
     A('creditlimit', 'Money', 'Credit Limit'),
     A('donotemail', 'Boolean', 'Do not allow Emails'),
     A('yomifullname', 'String', 'Yomi Full Name', { AttributeOf: 'fullname' }),
@@ -91,6 +97,7 @@ const NAVS = {
   contact: [
     { ReferencingAttribute: 'parentcustomerid', ReferencedEntity: 'account', ReferencingEntityNavigationPropertyName: 'parentcustomerid_account' },
     { ReferencingAttribute: 'parentcustomerid', ReferencedEntity: 'contact', ReferencingEntityNavigationPropertyName: 'parentcustomerid_contact' },
+    { ReferencingAttribute: 'ownerid', ReferencedEntity: 'owner', ReferencingEntityNavigationPropertyName: 'ownerid' },
   ],
   account: [],
 };
@@ -115,6 +122,9 @@ const IDS = {
   t2: 'bbbbbbbb-bbbb-bbbb-bbbb-000000000002',
   t3: 'bbbbbbbb-bbbb-bbbb-bbbb-000000000003',
   me: '99999999-9999-9999-9999-999999999999',
+  cm: '55555555-0000-0000-0000-000000000001',
+  cmOff: '55555555-0000-0000-0000-000000000002',
+  team: '66666666-0000-0000-0000-000000000001',
 };
 
 function records() {
@@ -138,6 +148,14 @@ function records() {
     sbrm_contact_tags: {
       'eeee0000-0000-0000-0000-000000000001': { sbrm_contact_tagid: 'eeee0000-0000-0000-0000-000000000001', contactid: IDS.jane, sbrm_tagid: 'ffff0000-0000-0000-0000-000000000001' },
       'eeee0000-0000-0000-0000-000000000002': { sbrm_contact_tagid: 'eeee0000-0000-0000-0000-000000000002', contactid: IDS.jane, sbrm_tagid: 'ffff0000-0000-0000-0000-000000000002' },
+    },
+    // Owner targets: an enabled and a disabled user, one team (the session's own user is answered separately below).
+    systemusers: {
+      [IDS.cm]: { systemuserid: IDS.cm, fullname: 'Casey Manager', isdisabled: false },
+      [IDS.cmOff]: { systemuserid: IDS.cmOff, fullname: 'Former Manager', isdisabled: true },
+    },
+    teams: {
+      [IDS.team]: { teamid: IDS.team, name: 'Recovery Program Team' },
     },
     // t1 is in a long-closed fiscal year, t2 far in the future (open), t3 already on the kept record.
     msnfp_transactions: {
@@ -245,7 +263,8 @@ function fakeDv({ email = 'dgross@example.org', dupHits = [], userId = IDS.me, i
         const names = dv.privileges || [...DEVELOP_PRIVILEGES, ...ADMIN_PRIVILEGES];
         return { RolePrivileges: names.map((PrivilegeName) => ({ PrivilegeName, Depth: 'Global' })) };
       }
-      if ((m = /^systemusers\(([^)]+)\)/.exec(p))) return { fullname: 'Test Person', internalemailaddress: email, domainname: email };
+      // The session's own user (identity); any other user is read from data.systemusers when the fake has one.
+      if ((m = /^systemusers\(([^)]+)\)/.exec(p)) && (m[1] === userId || !data.systemusers)) return { fullname: 'Test Person', internalemailaddress: email, domainname: email };
       if ((m = /^EntityDefinitions\?\$filter=EntitySetName eq '([^']+)'/.exec(p))) {
         return { value: Object.values(ENTITIES).filter((e) => e.EntitySetName === m[1]) };
       }

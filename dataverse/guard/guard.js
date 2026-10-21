@@ -1106,6 +1106,28 @@ function shadow(input, decided, { next = null } = {}) {
   } catch { /* recording is best effort; the decision stands either way */ }
 }
 
+// After the cut-over (1.11.14, DESIGN.md §7): the NEXT model decides and this file's own verdict watches, for two
+// weeks, so a regression shows in the review before anyone reports it. Same record, same fields: `old` is this
+// file's verdict, `next` the decision that was made.
+function shadowOld(input, decided, { next = null } = {}) {
+  if (!input || process.env.SBRM_GUARD_PROBE === '1') return;
+  let got;
+  try {
+    got = (next || require('./guard_next')).decideOld(input, { popup: popupOpen });
+  } catch (e) {
+    got = { kind: 'crash', why: String((e && e.stack) || e).slice(0, 600) };
+  }
+  try {
+    if (got.kind !== decided.kind) require('../engine/lib/shadow').record(input, got, decided);
+  } catch { /* recording is best effort; the decision stands either way */ }
+}
+
+// A question for the person that is not an apply (no ticket): the next model's asks (fork 5, ruled 10/13).
+function askOnly(reason) {
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: String(reason) } }));
+  process.exit(0);
+}
+
 function blockMessage(what, rec) {
   let msg = `BLOCKED by the SBRM toolkit Dataverse guard: ${what}. `
     + 'A change to Dataverse goes through the shared write path: Claude plans it, runs `apply` on its own '
@@ -1457,23 +1479,33 @@ if (require.main === module) {
     process.stdin.on('end', () => {
       let input;
       try { input = JSON.parse(raw); } catch { block('an unreadable tool call (the guard could not parse it, so it failed closed)'); }
-      // This guard decides; the next model only watches (1.11.10, shadow()).
-      const ap = approvalVerdict(input);
-      const what = ap ? null : verdict(input);
-      const decided = ap && ap.block ? { kind: 'block', why: ap.block } : ap && ap.ask ? { kind: 'ask', why: 'approval' } : what ? { kind: 'block', why: what } : { kind: 'allow', why: null };
-      shadow(input, decided);
+      // The cut-over (1.11.14): the next model (guard_next.js) decides; this file's own verdict only watches
+      // (shadowOld). Rollback is a release that restores the 1.11.13 lines here (approvalVerdict + verdict + shadow).
+      let ap;
+      let v;
+      try {
+        const N = require('./guard_next');
+        ap = N.approvalVerdict(input);
+        v = ap ? null : N.verdict(input);
+      } catch (e) {
+        block(`a call the guard could not judge (it failed closed: ${String((e && e.message) || e).slice(0, 200)})`, input);
+      }
+      const decided = ap && ap.block ? { kind: 'block', why: ap.block } : ap && ap.ask ? { kind: 'ask', why: 'approval' }
+        : typeof v === 'string' ? { kind: 'block', why: v } : v && v.ask ? { kind: 'ask', why: v.ask } : { kind: 'allow', why: null };
+      shadowOld(input, decided);
       if (ap && ap.block) block(ap.block, input);
       if (ap && ap.ask) {
         try { askPerson(ap.ask); } catch (e) { block(`an apply the guard could not prepare an approval for (${e.message})`, input); }
       }
-      if (what) block(what, input);
+      if (typeof v === 'string') block(v, input);
+      if (v && v.ask) askOnly(v.ask);
       process.exit(0);
     });
   }
 }
 
 module.exports = {
-  verdict, shellVerdict, writeVerdict, cliVerdict, approvalVerdict, approvalCommand, approvalText, blockMessage, selftestCases, shadow,
+  verdict, shellVerdict, writeVerdict, cliVerdict, approvalVerdict, approvalCommand, approvalText, blockMessage, selftestCases, shadow, shadowOld,
   // The layers the next decision model (guard_next.js, 1.11.10) keeps unchanged, and the helpers it shares.
   _internals: {
     READ_TOOLS, mcpParts, DV_SERVER, DV_WRITE_TOOLS, SHELL_MCP, CODE_MCP, XRM_WRITE, SCREEN_TOOL, targetsDataverse, cliVerdict, judgeCli,
