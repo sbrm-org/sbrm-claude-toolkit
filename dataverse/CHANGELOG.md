@@ -3,6 +3,17 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.15** (2026-10-21) **The browser is no longer frozen by another session's approval.** While an approval
+  waited anywhere on the machine, every screen tool was blocked in every session, the Chrome tool included, and for up
+  to ten minutes after a No (the ticket's life). 1.11.14 let screenshots and zoom through; the same morning a wait and
+  clicks in Paychex and Azure tabs were still stopped by another session's prompt (R-1043, R-1044, R-1047, R-1048).
+  Ruled 10/21 (Dylan: "we need to fix that chrome block because its really annoying"): the Chrome tool drives browser
+  tabs only and cannot reach the terminal where Claude Code asks, so while an approval waits it is free, except a call
+  that names Claude's own site (claude.ai, claude.com), where a Remote Control or claude.ai/code approval could be
+  shown. Desktop mouse and keyboard tools still block while an approval waits. Residual, written down: a click carries
+  only a tab number, so a tab already open on Claude's site is not seen. `guard/guard_next.js` (`browserTool`,
+  `namesClaudeSite`); test in `guard_next.test.js` (every browser action passes while waiting; Claude's site blocks by
+  navigate, a new tab, page script or typed text; a look-alike domain passes; desktop tools block).
 - **1.11.14** (2026-10-21) **The guard cut-over: the redesigned guard now decides, and a record's owner can be
   set.** (1) `guard/guard.js`'s hook entry now asks `guard/guard_next.js` (the parsed-shell model, in shadow since
   1.11.10) for every decision; the old verdict watches for two weeks and every disagreement is recorded the other way

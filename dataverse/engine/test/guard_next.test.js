@@ -259,19 +259,36 @@ for (const [label, input, message] of NEW_STOPS_BLOCK) {
   });
 }
 
-// F-1009 / F-1011 (10/20): a read-only browser screenshot was stopped because an approval was waiting in ANOTHER
-// session on this machine. Looking cannot press Yes; a click, a key or typing still can.
-test('an approval waiting: a browser screenshot or zoom passes, a click, key or type still blocks', () => {
+// F-1009 / F-1011 (10/20), R-1043/1044/1047/1048 (10/21): browser work in one session was stopped because an approval
+// was waiting in ANOTHER session on this machine. The browser tool drives Chrome tabs only; it cannot reach the
+// terminal where Claude Code asks. Ruled 10/21 (Dylan: "we need to fix that chrome block because its really
+// annoying"): while an approval waits the browser tool is free, except a call that names Claude's own site (where a
+// Remote Control or claude.ai/code approval could be shown). Mouse and keyboard tools that reach the desktop still block.
+test('an approval waiting: the browser tool is free except on Claude\'s own site; desktop screen tools still block', () => {
   const waiting = { dirs: opts.dirs, popup: () => true };
   const chrome = (action, extra = {}) => ({ tool_name: 'mcp__claude-in-chrome__computer', tool_input: { action, tabId: 1, ...extra } });
-  assert.equal(N.decideNext(chrome('screenshot'), waiting).kind, 'allow');
-  assert.equal(N.decideNext(chrome('zoom', { region: [0, 0, 10, 10] }), waiting).kind, 'allow');
-  for (const a of ['left_click', 'double_click', 'key', 'type', 'scroll', 'left_click_drag', 'hover']) {
-    const r = N.decideNext(chrome(a, { coordinate: [1, 1], text: 'y' }), waiting);
-    assert.equal(r.kind, 'block', `${a}: expected a block`);
-    assert.match(r.why, /approval is waiting/);
+  for (const a of ['screenshot', 'zoom', 'wait', 'left_click', 'double_click', 'key', 'type', 'scroll', 'left_click_drag', 'hover']) {
+    const r = N.decideNext(chrome(a, { coordinate: [1, 1], text: 'y', duration: 2 }), waiting);
+    assert.equal(r.kind, 'allow', `${a}: ${r.why}`);
   }
-  assert.equal(N.decideNext({ tool_name: 'mcp__claude-in-chrome__computer', tool_input: { tabId: 1 } }, waiting).kind, 'block');
+  assert.equal(N.decideNext({ tool_name: 'mcp__claude-in-chrome__shortcuts_execute', tool_input: { tabId: 1, shortcut: 'x' } }, waiting).kind, 'allow');
+  // Claude's own site, by any browser tool, while an approval waits: blocked
+  const site = [
+    { tool_name: 'mcp__claude-in-chrome__navigate', tool_input: { tabId: 1, url: 'https://claude.ai/code' } },
+    { tool_name: 'mcp__claude-in-chrome__tabs_create_mcp', tool_input: { url: 'https://www.claude.com/remote' } },
+    { tool_name: 'mcp__claude-in-chrome__javascript_tool', tool_input: { tabId: 1, action: 'javascript_exec', text: "location='https://CLAUDE.AI/new'" } },
+    chrome('type', { text: 'claude.ai/code' }),
+  ];
+  for (const input of site) {
+    const r = N.decideNext(input, waiting);
+    assert.equal(r.kind, 'block', `${input.tool_name}: expected a block`);
+    assert.match(r.why, /Claude's own site while an approval is waiting/);
+  }
+  // with no approval waiting, the same calls pass
+  for (const input of site) assert.equal(N.decideNext(input, { dirs: opts.dirs, popup: () => false }).kind, 'allow');
+  // a look-alike domain is not Claude's site
+  assert.equal(N.decideNext({ tool_name: 'mcp__claude-in-chrome__navigate', tool_input: { tabId: 1, url: 'https://notclaude.ai.example.org/x' } }, waiting).kind, 'allow');
+  // desktop mouse/keyboard tools still block while waiting, whatever they are asked
   assert.equal(N.decideNext({ tool_name: 'mcp__windows-mcp__Click-Tool', tool_input: { action: 'screenshot', loc: [1, 2] } }, waiting).kind, 'block');
-  assert.equal(N.decideNext(chrome('left_click', { coordinate: [1, 1] }), { dirs: opts.dirs, popup: () => false }).kind, 'allow');
+  assert.equal(N.decideNext({ tool_name: 'mcp__computer-use__computer', tool_input: { action: 'left_click' } }, waiting).kind, 'block');
 });

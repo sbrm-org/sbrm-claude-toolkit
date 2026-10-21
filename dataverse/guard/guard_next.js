@@ -1318,11 +1318,20 @@ function writeVerdict(tool, ti, dirs, input = {}) {
 
 // ---------- the verdict ----------
 
-// While an approval waits, the browser tool may still LOOK (F-1009/F-1011, 10/20: two screenshots of a web page were
-// stopped because an apply was waiting in another session on the machine). Only these actions of that one tool;
-// a click, a key, typing, scrolling or a drag still blocks, and so does every other screen tool.
-const LOOK_ONLY = new Set(['screenshot', 'zoom']);
-const looksOnly = (mcp, ti) => !!mcp && mcp.server === 'claude-in-chrome' && mcp.name === 'computer' && LOOK_ONLY.has(String((ti || {}).action || ''));
+// While an approval waits, the BROWSER tool is free (1.11.15; ruled 10/21, Dylan: "we need to fix that chrome block
+// because its really annoying"). It drives Chrome tabs only and cannot reach the terminal where Claude Code asks; 1.11.14
+// freed screenshots and zoom, and the same morning a wait and clicks in Paychex and Azure tabs were still stopped by
+// another session's prompt (R-1043/1044/1047/1048). Kept: a browser call that names Claude's own site (claude.ai,
+// claude.com), where a Remote Control or claude.ai/code approval could be shown. Residual, written down: a click
+// carries only a tab number, so a tab ALREADY open on Claude's site is not seen. Desktop mouse/keyboard tools still block.
+const CLAUDE_SITE = /(?:^|[^\w.-])(?:[\w-]+\.)*claude\.(?:ai|com)(?![\w-])/i;
+const browserTool = (mcp) => !!mcp && mcp.server === 'claude-in-chrome';
+const namesClaudeSite = (ti) => {
+  const strings = [];
+  const walk = (v) => { if (typeof v === 'string') strings.push(v); else if (v && typeof v === 'object') Object.values(v).forEach(walk); };
+  walk(ti);
+  return strings.some((s) => CLAUDE_SITE.test(s));
+};
 
 function verdict(input, dirs = I.devDirs(), { popup = I.popupOpen } = {}) {
   const tool = String(input.tool_name || '');
@@ -1330,7 +1339,9 @@ function verdict(input, dirs = I.devDirs(), { popup = I.popupOpen } = {}) {
   const mcp = I.mcpParts(tool);
   if (mcp && I.DV_SERVER.test(mcp.server)) return I.READ_TOOLS.has(mcp.name) ? null : `the Dataverse tool "${mcp.name}" (only known reads are allowed)`;
   if (mcp && I.DV_WRITE_TOOLS.test(mcp.name)) return `the tool "${mcp.name}" (a Dataverse write outside the approved path)`;
-  if (I.SCREEN_TOOL.test(tool) && !looksOnly(mcp, ti) && popup()) return 'driving the screen while an approval is waiting (approving is the person\'s alone)';
+  if (browserTool(mcp)) {
+    if (namesClaudeSite(ti) && popup()) return 'opening or driving Claude\'s own site while an approval is waiting (approving is the person\'s alone)';
+  } else if (I.SCREEN_TOOL.test(tool) && popup()) return 'driving the screen while an approval is waiting (approving is the person\'s alone)';
   if (mcp) {
     const strings = [];
     const walk = (v) => { if (typeof v === 'string') strings.push(v); else if (v && typeof v === 'object') Object.values(v).forEach(walk); };
