@@ -3,6 +3,36 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.14** (2026-10-21) **The guard cut-over: the redesigned guard now decides, and a record's owner can be
+  set.** (1) `guard/guard.js`'s hook entry now asks `guard/guard_next.js` (the parsed-shell model, in shadow since
+  1.11.10) for every decision; the old verdict watches for two weeks and every disagreement is recorded the other way
+  round (`old` = the watcher, `next` = the decision made), so a regression shows in the morning review before anyone
+  reports it. A crash in the next model fails closed. Its asks (adding a plugin, fork 5) reach Claude Code as a
+  question with no approval ticket. Rollback is a release restoring the 1.11.13 entry lines. The self-test still runs
+  the old verdict as the parity reference. (2) Four fixes the shadow found before the cut-over, each a call the old
+  guard allowed and the next model would have stopped: a string literal in code counts as a CLI call only when it is
+  command-shaped, the CLI word then a verb the CLI has (auth, org/env, api, erp, data, skill, mcp, install) or a flag
+  (H-1028, a docstring opening with the product name; a label naming an app, 10/21); a string's `.replace(old, new)`
+  is not a file move (D-1175, read as moving the drive root; method calls stay with the receiver rule, so
+  `os.replace` into the store still blocks); a `sed -i` on a skill file passes when its script is nothing but plain
+  `s///` commands that name no hook, permission or request, re-insert nothing (`&`, `\1`) and decode no escape
+  (S-1005; any other sed, `-e`, `r`, `y`, an `e` or `w` flag, still fails closed); and while an approval waits, the
+  browser tool may take a screenshot or zoom (F-1009, F-1011: a page screenshot was stopped because an apply was
+  waiting in another session), while a click, key, typing, scrolling or any other screen tool still blocks. D-1184 (a
+  names-only listing of the store's settings folder) stays blocked by ruling (Dylan 10/21: "Script it, rule
+  stands"); the post-suite store check that needed it is now `run_suite.js` in the dev folder. (3) **An Owner lookup
+  can be set** (R-1035, 10/20: every owner assignment was refused, both ways). `ownerid` is one navigation property
+  onto the abstract owner table, which cannot be read or pointed at; the plan now takes `/systemusers(<id>)` or
+  `/teams(<id>)`, checks the target exists in that table, and refuses a disabled user at plan time
+  (`lib/resolve.js`, `lib/meta.js` `OWNER_SETS`). Revert finds which table the old owner is in (`ownerSetOf`), since
+  the before image keeps only the id. Live read-only plans on Recovery 10/21 (nothing applied): a client's Case
+  Manager to the SBRM Recovery team planned clean; a disabled user was refused with the new reason. Tests:
+  `guard_next.test.js` +21 (the shadow's new stops verbatim, each beside the real thing its rule exists for),
+  `shadow.test.js` (the hook decides with the next model, asks, the approval layer, a crash in the watcher),
+  `resolve.test.js` +2 and `revert.test.js` +1 on an Owner column added to the fake; `nudge.test.js` now spawns Git
+  Bash on Windows (a bare `bash` from PowerShell is the WSL stub). Suite 783 (782 + 1 skip), self-test 247; the
+  mutation pass `guard_review/mutate_1_11_14.js` kills 27 of 27, and the 1.11.10 pass still 26 of 26; replay of every
+  block recorded on Dylan's machine: 51 allow, the 3 real blocks still blocked.
 - **1.11.13** (2026-10-19) **A new job kind, `role`: give or take a person's security role** (Dylan 10/17/26, "can
   we add role changes to toolkit?"). Admin only. Each row names ONE person by work email, ONE role by name, and add or
   remove; up to 25 rows a job. The plan picks the role's copy in the person's own business unit (every role has one

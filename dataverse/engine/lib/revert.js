@@ -17,7 +17,7 @@
 
 const { validateJob, BIND_KEY } = require('./contract');
 const { planJob, same, PlanRefused } = require('./resolve');
-const { loadTable, refTable } = require('./meta');
+const { loadTable, refTable, OWNER, ownerSetOf } = require('./meta');
 const { LOG_SET } = require('./log');
 const severity = require('./severity');
 
@@ -51,6 +51,9 @@ function bindFor(dv, table, navKey, guid) {
   if (guid === null || guid === undefined) return null;
   const nav = table.navs.get(BIND_KEY.exec(navKey)[1]);
   if (!nav) throw new PlanRefused([`${table.entity.plural} no longer has the lookup ${navKey}`], 'invalid_job');
+  // The old owner was a user or a team; the before image keeps only its id (R-1035). Neither found: point at
+  // users, and the plan refuses the row as "does not exist".
+  if (nav.referenced === OWNER) return `/${ownerSetOf(dv, guid) || 'systemusers'}(${String(guid).toLowerCase()})`;
   return `/${refTable(dv, table, nav.referenced).set}(${String(guid).toLowerCase()})`;
 }
 

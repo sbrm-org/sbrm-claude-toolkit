@@ -5,7 +5,7 @@
 // who is asking, whether they may write, which columns exist and what they are called,
 // each target's CURRENT values, duplicates, and the linked records' real names.
 
-const { loadTable, choiceLabels, refTable, dateBehaviours, isChoice, NUMERIC } = require('./meta');
+const { loadTable, choiceLabels, refTable, dateBehaviours, isChoice, NUMERIC, OWNER, OWNER_SETS } = require('./meta');
 const closedYear = require('./closedyear');
 const { toLocalMidnight } = require('./localdate');
 const { resolveAccess, TOOLKIT_SETS, LOG_TABLES, APP_DEFINITION_SETS } = require('./access');
@@ -239,14 +239,23 @@ function planJob(dv, job, { envs, access, warnRows }) {
   const lookupTarget = (col, bind) => {
     if (targetNames.has(bind)) return targetNames.get(bind);
     const [, set, guid] = BIND_VALUE.exec(bind);
-    const ref = refTable(dv, table, col.referenced);
+    // An Owner lookup points at a user or a team, never at the abstract owner table (meta.js OWNER_SETS, R-1035).
+    const owner = col.referenced === OWNER;
+    const ref = owner ? (OWNER_SETS[set] ? refTable(dv, table, OWNER_SETS[set]) : null) : refTable(dv, table, col.referenced);
     let out;
-    if (ref.set !== set) {
+    if (!ref) {
+      out = { error: `${col.label} must point at a user (systemusers) or a team (teams), not ${set}` };
+    } else if (ref.set !== set) {
       out = { error: `${col.label} must point at ${ref.plural.toLowerCase()} (${ref.set}), not ${set}` };
     } else {
       try {
-        const rec = dv.get(`${set}(${guid})?$select=${ref.primaryName}`);
-        out = { id: guid.toLowerCase(), name: rec[ref.primaryName] || guid };
+        const user = owner && set === 'systemusers';
+        const rec = dv.get(`${set}(${guid})?$select=${ref.primaryName}${user ? ',isdisabled' : ''}`);
+        const name = rec[ref.primaryName] || guid;
+        // Dataverse refuses to assign a record to a disabled user; say so at plan time, not as a failed apply.
+        out = user && rec.isdisabled === true
+          ? { error: `${col.label}: the user ${name} is disabled (a record cannot be assigned to a disabled user)` }
+          : { id: guid.toLowerCase(), name };
       } catch (e) {
         if (!(e instanceof DataverseError)) throw e;
         out = { error: `${col.label}: the linked ${ref.singular.toLowerCase()} ${guid} does not exist` };

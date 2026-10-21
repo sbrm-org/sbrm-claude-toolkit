@@ -31,6 +31,9 @@ with a merge grant), develop for `schema` and `component`, admin for `setting`, 
   columns by logical name, lookups as `"<NavigationProperty>@odata.bind": "/<set>(<guid>)"` (null clears).
 - `intent.fields` lists every column the rows set. A lookup may be named by its column (`msnfp_appealid`)
   or its key (`msnfp_AppealId@odata.bind`); either agrees (1.11.7).
+- The record's owner (on some tables labelled Case Manager): `"ownerid@odata.bind": "/systemusers(<guid>)"`
+  for a person or `"/teams(<guid>)"` for a team, never `/owners(...)` (1.11.14). A disabled user is refused
+  at plan time, since Dataverse will not assign a record to one.
 - Optional: `verify` (columns to read back; every written column is read back anyway), `amount_field`
   (+ `intent.amount_total`), per create row `dup_filter` (one OData filter; a match leaves the row out).
 - **Records are never deleted, only made inactive** (ruled 10/8): an `update` with `"statecode": 1` and the

@@ -128,4 +128,24 @@ function refTable(dv, table, logical) {
   return table.refs.get(logical);
 }
 
-module.exports = { loadTable, choiceLabels, refTable, dateBehaviours, isChoice, NUMERIC, label };
+// The Owner column (ownerid) is ONE navigation property onto the abstract `owner` table, which cannot be read or
+// pointed at: a record is owned by a user or a team, and the pointer names that table (R-1035, 10/20/26). Every
+// other two-target lookup (Customer) has a navigation property per target, so only Owner needs this.
+const OWNER = 'owner';
+const OWNER_SETS = { systemusers: 'systemuser', teams: 'team' };
+
+// Which table an owner id is in, for a pointer back to it (revert keeps only the id): 'systemusers', 'teams' or null.
+function ownerSetOf(dv, guid) {
+  const { DataverseError } = require('./cli');
+  for (const [set, idCol] of [['systemusers', 'systemuserid'], ['teams', 'teamid']]) {
+    try {
+      dv.get(`${set}(${guid})?$select=${idCol}`);
+      return set;
+    } catch (e) {
+      if (!(e instanceof DataverseError)) throw e;
+    }
+  }
+  return null;
+}
+
+module.exports = { loadTable, choiceLabels, refTable, dateBehaviours, isChoice, NUMERIC, label, OWNER, OWNER_SETS, ownerSetOf };
