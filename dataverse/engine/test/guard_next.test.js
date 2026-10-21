@@ -259,6 +259,50 @@ for (const [label, input, message] of NEW_STOPS_BLOCK) {
   });
 }
 
+// R-1080 / R-1082 (10/21, the Mail Sorting Guide session): a read-only Dataverse client and an Entra token helper were
+// refused as "a raw writing HTTP call at Dataverse". Their only POST is the token request, whose URL sits in a constant
+// (`LOGIN = "https://login.microsoftonline.com/..."`, then `.post(LOGIN.format(...))`); the rule read only a URL written
+// on the write line, so it fell back to "a Dataverse address anywhere + a post anywhere". Now a write's target held in
+// a named constant is looked up in the same text; a write line whose target still cannot be read keeps the fallback.
+const DVH2 = J('sbrmrec.crm.dyn', 'amics.com');
+const LOGIN_LINE = 'LOGIN = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"\n';
+const TOKEN_POST = '        r = self._http.post(LOGIN.format(tenant=self._tenant), data={"grant_type": "client_credentials"}, timeout=120)\n';
+const RAW_PASS = [
+  ['R-1080 a read-only client: the token POST to a constant, every Dataverse call a GET', write('C:/Users/x/Documents/Claude/dataverse_app.py', J(
+    '"""Dataverse Web API reads as an APP identity. READ-ONLY.\n    dv.get_all("sbrmrec", "sbrm_clients")\n"""\nimport requests\n\n', LOGIN_LINE,
+    'API = "/api/data/v9.2/"\n\ndef host_url(host):\n    return "https://" + host + ".crm.dyn', 'amics.com"\n\nclass DataverseApp:\n    def _token(self, base):\n',
+    TOKEN_POST, '        return r.json()["access_token"]\n    def get(self, base, path):\n        return self._http.get(base + API + path, headers={}).json()\n'))],
+  ['R-1082 a token helper whose docstring names a Dataverse URL as an example', write('C:/Users/x/Documents/Claude/entra_token.py', J(
+    `"""Entra tokens for any resource: Dataverse (https://${DVH2}), Graph (https://graph.microsoft.com)."""\nimport requests\n\n`, LOGIN_LINE,
+    'class EntraToken:\n    def get(self, resource):\n', TOKEN_POST, '        return r.json()["access_token"]\n'))],
+  ['a JS const URL to another service, posted to', write('C:/Users/x/proj/tok.js', J(
+    `// reads https://${DVH2}/api/data/v9.2/contacts with the token\nconst TOKEN_URL = 'https://login.microsoftonline.com/t/oauth2/v2.0/token';\n`,
+    'async function token() { const r = await fetch(TOKEN_URL, { method: "PO', 'ST", body: "x" }); return r.json(); }\n'))],
+];
+for (const [label, input] of RAW_PASS) {
+  test(`raw-HTTP rule passes: ${label}`, () => {
+    const r = next(input);
+    assert.equal(r.kind, 'allow', r.why);
+  });
+}
+const RAW_BLOCK = [
+  ['the same client with a PATCH whose URL is built at run time', write('C:/Users/x/Documents/Claude/dv_writer.py', J(
+    'import requests\n', LOGIN_LINE, 'def host_url(h):\n    return "https://" + h + ".crm.dyn', 'amics.com"\nclass C:\n    def _token(self, base):\n', TOKEN_POST,
+    '    def save(self, base, path, body):\n        return self._http.pat', 'ch(base + "/api/data/v9.2/" + path, json=body)\n'))],
+  ['a constant holding a Dataverse URL, posted to', write('C:/Users/x/proj/w.py', J(
+    `import requests\nURL = "https://${DVH2}/api/data/v9.2/contacts"\nrequests.po`, 'st(URL, json={"lastname": "x"})\n'))],
+  ['a literal POST to another service no longer covers a variable PATCH to Dataverse (the hole, closed)', write('C:/Users/x/proj/two.py', J(
+    'import requests\nrequests.po', 'st("https://graph.microsoft.com/v1.0/me/sendMail", json={})\n',
+    `url = "https://" + "sbrmrec" + ".crm.dyn` + 'amics.com/api/data/v9.2/contacts(1)"\nrequests.pat', 'ch(url, json={"lastname": "x"})\n'))],
+];
+for (const [label, input] of RAW_BLOCK) {
+  test(`raw-HTTP rule still blocks: ${label}`, () => {
+    const r = next(input);
+    assert.equal(r.kind, 'block', `expected a block, got ${r.kind}`);
+    assert.match(r.why, /raw writing HTTP call at Dataverse/);
+  });
+}
+
 // F-1009 / F-1011 (10/20), R-1043/1044/1047/1048 (10/21): browser work in one session was stopped because an approval
 // was waiting in ANOTHER session on this machine. The browser tool drives Chrome tabs only; it cannot reach the
 // terminal where Claude Code asks. Ruled 10/21 (Dylan: "we need to fix that chrome block because its really

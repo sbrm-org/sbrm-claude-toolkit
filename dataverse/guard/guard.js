@@ -68,21 +68,40 @@ function blankTextTools(text) {
   return String(text).split(/([\n;|&])/).map((seg, i) => (i % 2 === 0 && TEXT_TOOL_SEGMENT.test(seg)
     && !/\$\(|`|[<>]\(|-exec|<</.test(seg) ? ' ' : seg)).join('');
 }
+// A write's target held in a NAMED CONSTANT (R-1080/R-1082, 10/21: `LOGIN = "https://login.microsoftonline.com/..."`
+// then `.post(LOGIN.format(...))`, a token request, was read as a Dataverse write): the identifier the call opens
+// with, and every URL that identifier is assigned in the same text.
+const WRITE_TARGET_ID = /(?:\.(?:post|patch|put|delete|request)|\bfetch|\burlopen|\bRequest)\s*\(\s*(?:["'`][A-Za-z]+["'`]\s*,\s*)?([A-Za-z_$][\w$]*)\b(?!\s*\()/;
+const DV_URL = /\.crm\d*\.dynamics\.com|^\/api\/data\/v9/i;
+function assignedUrls(text, name) {
+  const esc = name.replace(/\$/g, '\\$');
+  const re = new RegExp(`(?:^|[\\s;,({])(?:const\\s+|let\\s+|var\\s+)?${esc}\\s*(?::\\s*\\w+\\s*)?=\\s*[rbfuRBFU@]{0,2}["'\`](https?:\\/\\/[^"'\`\\s]+)`, 'gm');
+  return [...String(text).matchAll(re)].map((m) => m[1]);
+}
 function targetsDataverse(input, { shell = false } = {}) {
   const text = shell ? blankTextTools(input) : String(input);
-  let elsewhere = false;
+  // Each write line is judged on its own: its target read from a URL on the line, else from the constant it names.
+  // A line aimed at another service does not count; one whose target cannot be read does (the fallback below).
+  // (Before 10/21 any write aimed elsewhere switched the fallback off for the whole text, so a Graph POST let a
+  // Dataverse PATCH through a variable pass.)
+  let unknown = false;
   for (const line of String(text).split(/[\n;|&]/)) {
     if (!MUTATING_HTTP.test(line)) continue;
     URL_RE.lastIndex = 0;
     const m = URL_RE.exec(line);
-    if (!m) continue;
-    if (/\.crm\d*\.dynamics\.com|^\/api\/data\/v9/i.test(m[0])) return true;
-    elsewhere = true; // a write whose target is another service
+    if (m) {
+      if (DV_URL.test(m[0])) return true;
+      continue; // a write whose target is another service
+    }
+    const id = WRITE_TARGET_ID.exec(line);
+    const urls = id ? assignedUrls(text, id[1]) : [];
+    if (urls.some((u) => DV_URL.test(u))) return true;
+    if (urls.length) continue;
+    unknown = true;
   }
-  // A write whose URL is in a variable (`url = "https://x.crm..."` then `requests.patch(url, ...)`): Dataverse
-  // and a write method in the same text, and no write line aimed anywhere else. The host is looked for in the
-  // WHOLE text (an `echo` of the URL into a file is blanked above but still names the target).
-  return !elsewhere && DV_HOST.test(String(input)) && MUTATING_HTTP.test(text);
+  // A write whose target cannot be read (`requests.patch(url, ...)` with url built at run time): Dataverse named
+  // anywhere in the WHOLE text (an `echo` of the URL into a file is blanked above but still names the target).
+  return unknown && DV_HOST.test(String(input));
 }
 // While an approval is waiting, no tool may drive the screen, mouse or keyboard (it could press Yes).
 const SCREEN_TOOL = /computer|mouse|keyboard|left_click|right_click|double_click|key_press|type_text|cua\b|screen_control|click|shortcut|hotkey|keystroke|press_key|type-tool|type_tool|drag|scroll-tool|automation/i;
