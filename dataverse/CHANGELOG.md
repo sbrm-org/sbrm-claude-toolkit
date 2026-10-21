@@ -3,6 +3,18 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.16** (2026-10-21) **A token request is no longer read as a Dataverse write.** Writing a read-only Dataverse
+  client and an Entra token helper was refused as "a raw writing HTTP call at Dataverse" (R-1080, R-1082): their only
+  POST is the client-credentials token request, whose URL sits in a constant (`LOGIN = "https://login.microsoftonline.com/..."`,
+  then `.post(LOGIN.format(...))`). The rule read a write's target only from a URL written on its line, so it fell
+  back to "a Dataverse address anywhere in the text + a write anywhere". Now each write line is judged on its own: its
+  target from a URL on the line, else from the URL its named constant is assigned in the same text; a line aimed at
+  another service does not count, and a line whose target still cannot be read keeps the fallback. That also closes a
+  hole: before, any write aimed elsewhere switched the fallback off for the whole text, so a Graph POST let a Dataverse
+  PATCH through a run-time variable pass; it now blocks. `guard/guard.js` (`targetsDataverse`, `WRITE_TARGET_ID`,
+  `assignedUrls`), shared by both models; tests in `guard_next.test.js` (the two refused files must pass; a constant
+  holding a Dataverse URL, a run-time PATCH beside the token POST, and the closed hole must block). Suite 789 (788 +
+  1 skip), self-test 247, mutation pass 33 of 33.
 - **1.11.15** (2026-10-21) **The browser is no longer frozen by another session's approval.** While an approval
   waited anywhere on the machine, every screen tool was blocked in every session, the Chrome tool included, and for up
   to ten minutes after a No (the ticket's life). 1.11.14 let screenshots and zoom through; the same morning a wait and
