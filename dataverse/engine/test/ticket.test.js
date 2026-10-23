@@ -35,6 +35,20 @@ test('a ticket past its time is refused', () => {
   assert.equal(T.take(ID).why, 'expired');
 });
 
+// #6hqFhJfV8GRW459J (10/22 evening, 10/23 R-1102): "approval expired" seconds after the ask, unexplained, and take()
+// deletes the ticket. The refusal now carries the ticket's own times, so the next case brings its evidence.
+test('an expired refusal names when the ticket was made and when it was checked', () => {
+  const made = Date.parse('2026-10-23T14:31:02Z');
+  const t = T.mint(ID, { now: made });
+  const r = T.take(ID, { now: made + 12 * 60 * 1000 });
+  assert.equal(r.why, 'expired');
+  assert.equal(r.created, '2026-10-23T14:31:02.000Z');
+  const text = T.refusalText(r.why, r);
+  assert.match(text, /approval expired/);
+  assert.match(text, /ticket made 2026-10-23T14:31:02\.000Z, checked 2026-10-23T14:43:02\.000Z, 720 s apart/);
+  assert.ok(!text.includes(t.sig) && !text.includes(t.nonce), 'no signature or nonce in the text');
+});
+
 test('a hand-made or edited ticket fails the signature', () => {
   const t = T.mint(ID);
   fs.writeFileSync(path.join(dirOf(), `${ID}.json`), JSON.stringify({ ...t, created: new Date(Date.now() + 1000).toISOString() }));

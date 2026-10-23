@@ -392,3 +392,116 @@ test('an approval waiting: the browser tool is free except on Claude\'s own site
   assert.equal(N.decideNext({ tool_name: 'mcp__windows-mcp__Click-Tool', tool_input: { action: 'screenshot', loc: [1, 2] } }, waiting).kind, 'block');
   assert.equal(N.decideNext({ tool_name: 'mcp__computer-use__computer', tool_input: { action: 'left_click' } }, waiting).kind, 'block');
 });
+
+// ---------- 1.11.19: two false positives from the 10/23 review (#6hqFf2p8HWC6Q93J) ----------
+// F-1076 (10/22): a chained string .replace after one whose last argument is a slash was read as renaming the drive
+// root, because the receiver rule took the ")" closing the first call's arguments for the one closing Path("/").
+// D-1273 (10/23): the read-only review redirected to a file under the job folder Claude Code gives every background
+// session, CLAUDE_JOB_DIR, was an unknown target on a line naming the plugin. It now resolves from the hook's own
+// environment, unless the line assigns it.
+test('F-1076: a chained string .replace after a slash argument is not a rename; Path(...).replace still is', () => {
+  const chained = sh(`cd "/c/Users/x/proj" && python -c "
+rows=['a|b']
+out=[r.replace('|','/').replace(chr(10),' ') for r in rows]
+open('notes/out.md','w',encoding='utf-8').write(chr(10).join(out))
+"`);
+  assert.equal(next(chained).kind, 'allow', next(chained).why);
+  assert.equal(next(sh(`python -c "print('a/b'.replace('/','|').replace('x','y'))"`)).kind, 'allow');
+  // the real things the rule exists for
+  assert.match(next(sh(J(`python -c "from pathlib import Path; Path('~/.sbrm-dataverse/plans/x.json').repl`, `ace('/tmp/y')"`))).why, /engine's own store/);
+  // a parenthesized string literal is still a string: its .replace changes no file (round 6 corrected round 1 here)
+  assert.equal(next(sh(J(`python -c "import os; ('~/.sbrm-dataverse/plans').repl`, `ace('/tmp/y')"`))).kind, 'allow');
+  // a real rename of the drive root, with no store path in the text to fall back on: the wrapped literal is judged
+  assert.match(next(sh(J(`python -c "from pathlib import Path; Path('/').repl`, `ace('/tmp/y')"`))).why, /engine's own store/);
+  // a call's own parenthesis is not a wrapper: rstrip('/') then .replace is string work (review 10/23)
+  assert.equal(next(sh(`python -c "print('a/b/'.rstrip('/').replace('a','c'))"`)).kind, 'allow');
+  // the DESTINATION of a Path rename or replace is judged too (review 10/23: only the source was)
+  assert.match(next(sh(J(`python -c "from pathlib import Path; Path('C:/temp/x.json').repl`, `ace('~/.sbrm-dataverse/plans/x.json')"`))).why, /engine's own store/);
+  assert.match(next(sh(J(`python -c "from pathlib import Path; Path('C:/temp/x.json').ren`, `ame('${PLUG}/dataverse/guard/guard.js')"`))).why, /toolkit plugin's files/);
+  assert.match(next(sh(J(`python -c "import pathlib; p=pathlib.Path('C:/temp/x.json'); p.repl`, `ace('~/.sbrm-dataverse/plans/x.json')"`))).why, /engine's own store/);
+  // a destination passed by KEYWORD is judged too (round 4), for a Path method and for os.replace / os.rename
+  assert.match(next(sh(J(`python -c "from pathlib import Path; Path('C:/temp/x.json').repl`, `ace(target='~/.sbrm-dataverse/plans/x.json')"`))).why, /engine's own store/);
+  assert.match(next(sh(J(`python -c "from pathlib import Path; Path('C:/temp/x.json').ren`, `ame(target='${PLUG}/dataverse/guard/guard.js')"`))).why, /toolkit plugin's files/);
+  assert.match(next(sh(J(`python -c "import os; os.repl`, `ace('C:/temp/x.json', dst='~/.sbrm-dataverse/plans/x.json')"`))).why, /engine's own store/);
+  assert.match(next(sh(J(`python -c "import os; os.ren`, `ame(src='C:/temp/x.json', dst='~/.bashrc')"`))).why, /./);
+  assert.equal(next(sh(`python -c "import shutil; shutil.move(src='C:/temp/x', dst='~/.bashrc')"`)).kind, 'block');
+  // keyword-only writes (round 5): open(file=..., mode="w") and makedirs(name=...)
+  assert.match(next(sh(J(`python -c "open(file='~/.sbrm-dataverse/plans/x.json', mode='w').wri`, `te('{}')"`))).why, /engine's own store/);
+  assert.match(next(sh(`python -c "import os; os.makedirs(name='~/.sbrm-dataverse/plans/forged')"`)).why, /engine's own store/);
+  assert.equal(next(sh(`python -c "open(file='C:/temp/notes.txt', mode='w').write('x')"`)).kind, 'allow');
+  // a copy's SOURCE is read, not written: copying a plugin file out by keyword is fine; copying INTO it is not
+  assert.equal(next(sh(`python -c "import shutil; shutil.copyfile(src='${PLUG}/dataverse/guard/guard.js', dst='C:/temp/g.js')"`)).kind, 'allow');
+  assert.match(next(sh(`python -c "import shutil; shutil.copyfile(src='C:/temp/g.js', dst='${PLUG}/dataverse/guard/guard.js')"`)).why, /toolkit plugin's files/);
+  // a bare string literal's replace is text work, slashes or not (round 5), even when its text names the store (round 6)
+  assert.equal(next(sh(`python -c "print('/'.replace('/', '|'))"`)).kind, 'allow');
+  assert.equal(next(sh(`python -c "print('hello'.replace('~/.sbrm-dataverse/plans/x.json','notes'))"`)).kind, 'allow');
+  // round 6: the write mode is read from the call itself, wherever it sits; a positional copy source is read, not written
+  assert.match(next(sh(J(`python -c "open(file='${PLUG}/dataverse/guard/guard.js',${' '.repeat(400)}mode='w').wri`, `te('x')"`))).why, /toolkit plugin's files/);
+  // round 7: a mode held in a variable could be a write; a raw-string mode is still a literal
+  assert.match(next(sh(J(`python -c "m='w'; open('${PLUG}/dataverse/guard/guard.js',m).wri`, `te('x')"`))).why, /toolkit plugin's files/);
+  assert.equal(next(sh(`python -c "print(open(file='${PLUG}/dataverse/guard/guard.js',mode=r'r').read())"`)).kind, 'allow');
+  assert.match(next(sh(J(`python -c "open(file='${PLUG}/dataverse/guard/guard.js',mode=r'w').wri`, `te('x')"`))).why, /toolkit plugin's files/);
+  assert.equal(next(sh(`python -c "import shutil; shutil.copyfile('${PLUG}/dataverse/guard/guard.js', dst='C:/temp/g.js')"`)).kind, 'allow');
+  assert.match(next(sh(`python -c "import shutil; shutil.copyfile('C:/temp/g.js', dst='${PLUG}/dataverse/guard/guard.js')"`)).why, /toolkit plugin's files/);
+  // os.replace is a file move, not a string's replace: its destination counts without pathlib
+  assert.equal(next(sh(J(`python -c "import os; os.repl`, `ace('C:/temp/x', '~/.bashrc')"`))).kind, 'block');
+  assert.equal(next(sh(J(`python -c "import os; os.repl`, `ace('C:/temp/x', dst='~/.bashrc')"`))).kind, 'block');
+  // a pathlib object moved onto a shell start-up file: no store text to fall back on, so the destination itself is judged
+  assert.equal(next(sh(J(`python -c "import pathlib; p=pathlib.Path('C:/temp/x'); p.repl`, `ace('~/.bashrc')"`))).kind, 'block');
+  // a STRING replace whose first argument looks like a path is text work, with or without pathlib (rounds 2 and 3)
+  assert.equal(next(sh(`python -c "print('hello'.replace('~/.bashrc','notes'))"`)).kind, 'allow');
+  assert.equal(next(sh(`python -c "from pathlib import Path; print('hello'.replace('~/.bashrc','notes'))"`)).kind, 'allow');
+});
+
+test('D-1273: a redirect under CLAUDE_JOB_DIR resolves from the environment; assigned on the line or unset, it is judged as before', () => {
+  const was = process.env.CLAUDE_JOB_DIR;
+  const review = `node "${ENG}" review > "$CLAUDE_JOB_DIR/tmp/review.txt" 2>&1; wc -l "$CLAUDE_JOB_DIR/tmp/review.txt"`;
+  try {
+    process.env.CLAUDE_JOB_DIR = 'C:/Users/x/.claude/jobs/22cfe1d3';
+    assert.equal(next(sh(review)).kind, 'allow', next(sh(review)).why);
+    // assigned on the line to the plugin: the line's own value is judged
+    assert.equal(next(sh(`CLAUDE_JOB_DIR="${PLUG}"; node "${ENG}" review > "$CLAUDE_JOB_DIR/dataverse/guard/guard.js"`)).kind, 'block');
+    assert.equal(next(sh(`export CLAUDE_JOB_DIR="${PLUG}"; node "${ENG}" review > "$CLAUDE_JOB_DIR/dataverse/guard/guard.js"`)).kind, 'block');
+    // an environment value inside the plugin is judged like any path there
+    process.env.CLAUDE_JOB_DIR = PLUG;
+    assert.match(next(sh(`node "${ENG}" review > "$CLAUDE_JOB_DIR/dataverse/guard/guard.js"`)).why, /toolkit plugin's files/);
+    // unset: unknown, as before
+    delete process.env.CLAUDE_JOB_DIR;
+    assert.match(next(sh(review)).why, /unknown-target/);
+    // Bash names are case-sensitive: a lowercase $claude_job_dir is ANOTHER (unset) variable, never the job folder
+    process.env.CLAUDE_JOB_DIR = 'C:/Users/x/.claude/jobs/22cfe1d3';
+    assert.equal(next(sh(`node "${ENG}" review > "$claude_job_dir/c/Users/x/.sbrm-dataverse/plans/x.json"`)).kind, 'block');
+    assert.equal(next(sh(`CLAUDE_JOB_DIR=/tmp/safe; node "${ENG}" review > "$claude_job_dir/c/Users/x/.sbrm-dataverse/plans/x.json"`)).kind, 'block');
+    // unset on the line: Bash expands it to nothing, so the environment's value is not used (round 3)
+    assert.equal(next(sh(`unset CLAUDE_JOB_DIR; node "${ENG}" review > "$CLAUDE_JOB_DIR/c/Users/x/.sbrm-dataverse/plans/x.json"`)).kind, 'block');
+    delete process.env.CLAUDE_JOB_DIR;
+    // only this one name: another variable stays unknown
+    process.env.SOME_DIR = 'C:/Users/x/tmp';
+    assert.match(next(sh(`node "${ENG}" review > "$SOME_DIR/review.txt"`)).why, /unknown-target/);
+  } finally {
+    if (was === undefined) delete process.env.CLAUDE_JOB_DIR; else process.env.CLAUDE_JOB_DIR = was;
+    delete process.env.SOME_DIR;
+  }
+});
+
+// Review 10/23 round 2 (pre-existing since 1.11.14): the next model folded every variable name to lowercase, but a
+// POSIX shell's names are case-sensitive, so a variable set in one case and read in another was judged as the set
+// value while the shell expanded an unset one, and a write into the store passed. PowerShell and cmd stay case-blind.
+test('POSIX variable names are case-sensitive: set in one case and read in another is never the set value', () => {
+  const hp = H.replace(/^([A-Za-z]):/, (m, d) => `/${d.toLowerCase()}`);
+  const S = J('.sbrm', '-dataverse');
+  for (const c of [
+    `A=/tmp/safe; printf '{}' > "$a${hp}/${S}/plans/x.json"`,
+    `a=/tmp/safe; printf '{}' > "$A${hp}/${S}/plans/x.json"`,
+    // (a target built from an UNKNOWN variable on a line that does not name the store stays allowed: the C2 residual)
+    // an unset variable is unknown again, never its earlier value (round 3)
+    `A=/tmp/safe; unset A; printf '{}' > "$A${hp}/${S}/plans/x.json"`,
+    `A=/tmp/safe; unset -v B A; printf '{}' > "$A${hp}/${S}/plans/x.json"`,
+    `export A=/tmp/safe; printf '{}' > "$a${hp}/${S}/plans/x.json"`,
+    `printf '{}' > "$home/${S}/plans/x.json"`,
+  ]) assert.equal(next(sh(c)).kind, 'block', c);
+  // the same case still resolves, as before
+  assert.equal(next(sh(`A=/tmp/safe; printf '{}' > "$A/out.json"`)).kind, 'allow');
+  assert.equal(next(sh(`printf '{}' > "$HOME/notes/out.json"`)).kind, 'allow');
+  assert.equal(next(sh(`A=${hp}/${S}; printf '{}' > "$A/plans/x.json"`)).kind, 'block');
+});

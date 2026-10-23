@@ -156,7 +156,7 @@ const DEFAULT_DEPS = {
 function approvalFor(deps, key, run = null) {
   if (deps.confirm) return deps.confirm;
   const r = deps.approved && deps.approved.has(key) ? deps.approved.get(key) : (deps.ticket || ticket).take(key);
-  if (!r.ok) throw new ApplyRefused(ticket.refusalText(r.why), r.why === 'expired' ? 'approval_expired' : 'no_approval');
+  if (!r.ok) throw new ApplyRefused(ticket.refusalText(r.why, r), r.why === 'expired' ? 'approval_expired' : 'no_approval');
   if (run) run.approval = r.approval;
   return () => ({ approved: true });
 }

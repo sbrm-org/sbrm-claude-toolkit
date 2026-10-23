@@ -114,7 +114,8 @@ function summarize({ now = new Date(), days = 7, access, logs, events, people = 
     const evs = events.filter((e) => e.email === email);
     const times = [...mine, ...evs, ...checkins.filter((c) => c.email === email)].map((x) => new Date(x.time));
     const lastSeen = times.length ? new Date(Math.max(...times)) : null;
-    const applied = mine.filter((l) => inWindow(l.time) && l.outcome !== 'cancelled');
+    // A split entry's later rows ("log part", lib/log.js, 1.11.19) are not writes of their own.
+    const applied = mine.filter((l) => inWindow(l.time) && l.outcome !== 'cancelled' && l.outcome !== 'log part');
     const health = evs.filter((e) => e.kind === 'health check').sort((a, b) => new Date(b.time) - new Date(a.time))[0] || null;
     const latestEv = evs.slice().sort((a, b) => new Date(b.time) - new Date(a.time))[0];
     const granted = (access && access.people && access.people[email]) || {};

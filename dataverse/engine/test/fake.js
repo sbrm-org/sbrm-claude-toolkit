@@ -210,6 +210,10 @@ function fakeDv({ email = 'dgross@example.org', dupHits = [], userId = IDS.me, i
       calls.push({ method: 'POST', path: set, body });
       if (set === 'sbrm_dataversewritelogs') {
         if (dv.logFails) throw new DataverseError('Principal user is missing prvCreatesbrm_dataversewritelog privilege');
+        // As Dataverse does (D-1174, 10/17): the entry column holds at most 1,048,576 characters.
+        if (String(body.sbrm_entry || '').length > 1048576) {
+          throw new DataverseError("A validation error occurred. The length of the 'sbrm_entry' attribute of the 'sbrm_dataversewritelog' entity exceeded the maximum allowed length of '1048576'.");
+        }
         data[set] = data[set] || {};
         if (Object.values(data[set]).some((r) => r.sbrm_planid === body.sbrm_planid)) {
           throw new DataverseError('A record with matching key values already exists.', { code: '0x80040237' });
