@@ -34,6 +34,13 @@ function fileFor(dir, email) {
   return path.join(dir, `${email.replace(/[^a-z0-9@._-]/gi, '_')}.md`);
 }
 
+// "written" counts only rows read back as planned (the Write Log's sbrm_written too). A row whose write went through
+// but could not be read back (1.11.18) counts as not written, and the text says how many of those there are.
+function unverified(entry) {
+  const n = (entry.rows || []).filter((r) => /^read-back failed:/.test(r.outcome || '')).length;
+  return n ? ` (${n} of them went through but could not be verified)` : '';
+}
+
 // entry = { time, headline, outcome, plan_id, person, env, app, table, mode, source, reason,
 //           approval, rows: [{name, id, outcome, changes, before, after}], left_out: [{name, id, why}] }
 function entryText(entry) {
@@ -49,11 +56,12 @@ function entryText(entry) {
     `- Plan: ${entry.plan_id}; approval: ${entry.approval}; made by: ${entry.source}`,
     ...(entry.reverts_plan_id ? [`- Undoes plan: ${entry.reverts_plan_id}`] : []),
     `- Reason given: ${entry.reason}`,
-    `- Rows: ${written} written, ${entry.rows.length - written} not written, ${entry.left_out.length} left out`,
+    `- Rows: ${written} written, ${entry.rows.length - written} not written${unverified(entry)}, ${entry.left_out.length} left out`,
     '',
   ];
   entry.rows.forEach((r, i) => {
     out.push(`${i + 1}. ${r.name} \`${r.id || 'new'}\`: ${r.outcome}`);
+    if (r.note) out.push(`   - note: ${r.note}`);
     if (entry.mode === 'merge') {
       // The JSON block below holds BOTH records in full as they stood before, and every child id (DESIGN.md §8f).
       const moved = Object.values(r.inventory || {}).map((c) => `${c.label} ${c.ids.length}`).join(', ') || 'none';
@@ -180,4 +188,4 @@ function readEntries(file) {
   return out;
 }
 
-module.exports = { writeEntry, entryText, entryKey, rowFor, readEntries, flushPending, fileFor, LOG_SET, LOG_ID };
+module.exports = { unverified, writeEntry, entryText, entryKey, rowFor, readEntries, flushPending, fileFor, LOG_SET, LOG_ID };

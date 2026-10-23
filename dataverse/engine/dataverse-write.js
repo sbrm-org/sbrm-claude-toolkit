@@ -565,7 +565,7 @@ function reportApply(run, id, res) {
   if (res.outcome === 'cancelled') {
     console.log(`\nCancelled. Nothing was written.${res.note ? ` (${res.note})` : ''} The plan is kept: apply it again, or make a new one.`);
   } else {
-    console.log(`\n${res.outcome.toUpperCase()}: ${res.written} written, ${res.failed} not written, ${res.left_out.length} left out.\n`);
+    console.log(`\n${res.outcome.toUpperCase()}: ${res.written} written, ${res.failed} not written${log.unverified(res)}, ${res.left_out.length} left out.\n`);
     for (const r of res.rows) console.log(`  ${r.outcome === 'written' ? 'OK ' : '!! '} ${r.name}  ${r.id}${r.outcome === 'written' ? '' : `  ${r.outcome}`}`);
   }
   console.log(res.logged.rowOk
