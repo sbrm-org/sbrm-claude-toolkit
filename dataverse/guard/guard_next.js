@@ -257,6 +257,7 @@ function isProfile(p) {
   if (PROFILE_NAMES.has(b) && n === `${HOME_N}/${b}`) return true;
   if (/\/(?:documents\/(?:windows)?powershell|\.config\/powershell)\/[^/]*profile\.ps1$/i.test(n) && under(n, HOME_N)) return true;
   if (/\/\.config\/fish\/config\.fish$/i.test(n)) return true;
+  if (/\/\.config\/fish\/conf\.d\/[^/]+\.fish$/i.test(n) && under(n, HOME_N)) return true;   // 1.11.17 (audit P3): fish runs every snippet there
   const env = process.env.CLAUDE_ENV_FILE;
   if (env && I.norm(env) === n) return true;
   return false;
@@ -719,6 +720,38 @@ function inlineCode(c, pipeCmds) {
 
 // ---------- one command ----------
 
+// The environment drive, in every spelling PowerShell accepts for it (1.11.17, audit F6).
+const ENV_DRIVE = /^(?:(?:Microsoft\.PowerShell\.Core\\)?Environment::|env:)[\\/]?/i;
+// The variable a persistent-setting command targets: { name }, { computed: true } when it cannot be read, or null
+// when the command does not touch the environment at all (a New-Item of an ordinary file).
+function persistedName(c, name) {
+  if (name === 'setx') {
+    const words = (c.args || []).map(literal);
+    for (let i = 0; i < words.length; i += 1) {
+      const L = words[i];
+      if (L === null) return { computed: true };
+      if (/^\/[sup]$/i.test(L)) { i += 1; continue; }      // /S system, /U user, /P password take a value
+      if (/^\//.test(L)) continue;
+      return { name: L };
+    }
+    return null;
+  }
+  const { named, pos } = argsOf(c);
+  const pathW = [...(named.get('path') || []), ...(named.get('literalpath') || [])][0] || pos[0];
+  if (!pathW) return null;
+  const p = literal(pathW);
+  if (p === null || !ENV_DRIVE.test(p)) return null;     // a computed or ordinary path: the file rules judge it
+  const n = p.replace(ENV_DRIVE, '');
+  if (n) return { name: n };
+  // -Name is in PS_SWITCHES (a switch for Get-ChildItem), so argsOf leaves its value positional: read the word after
+  // the flag itself; with no -Name, the name is the positional after the path (pos[1], or pos[0] when -Path is named).
+  const a = c.args || [];
+  const ni = a.findIndex((w) => /^-name$/i.test(literal(w) || ''));
+  const nw = ni >= 0 ? a[ni + 1] : pos[pathW === pos[0] ? 1 : 0];
+  const L = nw ? literal(nw) : null;
+  return L ? { name: L } : { computed: true };
+}
+
 function storeMoveAssign(a) {
   const n = String(a.name || '').replace(/^env:/i, '');
   if (/^(?:SBRM_DV_(?:HOME|CONFIG)|SBRM_DATAVERSE_CLI)$/i.test(n)) return true;
@@ -758,6 +791,10 @@ function judgeOne(c, ctx, env, pipe) {
   }
   if (name === 'setx' || ['set-item', 'si', 'new-item', 'ni'].includes(name)) {
     if (I.STORE_MOVE.test(c.src || '')) return tag(MSG.move, 'store-move', name);
+    // 1.11.17 (10/22 audit F3-F8): the raw-text pattern knew only the spelled-out Set-Item and read the line before
+    // the parser decoded it; judge the variable the command really targets (aliases, backticks, Environment::).
+    const t = persistedName(c, name);
+    if (t && (t.computed || DENY_NAME.test(t.name) || storeMoveAssign({ name: t.name }))) return tag(MSG.move, 'store-move', name);
   }
   // other Dataverse writers, as the COMMAND
   if (/^(?:set|new|remove|update|add|import|publish|merge|invoke|approve|grant|revoke)-crm\w*$/i.test(name)) return MSG.other;
@@ -1088,10 +1125,11 @@ function profileVerdict(file, content, env) {
   const walk = (list) => {
     for (const c of list) {
       for (const a of c.assigns) if (DENY_NAME.test(String(a.name).replace(/^env:/i, ''))) return true;
-      if (['export', 'declare', 'typeset', 'set', 'setenv', 'set-item', 'si', 'setx'].includes(c.name)) {
+      // 1.11.17 (audit P1, P4): readonly and New-Item/ni set variables too; Environment:: is the env drive
+      if (['export', 'declare', 'typeset', 'readonly', 'local', 'set', 'setenv', 'set-item', 'si', 'new-item', 'ni', 'setx'].includes(c.name)) {
         for (const w of c.args || []) {
           const L = literal(w) || text(w);
-          const n = L.replace(/^env:/i, '').split(/[=\s]/)[0];
+          const n = L.replace(ENV_DRIVE, '').split(/[=\s]/)[0];
           if (DENY_NAME.test(n)) return true;
         }
       }

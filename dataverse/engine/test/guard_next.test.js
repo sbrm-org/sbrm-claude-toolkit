@@ -182,6 +182,62 @@ for (const [label, input, message] of BLOCK) {
   });
 }
 
+// ---------- the persistent env-var rule: the 10/22 independent audit (guard_review/env_probe_2026-10-22) ----------
+// Each case was ALLOWED by 1.11.16 and the staged next model (verify_audit.js). Names: Dylan 10/22, "code-loading
+// names only" (a persistent PYTHONIOENCODING stays allowed).
+const SETX = J('se', 'tx');
+const SETENV = J('SetEnvironment', 'Variable');
+const SETITEM = J('Set-', 'Item');
+const ENV_BLOCK = [
+  ['A-N1 a persistent PYTHONPATH', sh(`${SETX} PYTHONPATH C:/a/modules`), /moving the engine's store/],
+  ['A-N2 a persistent PYTHONSTARTUP', sh(`${SETX} PYTHONSTARTUP C:/a/s.py`), /moving the engine's store/],
+  ['A-N3 a persistent PYTHONHOME', sh(`${SETX} PYTHONHOME C:/a/py`), /moving the engine's store/],
+  ['A-N4 a persistent PYTHONUSERBASE', sh(`${SETX} PYTHONUSERBASE C:/a/u`), /moving the engine's store/],
+  ['A-N5 a persistent GIT_CONFIG_GLOBAL', sh(`${SETX} GIT_CONFIG_GLOBAL C:/a/gc`), /moving the engine's store/],
+  ['A-N6 a persistent GIT_EXEC_PATH', sh(`${SETX} GIT_EXEC_PATH C:/a/g`), /moving the engine's store/],
+  ['A-N7 a persistent GIT_SSH_COMMAND', sh(`${SETX} GIT_SSH_COMMAND C:/a/ssh.exe`), /moving the engine's store/],
+  ['A-N8 a persistent GIT_CONFIG_COUNT (injects any git config)', sh(`${SETX} GIT_CONFIG_COUNT 1`), /moving the engine's store/],
+  ['A-N9 a persistent GIT_TEMPLATE_DIR', sh(`${SETX} GIT_TEMPLATE_DIR C:/a/t`), /moving the engine's store/],
+  ['A-N10 a persistent ZDOTDIR', sh(`${SETX} ZDOTDIR C:/a/z`), /moving the engine's store/],
+  ['A-N11 a persistent OPENSSL_CONF', sh(`${SETX} OPENSSL_CONF C:/a/o.cnf`), /moving the engine's store/],
+  ['A-F1 the .NET call with spaces round ::', ps(`[Environment] :: ${SETENV}('NODE_PATH','C:/a','User')`), /moving the engine's store/],
+  ['A-F2 the .NET call with a quoted method name', ps(`[Environment]::'${SETENV}'('NODE_PATH','C:/a','User')`), /moving the engine's store/],
+  ['A-F3 the si alias', ps('si env:NODE_PATH C:/a'), /moving the engine's store/],
+  ['A-F4 New-Item on the env drive with -Name', ps('New-Item -Path Env: -Name NODE_PATH -Value C:/a'), /moving the engine's store/],
+  ['A-F5 the ni alias', ps('ni env:NODE_PATH C:/a'), /moving the engine's store/],
+  ['A-F6 the Environment:: provider path', ps(`${SETITEM} Environment::NODE_PATH C:/a`), /moving the engine's store/],
+  ['A-F7 a backtick-escaped Set-Item', ps(J('Set-`', 'Item env:NODE_PATH C:/a')), /moving the engine's store/],
+  ['A-F8 a backtick-escaped setx', ps(J('se`', 'tx NODE_PATH C:/a')), /moving the engine's store/],
+  ['A-P1 readonly appended to .bashrc', ps(`Add-Content -LiteralPath "${H}/.bashrc" -Value 'readonly NODE_PATH=/a'`), /start-up file/],
+  ['A-P2 readonly written into .bashrc', write(`${H}/.bashrc`, 'readonly NODE_PATH=/a\n'), /start-up file/],
+  ['A-P3 a fish conf.d snippet', write(`${H}/.config/fish/conf.d/a.fish`, 'set -gx NODE_PATH /a\n'), /start-up file/],
+  ['A-P4 New-Item on the env drive in a PowerShell profile', write(`${H}/Documents/PowerShell/Microsoft.PowerShell_profile.ps1`,
+    'New-Item -Path Env: -Name NODE_PATH -Value C:/a\n'), /start-up file/],
+  ['A-P5 the Environment:: path in a PowerShell profile', write(`${H}/Documents/PowerShell/Microsoft.PowerShell_profile.ps1`,
+    `${SETITEM} Environment::NODE_PATH C:/a\n`), /start-up file/],
+];
+for (const [label, input, message] of ENV_BLOCK) {
+  test(`env audit blocks: ${label}`, () => {
+    const r = next(input);
+    assert.equal(r.kind, 'block', `expected a block, got ${r.kind}`);
+    assert.match(r.why, message);
+  });
+}
+const ENV_PASS = [
+  ['a persistent harmless app key (the 10/8 false positive)', sh(`${SETX} SBRM_LOGS_GRIST_KEY abc`)],
+  ['a persistent PYTHONIOENCODING (not code-loading; Dylan 10/22)', sh(`${SETX} PYTHONIOENCODING utf-8`)],
+  ['setx /M of a safe name', sh(`${SETX} MY_APP_KEY abc /M`)],
+  ['the .NET call on a safe name', ps(`[Environment]::${SETENV}('MY_APP_KEY','x','User')`)],
+  ['Set-Item on the env drive, safe name', ps(`${SETITEM} env:MY_APP_KEY x`)],
+  ['New-Item of an ordinary file', ps('New-Item -ItemType File C:/temp/x.txt')],
+  ['New-Item of an ordinary file that happens to be called PATH', ps('New-Item -ItemType File PATH')],
+  ['New-Item on the env drive with a safe -Name', ps('New-Item -Path Env: -Name MY_APP_KEY -Value x')],
+  ['a fish conf.d snippet with a safe name', write(`${H}/.config/fish/conf.d/b.fish`, 'set -gx MY_APP_KEY abc\n')],
+];
+for (const [label, input] of ENV_PASS) {
+  test(`env audit passes: ${label}`, () => assert.equal(next(input).kind, 'allow', next(input).why));
+}
+
 test('fork 5 (ruled 10/13): plugin install and marketplace add ASK; disable still blocks', () => {
   assert.equal(next(sh('claude plugin install foo@bar')).kind, 'ask');
   assert.equal(next(sh('claude plugin marketplace add example/plugins')).kind, 'ask');
