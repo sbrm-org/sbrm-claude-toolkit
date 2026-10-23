@@ -3,6 +3,22 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.17** (2026-10-23) **The persistent environment-variable rule, completed after an independent audit.** The
+  deny list behind the rule (a session may store a lasting environment variable only under a harmless literal name)
+  was the author's reasoning only. A non-Claude reviewer (Codex) audited it 10/22 for coverage; every one of its 22
+  claims was then replayed through the real verdicts, and all 22 were allowed by 1.11.16. Fixed: (1) **names** that make
+  a later Python, Git, zsh, OpenSSL, Perl or Ruby run load code or read config from elsewhere are now on the list
+  (the Python module-path and start-up names, every Git variable, the askpass helper, the zsh start-up folder, the
+  OpenSSL config). Dylan 10/22: code-loading names only, so a lasting text-encoding setting for Python stays allowed.
+  (2) **Spellings**: the PowerShell short aliases for setting and creating an item on the environment drive, that drive
+  written as its provider path, a backtick inside the command name, and spaces or quotes round the .NET method were
+  all missed, because the check read the raw line, not the parsed command; the command's real target variable is now
+  judged (`persistedName` in `guard/guard_next.js`). (3) **Start-up files**: a read-only declaration and an item
+  created on the environment drive inside a start-up file are now read, and fish's per-snippet folder counts as a
+  start-up file. `guard/guard.js` (`ENV_DENY`, the .NET form) and `guard/guard_next.js`; 25 block and 9 pass cases in
+  `guard_next.test.js`, the audit kept with its replay script in the project's `guard_review/env_probe_2026-10-22`.
+  Suite 822 (821 + 1 skip), self-test 247, mutation pass 16 of 16. Known, unchanged: writing the variable straight into
+  the user's Environment registry key, and system-wide start-up files (both need rights a session does not have).
 - **1.11.16** (2026-10-21) **A token request is no longer read as a Dataverse write.** Writing a read-only Dataverse
   client and an Entra token helper was refused as "a raw writing HTTP call at Dataverse" (R-1080, R-1082): their only
   POST is the client-credentials token request, whose URL sits in a constant (`LOGIN = "https://login.microsoftonline.com/..."`,

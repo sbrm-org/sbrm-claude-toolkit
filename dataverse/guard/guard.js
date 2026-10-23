@@ -464,11 +464,17 @@ const STORE_ANY = /\.sbrm-dataverse(?![\\/]+jobs(?:[\\/]|\b))/i;
 // Dataverse CLI, and shell start-up files (a persistent NODE_OPTIONS or BASH_ENV runs code in every later
 // engine or shell run). Any other literal name is fine: refusing them all blocked storing an unrelated
 // app key (false positive 10/8, an sbrm-logs Grist key).
-const ENV_DENY = '(?:USERPROFILE|HOME\\w*|PATH\\w*|PSModulePath|NODE_\\w*|NPM_\\w*|DYLD_\\w*|LD_\\w*|SBRM_DV\\w*|SBRM_DATAVERSE\\w*|DATAVERSE\\w*|CLAUDE\\w*|ANTHROPIC\\w*|BASH_ENV|ENV|XDG_\\w*|COMSPEC|SHELL|APPDATA|LOCALAPPDATA)';
+// 1.11.17 (10/22 independent audit, guard_review/env_probe_2026-10-22): + the names that make a later Python, Git,
+// zsh, OpenSSL, Perl or Ruby run load code or read config from elsewhere. Dylan 10/22: code-loading names only, so
+// a persistent PYTHONIOENCODING (a common encoding fix) stays allowed.
+const ENV_DENY = '(?:USERPROFILE|HOME\\w*|PATH\\w*|PSModulePath|NODE_\\w*|NPM_\\w*|DYLD_\\w*|LD_\\w*|SBRM_DV\\w*|SBRM_DATAVERSE\\w*|DATAVERSE\\w*|CLAUDE\\w*|ANTHROPIC\\w*|BASH_ENV|ENV|XDG_\\w*|COMSPEC|SHELL|APPDATA|LOCALAPPDATA'
+  + '|PYTHONPATH|PYTHONHOME|PYTHONSTARTUP|PYTHONUSERBASE|PYTHONPLATLIBDIR|PYTHONPRESITE|PYTHONSAFEPATH|PYTHONNOUSERSITE|PYTHONBREAKPOINT|PYTHONEXECUTABLE'
+  + '|GIT_\\w*|SSH_ASKPASS\\w*|ZDOTDIR|OPENSSL_\\w*|PERL5LIB|PERL5OPT|PERLLIB|RUBYOPT|RUBYLIB)';
 const ENV_SAFE = `(?!${ENV_DENY}\\b)[A-Za-z_][A-Za-z0-9_]*`;
 const STORE_MOVE = new RegExp([
   '\\bSBRM_DV_(?:HOME|CONFIG)\\b', '\\bSBRM_DATAVERSE_CLI\\b',
-  `\\[(?:System\\.)?Environment\\]::SetEnvironmentVariable\\s*\\((?!\\s*(?<q1>['"])${ENV_SAFE}\\k<q1>\\s*,)`,
+  // 1.11.17: spaces round `::` and a quoted method name are the same call (audit F1, F2)
+  `\\[(?:System\\.)?Environment\\]\\s*::\\s*(?<mq>['"]?)SetEnvironmentVariable\\k<mq>\\s*\\((?!\\s*(?<q1>['"])${ENV_SAFE}\\k<q1>\\s*,)`,
   `\\bSet-Item\\b[^;|&\\n]*?\\benv:(?![\\\\/]?${ENV_SAFE}['"]?(?:\\s|$))`,
   `\\bsetx(?:\\.exe)?\\b(?!\\s+(?<q2>['"]?)${ENV_SAFE}\\k<q2>\\s)`,
 ].join('|'), 'i');
