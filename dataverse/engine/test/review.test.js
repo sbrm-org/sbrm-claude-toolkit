@@ -192,3 +192,12 @@ test('the Access section lists each granted person by level, old schema read as 
   assert.match(out, /Dana Martin +write \+ merge: donorapp; develop: fedev/);
   assert.ok(!/Dana Martin.*hgs/.test(out), 'read is not listed');
 });
+
+// 1.11.19 (ruled 10/23, "Split into rows"): an oversized Write Log entry spreads across rows whose outcome is "log part";
+// a part is not a write, so the review never counts it as one.
+test('a Write Log part row is not counted as a write', () => {
+  const w = week();
+  w.logs.push(log('arivera@example.org', 'Alex Rivera', '2026-10-04T09:11:01', { planid: 'p-x-p2', outcome: 'log part', written: 0 }));
+  const alex = summarize(w).people.find((p) => p.email === 'arivera@example.org');
+  assert.deepEqual([alex.writes, alex.rows], [2, 41]);
+});

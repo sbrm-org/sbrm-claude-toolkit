@@ -97,6 +97,7 @@ test('an approval answered after the ticket ran out is refused as routine approv
   const e = cli.lastRun.events.find((x) => x.reason_code === 'approval_expired');
   assert.ok(e, 'recorded as approval_expired');
   assert.equal(e.signal, false);
+  assert.match(JSON.stringify(e), /ticket made \d{4}-\d\d-\d\dT[\d:.]+Z, checked \d{4}-\d\d-\d\dT[\d:.]+Z, 60\d s apart/, 'the recorded refusal carries the ticket\'s times (#6hqFhJfV8GRW459J)');
 });
 
 // 1.11.10 (guard_review/DESIGN.md §2a): the engine hands the approval it took into the write connection it opens,

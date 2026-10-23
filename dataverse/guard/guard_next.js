@@ -94,7 +94,24 @@ function wordValue(w, ctx) {
   }
   return s;
 }
+// A variable's key: a POSIX shell's names are case-sensitive ($a and $A are two variables), PowerShell's and cmd's are
+// not (review 10/23: folding a POSIX name let A=/safe; ... > "$a<store path>" be judged as /safe while the shell wrote
+// into the store).
+const varKey = (name, shell) => (shell === 'posix' ? String(name) : String(name).toLowerCase());
 function varValue(name, ctx) {
+  if (ctx.shell === 'posix') {
+    const k = String(name);
+    if (k === 'HOME' || k === 'USERPROFILE') return HOME_F;
+    if (k === 'HOMEDRIVE') return HOME_F.slice(0, 2);
+    if (k === 'HOMEPATH') return HOME_F.slice(2);
+    if (['TMP', 'TEMP', 'TMPDIR'].includes(k)) return TMP_F;
+    if (k === 'PWD' && ctx.here) return ctx.here;
+    if (ctx.vars.has(k)) return ctx.vars.get(k);
+    // The job folder Claude Code gives every background session (D-1273, 10/23), read from the hook's own environment
+    // when the line does not set it (a value set on the line wins, above). Only this exact name: any other stays unknown.
+    if (k === 'CLAUDE_JOB_DIR' && process.env.CLAUDE_JOB_DIR) return process.env.CLAUDE_JOB_DIR.replace(/\\/g, '/');
+    return null;
+  }
   const n = String(name).toLowerCase();
   if (['home', 'userprofile', 'env:userprofile', 'env:home'].includes(n)) return HOME_F;
   if (n === 'env:homedrive' || n === 'homedrive') return HOME_F.slice(0, 2);
@@ -579,6 +596,36 @@ function callArgs(code, open, lits) {
   });
 }
 
+// The paths a call is given BY KEYWORD (dst=, target=, path=, file= and the like): each literal value, or undefined
+// when the value is not a literal (judged as unknown). Review 10/23, round 4: only positional arguments were judged, so
+// os.replace(src, dst=<a store path>) and Path(x).replace(target=<a store path>) passed.
+// Round 5: by the call's role. A copy reads its source (src=, source=) and writes only its destination, so the source is
+// not a target; makedirs(name=...) names what it creates.
+const PATH_KEYWORD = /^(?:file|path|name|src|source|dst|dest|destination|target|target_path|new_path|filename|newname)$/i;
+const SOURCE_KEYWORD = /^(?:src|source)$/i;
+function keywordValues(all, lang, keyRe) {
+  const out = [];
+  for (const a of all) {
+    if (!a.keyword) continue;
+    const m = /^([A-Za-z_]\w*)\s*=\s*([\s\S]*)$/.exec(a.text);
+    if (!m || !keyRe.test(m[1])) continue;
+    const l = codeLiterals(m[2], lang)[0];
+    // a string prefix (r'', b'', u'') is still a literal; an f-string is not (its value is null)
+    out.push(l && /^[rbuRBU]{0,2}$/.test(m[2].slice(0, l.start)) && l.end === m[2].length ? l.value : undefined);
+  }
+  return out;
+}
+function keywordTargets(all, lang, which = 'all') {
+  const keys = { source: [], other: [] };
+  for (const a of all) {
+    if (!a.keyword) continue;
+    const m = /^([A-Za-z_]\w*)\s*=/.exec(a.text);
+    if (m && PATH_KEYWORD.test(m[1])) keys[SOURCE_KEYWORD.test(m[1]) ? 'source' : 'other'].push(a);
+  }
+  const vals = (list) => keywordValues(list, lang, PATH_KEYWORD);
+  return which === 'last' ? vals(keys.other) : [...vals(keys.other), ...vals(keys.source)];
+}
+
 // File-writing calls in code: [name regex, which args are targets, removal].
 const CODE_WRITES = [
   [/\b(?:writeFileSync|writeFile|appendFileSync|appendFile|createWriteStream|truncateSync|mkdirSync|WriteAllText|WriteAllBytes|WriteAllLines|AppendAllText|AppendAllLines|CreateText|AppendText|CreateDirectory|writeTextFile|write_file|IO\.write|Bun\.write|File\.write|chmodSync|chownSync|utimesSync|makedirs|mkdir|Create|OpenWrite)\s*\(/g, 'first', false],
@@ -639,17 +686,33 @@ function codeVerdict(code, lang, ctx, env, depth = 0) {
       // unknown on code that names the store), never here, where a string's .replace(old, new) read its arguments as
       // paths (D-1175, 10/17: `k.replace("/","\\")` read as moving the drive root). A bare replace( is still judged.
       if (/^replace/i.test(m[0]) && /\.\s*$/.test(src.slice(0, m.index))) continue;
-      const args = callArgs(src, m.index + m[0].length - 1, lits).filter((a) => !a.keyword);
+      const all = callArgs(src, m.index + m[0].length - 1, lits);
+      const args = all.filter((a) => !a.keyword);
       let targets = [];
       if (which === 'open') {
+        // the file positionally, or by keyword (open(file=..., mode="w"), round 5)
+        const [fileKw] = keywordValues(all, lang, /^(?:file|path)$/i);
+        const hasFile = !!args[0] || all.some((a) => a.keyword && /^(?:file|path)\s*=/.test(a.text));
+        const file = args[0] ? args[0].literal : fileKw;
         const mode = args.slice(1).find((a) => typeof a.literal === 'string');
         const perlTarget = args.find((a) => typeof a.literal === 'string' && /^\+?[<>]/.test(a.literal));
         if (perlTarget) { if (/^\+?>|^\+</.test(perlTarget.literal)) targets = [perlTarget.literal]; }
-        else if (mode && /^[rwaxbt+]*[wax+][rwaxbt+]*$/.test(mode.literal) && args[0]) targets = [args[0].literal];
-        if (!targets.length && /\bmode\s*=\s*["'][rwaxbt+]*[wax+]/.test(src.slice(m.index, m.index + 300)) && args[0]) targets = [args[0].literal];
+        else if (mode && /^[rwaxbt+]*[wax+][rwaxbt+]*$/.test(mode.literal) && hasFile) targets = [file];
+        // mode=: read from the call's own arguments, wherever it sits (round 6: a 300-character text window missed one
+        // placed further out); a mode that is not a literal could be a write, so it counts
+        const modeKw = all.filter((a) => a.keyword && /^mode\s*=/.test(a.text));
+        const [modeVal] = keywordValues(modeKw, lang, /^mode$/i);
+        if (!targets.length && hasFile && modeKw.length && (modeVal === undefined || /^[rwaxbt+]*[wax+][rwaxbt+]*$/.test(modeVal))) targets = [file];
+        if (!targets.length && /\bmode\s*=\s*["'][rwaxbt+]*[wax+]/.test(src.slice(m.index, m.index + 300)) && hasFile) targets = [file];
+        // a positional mode that is not a literal (open(p, m)) could be a write (round 7)
+        if (!targets.length && !perlTarget && args[1] && typeof args[1].literal !== 'string' && hasFile) targets = [file];
       } else if (which === 'first') targets = args[0] ? [args[0].literal] : [];
-      else if (which === 'last') targets = args.length ? [args[args.length - 1].literal] : [];
+      // a copy writes its last argument, unless the destination is given by keyword: then every positional is a source
+      // (round 6: copyfile(<plugin file>, dst=<scratch>) read the source as the target)
+      else if (which === 'last') targets = all.some((a) => a.keyword && /^(?:dst|dest|destination|target)\s*=/i.test(a.text)) ? [] : (args.length ? [args[args.length - 1].literal] : []);
       else targets = args.map((a) => a.literal);
+      // a path passed by keyword (os.replace(src, dst=...), open(file=..., mode="w") excepted) is a target too (round 4)
+      if (which !== 'open') targets.push(...keywordTargets(all, lang, which));
       for (const t of targets) {
         const k = judgeTarget(t, removal);
         if (k) return hit(k);
@@ -661,9 +724,32 @@ function codeVerdict(code, lang, ctx, env, depth = 0) {
   while ((rm = RECEIVER_WRITES.exec(src)) !== null) {
     if (lits.some((l) => rm.index >= l.start && rm.index < l.end)) continue;
     const before = src.slice(Math.max(0, rm.index - 300), rm.index);
-    const lm = /(?:Path\s*\(\s*)?([rbRB]?(["'])((?:(?!\2).)*)\2)\s*\)?\s*$/.exec(before);
-    const k = judgeTarget(lm ? lm[3] : undefined, /unlink|rmdir|rename|replace/.test(rm[0]));
+    // The receiver is a PATH literal only inside Path("x"). A bare or parenthesized string literal is a string, whose
+    // .replace is text work, and a ")" closing a call's arguments makes the receiver that call's result (F-1076, 10/22,
+    // and review rounds 1-5: s.replace("|", "/").replace(...), "a/".rstrip("/").replace(...) and "/".replace("/", "|")
+    // were each read as a file operation on the drive root). Any other receiver is unknown (C2 on code naming the store).
+    const lm = /Path\s*\(\s*[rbRB]?(["'])((?:(?!\1).)*)\1\s*\)\s*$/.exec(before);
+    const strReceiver = !lm && (/(?:^|[^\w.\])'"])[rbRB]?(["'])(?:(?!\1).)*\1\s*$/.test(before)
+      || /(?:^|[^\w.\])'"])\(\s*[rbRB]?(["'])(?:(?!\1).)*\1\s*\)\s*$/.test(before));
+    // a string literal's method changes no file, whatever its text names (round 6)
+    const k = strReceiver ? null : judgeTarget(lm ? lm[2] : undefined, /unlink|rmdir|rename|replace/.test(rm[0]));
     if (k) return hit(k);
+    // A rename, replace or link also WRITES its first argument: judged as a target (review 10/23: only the source was).
+    // `.replace(` is far more often a string's: its argument counts when the receiver is Path(...), or an object the
+    // guard cannot read in code that uses pathlib, never when the receiver is a plain string literal (rounds 2 and 3).
+    // os.replace / shutil-style module calls are file moves whatever else the code imports (round 4).
+    const moduleCall = /(?:^|[^\w.])(?:os|shutil)\s*$/.test(before); // os.replace(src, dst): both are paths
+    const pathReceiver = moduleCall || (!strReceiver && /\bpathlib\b|\bPath\s*\(/.test(src));
+    if (/rename|symlink_to|hardlink_to/.test(rm[0]) || (/replace/.test(rm[0]) && pathReceiver)) {
+      const all = callArgs(src, rm.index + rm[0].length - 1, lits);
+      // a Path method's destination is its first argument, a module call's are all of them; or by keyword (round 4)
+      const positional = all.filter((a) => !a.keyword);
+      const dests = moduleCall ? positional : positional.slice(0, 1);
+      for (const v of [...dests.map((a) => a.literal), ...keywordTargets(all, lang)]) {
+        const kd = judgeTarget(v, false);
+        if (kd) return hit(kd);
+      }
+    }
   }
   // A string handed to a shell from code is a command line of its own; a list of words is one too.
   if (depth < 3) {
@@ -1157,7 +1243,7 @@ function applyEffects(c, ctx) {
   for (const a of c.assigns) {
     const standalone = c.kind === 'control' || !c.word;
     if (!standalone) continue;
-    const key = String(a.name).toLowerCase();
+    const key = varKey(a.name, c.shell);
     if (a.dynamic || !a.value) { ctx.vars.set(key, null); continue; }
     ctx.vars.set(key, wordValue(a.value, ctx));
   }
@@ -1165,10 +1251,15 @@ function applyEffects(c, ctx) {
   if (['export', 'declare', 'typeset', 'local', 'readonly'].includes(c.name)) {
     for (const w of c.args) {
       const a = SP.splitAssign(w);
-      if (a) ctx.vars.set(a.name.toLowerCase(), wordValue(a.value, ctx));
+      if (a) ctx.vars.set(varKey(a.name, c.shell), wordValue(a.value, ctx));
     }
   }
-  if (c.name === 'read') for (const w of c.args) { const L = literal(w); if (L && !/^-/.test(L)) ctx.vars.set(L.toLowerCase(), null); }
+  if (c.name === 'read') for (const w of c.args) { const L = literal(w); if (L && !/^-/.test(L)) ctx.vars.set(varKey(L, c.shell), null); }
+  // An unset variable is unknown again, never its earlier value or the environment's (review 10/23, round 3: after
+  // `unset A`, Bash expands $A to nothing, so a path built on it reaches somewhere else).
+  if (c.name === 'unset' || c.name === 'remove-variable' || c.name === 'rv') {
+    for (const w of c.args) { const L = literal(w); if (L && !/^-/.test(L)) ctx.vars.set(varKey(L, c.shell), null); }
+  }
   if (CD.has(c.name)) {
     const { named, pos } = argsOf(c);
     const to = [...(named.get('path') || []), ...(named.get('literalpath') || []), ...pos][0];
@@ -1186,8 +1277,10 @@ function judge(cmds, ctx, env) {
   let ask = null;
   const pipes = groupByPipeline(cmds);
   for (const c of cmds) {
+    ctx.shell = c.shell; // how this command's variable names are read (varKey)
     if (c.nested.length) {
       const r = judge(c.nested, { here: ctx.here, vars: new Map(ctx.vars) }, env);
+      ctx.shell = c.shell;
       if (typeof r === 'string') return r;
       if (r && !ask) ask = r;
     }

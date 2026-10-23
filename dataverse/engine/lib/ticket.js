@@ -98,7 +98,8 @@ function check(key, { env, now = Date.now() } = {}) {
   const want = sign(key, t.created, t.nonce, env);
   if (t.sig.length !== want.length || !crypto.timingSafeEqual(Buffer.from(t.sig), Buffer.from(want))) return { ok: false, why: 'not signed by this machine' };
   const age = now - Date.parse(t.created);
-  if (!(age >= -60 * 1000 && age <= TTL_MS)) return { ok: false, why: 'expired' };
+  // The ticket's own times go back with an expiry (#6hqFhJfV8GRW459J): take() deletes it, so they are the only evidence.
+  if (!(age >= -60 * 1000 && age <= TTL_MS)) return { ok: false, why: 'expired', created: t.created, checked: new Date(now).toISOString() };
   return { ok: true, file };
 }
 
@@ -147,8 +148,12 @@ function pending({ env, now = Date.now() } = {}) {
 }
 
 // What the person and the log are told when an apply has no approval.
-function refusalText(why) {
-  if (why === 'expired') return 'the approval expired before the change started (it lasts ten minutes). Run the command again and approve it when Claude Code asks.';
+function refusalText(why, info = {}) {
+  if (why === 'expired') {
+    const when = info.created && info.checked
+      ? ` (ticket made ${info.created}, checked ${info.checked}, ${Math.round((Date.parse(info.checked) - Date.parse(info.created)) / 1000)} s apart)` : '';
+    return `the approval expired before the change started (it lasts ten minutes)${when}. Run the command again and approve it when Claude Code asks.`;
+  }
   if (why === 'already used') return 'the approval for this change was already used. Run the command again and approve it when Claude Code asks.';
   return `this change was not approved in Claude Code's permission prompt (${why}). Run it as its own command so Claude Code asks, and approve it there.`;
 }

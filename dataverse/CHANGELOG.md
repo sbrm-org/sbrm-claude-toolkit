@@ -3,6 +3,44 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.19** (2026-10-23) **A Write Log entry over 1 MB lands; an expired approval says when its ticket was made;
+  two guard false positives fixed.** (1) **The Write Log row is capped** (D-1174, 10/17: an import's 1,314,762-character
+  entry was refused by Dataverse's 1,048,576 limit, parked, and retried unchanged forever). Over 1,000,000 characters the
+  row drops the per-row lines and keeps in its JSON only what undo reads (each row's name, id, outcome and note, with the
+  changes for an update or the after-image for a create), so undo still works from it; still over, each NEW value over
+  2,000 characters is kept as its SHA-256 (undo writes back only old values, and the hash still shows a later change);
+  when even that does not fit, the entry is **split across Write Log rows** (ruled 10/23, Dylan: "Split into rows"):
+  the row for the plan id holds the heading and part 1, rows `<plan id>-p2` to `-pN` the rest (outcome `log part`, no
+  counts, so the review does not count them as writes), parts written before the first row so undo never meets a half
+  entry, and undo joins them, refusing with the part named if one is missing or from another plan. Past 20 parts
+  (about 18 MB) it keeps ids and outcomes and undo points at the writer's local log, which always keeps everything;
+  past that, the counts alone, always under the limit. The
+  plan's own fields (reason, headline, name) are clipped in every step, so they never push out what undo needs. A
+  row parked by an earlier version is trimmed the same way when it is retried, so the 10/17 row lands at the next Donor
+  App apply or health check (`lib/log.js` `fitForRow`, `lib/revert.js`). (2) **"Approval expired" carries the ticket's
+  times** (three cases 10/22-10/23 refused seconds after the ask; the engine deletes the ticket, so nothing was left to
+  read): the refusal now says when the ticket was made, when it was checked and how far apart, never the signature
+  (`lib/ticket.js`, `dataverse-write.js`). (3) **Guard false positives** (`guard/guard_next.js`): F-1076, a chained string
+  `.replace("|", "/").replace(...)` in inline Python was read as renaming the drive root (the receiver rule took the
+  ")" closing the first call's arguments, or a call's own "(", for one wrapping a literal; a wrapped literal,
+  Path("/").replace, is still judged), and, found by the review, a Path rename or replace now has its DESTINATION
+  judged too (only the source was, so a rename INTO the store passed this check; a receiver is a path only inside
+  `Path(...)`, a bare or parenthesized string literal is text, and a `.replace(` argument counts when the receiver is
+  `Path(...)`, `os` or `shutil`, or an unknown object in pathlib code), and a path passed BY KEYWORD
+  (`os.replace(src, dst=...)`, `Path(x).replace(target=...)`, `shutil.move(dst=...)`, `open(file=..., mode="w")`,
+  `os.makedirs(name=...)`) is judged like a positional one, by role, so a copy's source is read, not written, and an
+  `open`'s write mode is read from the call itself, not a 300-character window, a mode held in a variable counts as a
+  possible write, and a raw-string mode (`r'r'`) is a literal (keyword paths and variable modes were not judged before
+  this release either); **also found by the review, a real hole since
+  1.11.14**: the deciding guard folded every variable name to lowercase, but Bash's names are case-sensitive, so
+  `A=/safe; ... > "$a<a path into the store>"` was judged as /safe while Bash wrote into the store. POSIX names are now
+  exact (assignments, reads and the built-in HOME, TMP, PWD names); PowerShell and cmd stay case-blind; and an `unset`
+  variable is unknown again, never its earlier value (`A=/safe; unset A; ... > "$A<store path>"` passed). D-1273, a redirect under
+  CLAUDE_JOB_DIR, the job folder Claude Code gives a background session, was an unknown target on a line naming the
+  plugin: that one name, spelled exactly, now resolves from the hook's own environment unless the line sets it (any
+  other variable stays unknown). Tests in `revert.test.js`, `ticket.test.js`, `approval.test.js`, `guard_next.test.js`;
+  the fake now enforces Dataverse's entry limit. Reviewed blind by Codex (C1, a round per fix). Suite 854 (853 + 1
+  skip), self-test 247, mutation pass 50 of 50 (`mutate_1_11_19.js` in the project folder).
 - **1.11.18** (2026-10-23) **A record write is no longer called failed on an answer it did not check.** (1) **A
   timed-out write is re-read** (D-1240, Daian 10/21: a gift's update hit the CLI's 120 s client timeout and was logged
   not written, but the change was on the record). The engine now never sends a timed-out request again; it re-reads

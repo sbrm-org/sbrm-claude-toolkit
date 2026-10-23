@@ -18,7 +18,7 @@
 const { validateJob, BIND_KEY } = require('./contract');
 const { planJob, same, PlanRefused } = require('./resolve');
 const { loadTable, refTable, OWNER, ownerSetOf } = require('./meta');
-const { LOG_SET } = require('./log');
+const { LOG_SET, MAX_PARTS, sha256 } = require('./log');
 const severity = require('./severity');
 
 const UNDOABLE = new Set(['applied', 'applied with problems']);
@@ -32,10 +32,29 @@ function parseEntry(text) {
 // The applied entry for a plan id from this environment's log table, or null. An applied entry is
 // keyed by the bare plan id (a cancel carries a -cHHMMSS suffix and wrote nothing).
 function findEntry(dv, planId) {
-  const filter = encodeURIComponent(`sbrm_planid eq '${planId}'`);
-  const res = dv.get(`${LOG_SET}?$select=sbrm_planid,sbrm_entry&$filter=${filter}`);
-  const row = (res.value || [])[0];
-  return row ? parseEntry(row.sbrm_entry) : null;
+  const rowOf = (key) => {
+    const filter = encodeURIComponent(`sbrm_planid eq '${key}'`);
+    return (dv.get(`${LOG_SET}?$select=sbrm_planid,sbrm_entry&$filter=${filter}`).value || [])[0] || null;
+  };
+  const row = rowOf(planId);
+  if (!row) return null;
+  const first = parseEntry(row.sbrm_entry);
+  if (first.log_trimmed !== 'split') return first;
+  // An entry split across Write Log rows (lib/log.js fitRows, ruled 10/23): every part present, numbered, and from
+  // this plan, or nothing is undone.
+  const n = first.parts;
+  if (!Number.isInteger(n) || n < 1 || n > MAX_PARTS || first.part !== 1 || typeof first.chunk !== 'string') throw new PlanRefused([`the Write Log entry for plan ${planId} says it is split, but its part numbering is damaged`], 'nothing_to_undo');
+  const chunks = [first.chunk];
+  for (let k = 2; k <= n; k += 1) {
+    const r = rowOf(`${planId}-p${k}`);
+    if (!r) throw new PlanRefused([`part ${k} of ${n} of the Write Log entry for plan ${planId} is missing, so it cannot be undone from the log. The full entry is in the writer's local log on the computer that applied it (~/.sbrm-dataverse/log/).`], 'nothing_to_undo');
+    const p = parseEntry(r.sbrm_entry);
+    if (p.plan_id !== first.plan_id || p.part !== k || p.parts !== n || typeof p.chunk !== 'string') {
+      throw new PlanRefused([`part ${k} of ${n} of the Write Log entry for plan ${planId} does not match it (another plan, or another numbering), so nothing is undone`], 'nothing_to_undo');
+    }
+    chunks.push(p.chunk);
+  }
+  return JSON.parse(chunks.join(''));
 }
 
 function localStamp(iso) {
@@ -79,6 +98,10 @@ function buildJob(dv, entry) {
     throw new PlanRefused([`undoing a merge is not built yet. The Write Log entry for plan ${entry.plan_id} holds both records in full as they were and every record the merge moved, so a rebuild is possible; ask Dylan.`], 'not_built');
   }
   if (!UNDOABLE.has(entry.outcome)) throw new PlanRefused([`that plan's outcome is "${entry.outcome}"; there is nothing to undo`], 'nothing_to_undo');
+  // An entry too large for its Write Log row keeps only ids and outcomes there (lib/log.js fitForRow, D-1174).
+  if (entry.log_trimmed === 'rows' || entry.log_trimmed === 'all') {
+    throw new PlanRefused([`the Write Log entry for plan ${entry.plan_id} was too large for Dataverse, so the row keeps only each record's id and outcome. The full entry, with what undo needs, is in ${(entry.person || {}).email || 'the writer'}'s local log on the computer that applied it (~/.sbrm-dataverse/log/); ask Dylan.`], 'nothing_to_undo');
+  }
   if (entry.mode === 'delete') {
     throw new PlanRefused([`a delete cannot be undone by the toolkit. Every column of each deleted record, as it stood, is in the Write Log entry for plan ${entry.plan_id}; a record can be keyed back from there by hand (it gets a new id).`], 'nothing_to_undo');
   }
@@ -107,13 +130,19 @@ function buildJob(dv, entry) {
         verify.add(BIND_KEY.test(c.column) ? table.navs.get(BIND_KEY.exec(c.column)[1]).attr : c.column);
       }
       rows.push({ name: r.name, id: r.id, body });
-      expect.set(r.id, changes.map((c) => ({ key: c.column, value: c.new, text: c.new_text, label: c.label })));
+      // A long new value may be kept as its hash only (lib/log.js fitForRow 'hashed'): compared by hash below.
+      expect.set(r.id, changes.map((c) => ({ key: c.column, value: c.new, hash: c.new_sha256, text: c.new_sha256 ? `(${c.new_length} characters)` : c.new_text, label: c.label })));
     } else {
       rows.push({ name: r.name, id: r.id, body: { statecode: 1, statuscode: status } });
       verify.add('statecode').add('statuscode');
       const after = Object.entries(r.after || {}).filter(([k]) => k !== table.entity.primaryId);
-      for (const [k] of after) verify.add(attrOfReadKey(k));
-      expect.set(r.id, after.map(([k, v]) => ({ readKey: k, value: v, text: v === null ? '(blank)' : String(v), label: (table.attrs.get(attrOfReadKey(k)) || {}).label || k })));
+      const hashed = Object.entries(r.after_sha256 || {}).filter(([k]) => k !== table.entity.primaryId);
+      for (const [k] of [...after, ...hashed]) verify.add(attrOfReadKey(k));
+      const label = (k) => (table.attrs.get(attrOfReadKey(k)) || {}).label || k;
+      expect.set(r.id, [
+        ...after.map(([k, v]) => ({ readKey: k, value: v, text: v === null ? '(blank)' : String(v), label: label(k) })),
+        ...hashed.map(([k, h]) => ({ readKey: k, hash: h, text: '(a long value)', label: label(k) })),
+      ]);
     }
   }
   if (!rows.length) {
@@ -158,7 +187,7 @@ function planRevert(dv, entry, { envs, access, warnRows }) {
     for (const x of expect.get(row.id) || []) {
       const readKey = x.readKey || plan.columns[x.key].read_key;
       const now = row.before[readKey];
-      if (same(now, x.value)) continue;
+      if (x.hash ? now !== null && now !== undefined && sha256(now) === x.hash : same(now, x.value)) continue;
       const shown = (row.changes.find((c) => c.column === x.key) || {}).old_text;
       diffs.push(`${x.label}: ${x.text} -> ${shown !== undefined ? shown : (now === null ? '(blank)' : now)}`);
     }
