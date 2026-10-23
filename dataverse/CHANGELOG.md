@@ -3,6 +3,25 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.18** (2026-10-23) **A record write is no longer called failed on an answer it did not check.** (1) **A
+  timed-out write is re-read** (D-1240, Daian 10/21: a gift's update hit the CLI's 120 s client timeout and was logged
+  not written, but the change was on the record). The engine now never sends a timed-out request again; it re-reads
+  the row's planned columns every 10 s for up to 2 minutes: all at the plan's values = written, with a note in the log;
+  otherwise failed, saying it may still land and to read the record before running it again (or, when the last re-read
+  could not be made, that whether it landed is not known). A write that WENT THROUGH but whose read-back timed out is
+  judged by its re-read (a mismatch stays a mismatch), and one never read back is `read-back failed`, not failed (the
+  log's and the console's totals say how many went through unverified). The two minutes are wall time too: after the wait that crosses them comes one final re-read, then no more. A
+  create whose id came back keeps it whatever fails after; a timed-out create with no id fails with "check before
+  running it again" (a second create would make a duplicate). (2) **A
+  moved version stamp is re-checked** (Daian 10/13 and 10/15: a donor's address update refused as
+  "the record changed between the check and the write" right after her gift moved the giving totals, with no audited
+  change). On that refusal the row is re-checked as apply's first step does: if the planned columns still equal the
+  plan's before-image it is written ONCE more with the fresh stamp, with a note; if they moved, the refusal stands and
+  now says what moved. Record rows only (`lib/apply.js` `writeOne`); app changes, settings and merges are unchanged. The
+  timeout test moved to `lib/cli.js` `isTimeout`, shared with the schema engine. Tests in `apply.test.js` (the fake's
+  new `afterWrite` hook throws after a write lands). Reviewed blind by a second model family (Codex, 10/23, a round per
+  fix); its eight findings on the new code are fixed above. Suite 836 (835 + 1 skip), self-test 247, mutation pass 17
+  of 17 (`mutate_1_11_18.js` in the project folder).
 - **1.11.17** (2026-10-23) **The persistent environment-variable rule, completed after an independent audit.** The
   deny list behind the rule (a session may store a lasting environment variable only under a harmless literal name)
   was the author's reasoning only. A non-Claude reviewer (Codex) audited it 10/22 for coverage; every one of its 22

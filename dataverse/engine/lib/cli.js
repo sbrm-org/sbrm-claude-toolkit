@@ -124,6 +124,13 @@ function request(cli, host, apiPath, { method = 'GET', headers = [], bodyFile = 
   return got;
 }
 
+// A request this computer gave up on: the CLI's own 100-120 s client timeout (its text names TaskCanceledException,
+// D-1240) or ours (spawnSync's ETIMEDOUT). The request may still have landed, so the caller re-reads before it says
+// either way (schema creates 10/7, a gift update 10/21).
+function isTimeout(e) {
+  return /timed? ?out|TaskCanceled|HttpClient\.Timeout/i.test(String(e && e.message));
+}
+
 const FORMATTED = 'Prefer: odata.include-annotations="OData.Community.Display.V1.FormattedValue"';
 
 // One GET without blocking (spawn, not spawnSync), parsed exactly as request() parses.
@@ -185,4 +192,4 @@ function readConnection(host, cli = resolveCli()) {
   };
 }
 
-module.exports = { resolveCli, readConnection, request, getMany, cliPath, launchError, DataverseError, FORMATTED, platformDir };
+module.exports = { resolveCli, readConnection, request, getMany, cliPath, launchError, isTimeout, DataverseError, FORMATTED, platformDir };

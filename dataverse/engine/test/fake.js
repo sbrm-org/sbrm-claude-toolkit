@@ -180,7 +180,9 @@ function accessRows(access, env = 'donorapp') {
   return out;
 }
 
-function fakeDv({ email = 'dgross@example.org', dupHits = [], userId = IDS.me, ignoreOnWrite = [], beforeWrite = null, data = records(), access = ACCESS } = {}) {
+// beforeWrite / afterWrite (dv, set, id): run as a PATCH arrives / once it has landed; either may change the record
+// or throw (afterWrite throwing = a write that landed but whose answer never came back, D-1240).
+function fakeDv({ email = 'dgross@example.org', dupHits = [], userId = IDS.me, ignoreOnWrite = [], beforeWrite = null, afterWrite = null, data = records(), access = ACCESS } = {}) {
   if (!data.sbrm_dataversewriteaccesses) data.sbrm_dataversewriteaccesses = accessRows(access);
   const calls = [];
   const notFound = () => new DataverseError('Does Not Exist', { code: '0x80040217' });
@@ -243,6 +245,7 @@ function fakeDv({ email = 'dgross@example.org', dupHits = [], userId = IDS.me, i
       // As the platform does (seen live 10/7, F&E Dev): reactivating a merged record clears merged + masterid.
       if (wasMerged && body.statecode === 0) Object.assign(data[set][id], { merged: false, _masterid_value: null });
       bump(set, id);
+      if (afterWrite) afterWrite(dv, set, id);
       return {};
     },
     // The admin delete (ruled 10/7), version-tagged like an update.

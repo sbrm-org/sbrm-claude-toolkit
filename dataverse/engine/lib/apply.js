@@ -7,7 +7,8 @@
 //   2. the approval: the person said yes in Claude Code's prompt, and `confirm` (the CLI's) uses up the
 //      guard's one-time ticket for this plan (lib/ticket.js, 1.11.0). No ticket, no write.
 //   3. write each row (PATCH with If-Match, so a change after step 1 is refused by Dataverse),
-//      read it back, log, consume the plan.
+//      read it back, log, consume the plan. A refused stamp whose planned columns did not move is re-checked and
+//      written once more; a timed-out request is re-read, never assumed failed (writeOne, 1.11.18).
 //
 // Records are never deleted (ruled 10/8, Dylan: "we should never delete records, only make them inactive"):
 // a record is made inactive with an ordinary update of statecode/statuscode, which undo can reverse.
@@ -16,7 +17,7 @@ const fs = require('fs');
 const { whoAmI, accessFor, same, display } = require('./resolve');
 const { resolveAccess, TOOLKIT_SETS, LOG_TABLES, APP_DEFINITION_SETS } = require('./access');
 const { BIND_VALUE } = require('./contract');
-const { DataverseError } = require('./cli');
+const { DataverseError, isTimeout } = require('./cli');
 const { loadPlan } = require('./store');
 const { summary, detail, headline } = require('./render');
 const { writeEntry } = require('./log');
@@ -79,6 +80,16 @@ function recheck(dv, plan, row, today = new Date()) {
   return {};
 }
 
+function readBack(dv, plan, row, rid, opts) {
+  const back = dv.get(`${plan.table}(${rid})?$select=${plan.verify.map((v) => v.read_key).join(',')}`, opts);
+  const after = Object.fromEntries(Object.entries(back).filter(([k]) => !k.includes('@')));
+  const bad = Object.keys(row.body).filter((key) => {
+    const col = plan.columns[key];
+    return !same(back[col.read_key], expectedValue(col, row.body[key]));
+  }).map((key) => plan.columns[key].label);
+  return { rid, after, bad };
+}
+
 function writeRow(dv, plan, row, etag) {
   let rid = row.id;
   if (plan.mode === 'create') {
@@ -88,17 +99,85 @@ function writeRow(dv, plan, row, etag) {
   } else {
     dv.update(plan.table, row.id, row.body, etag);
   }
-  const back = dv.get(`${plan.table}(${rid})?$select=${plan.verify.map((v) => v.read_key).join(',')}`);
-  const after = Object.fromEntries(Object.entries(back).filter(([k]) => !k.includes('@')));
-  const bad = Object.keys(row.body).filter((key) => {
-    const col = plan.columns[key];
-    return !same(back[col.read_key], expectedValue(col, row.body[key]));
-  }).map((key) => plan.columns[key].label);
-  return { rid, after, bad };
+  try {
+    return readBack(dv, plan, row, rid);
+  } catch (e) {
+    // The record exists by now: a failure past this point must keep its id (a create's is known only from here).
+    if (e && typeof e === 'object') e.rid = rid;
+    throw e;
+  }
+}
+
+const VERSION_MOVED = '0x80060882'; // Dataverse's If-Match refusal
+const MOVED_TEXT = 'the record changed between the check and the write';
+const TIMEOUT_POLL_MS = 10 * 1000;
+const TIMEOUT_RECHECK_MS = 2 * 60 * 1000;
+function defaultSleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// A request this computer gave up on may still land (D-1240, 10/21: a gift's PATCH timed out at 120 s and the change
+// was on the record when read). Re-read the planned columns (strong) every 10 s for up to 2 minutes; never send again.
+// `e.rid` set = the write itself was answered and only its read-back failed (writeRow): the record holds whatever the
+// first successful re-read shows, a mismatch included (Codex review 10/23, round 2).
+function landedAfterTimeout(dv, plan, row, e, sleep, clock) {
+  const why = String(e.message).slice(0, 300);
+  const rid = row.id || e.rid;
+  const sent = !!e.rid;
+  if (!rid) {
+    // A create whose id never came back: nothing to re-read, and a second create would make a duplicate.
+    return { outcome: `failed: the request timed out on this computer, so the record may have been created: check before running it again (${why})` };
+  }
+  let last = null; // the last re-read: { r } or { err }
+  const start = clock();
+  let final = false; // the read after the wait that crossed the deadline: the last one
+  for (let waited = 0; ; waited += TIMEOUT_POLL_MS) {
+    try { last = { r: readBack(dv, plan, row, rid, { strong: true }) }; } catch (x) { last = { err: x }; }
+    if (last.r && sent) return { w: last.r, note: 'the read-back timed out on this computer; this is the re-read after it' };
+    if (last.r && !last.r.bad.length) return { w: last.r, note: 'the request timed out on this computer, but the change landed (re-read after the timeout)' };
+    // Two minutes of sleeps OR of wall time: a slow read counts too. After the wait that crosses the deadline comes ONE
+    // final read (a write landing in that wait is seen), then no more (Codex review 10/23, rounds 3 to 5). A read can
+    // overrun the deadline by its own length, which the CLI's client timeout bounds (120 s, D-1240).
+    if (final || waited >= TIMEOUT_RECHECK_MS) break;
+    sleep(TIMEOUT_POLL_MS);
+    if (clock() - start >= TIMEOUT_RECHECK_MS) final = true;
+  }
+  if (sent) return { rid, outcome: `read-back failed: the write went through but the record could not be read back after 2 minutes: read it before doing anything else (${why})` };
+  // Absence is claimed only when the LAST re-read showed the record without the change (Codex review 10/23, F2 and
+  // round 2): an earlier read cannot speak for a write that lands after it.
+  if (last.err) {
+    return { rid, outcome: `failed: the request timed out on this computer and the record could not be re-read (${String(last.err.message).slice(0, 160)}), so whether the change landed is not known: read the record before running it again (${why})` };
+  }
+  return { rid, outcome: `failed: the request timed out on this computer and the change was not on the record after 2 minutes. It may still land: read the record before running it again (${why})` };
+}
+
+// One row's write, read back. Two answers are not taken at their word (1.11.18):
+//   0x80060882, the version stamp moved: when the planned columns did not move with it (a rollup recalculated after
+//   a gift: Daian 10/13 and 10/15), the row is re-checked as step 1 does and written ONCE more with the fresh stamp;
+//   when they did move, the refusal stands.
+//   a timeout: the outcome comes from re-reading the record (landedAfterTimeout), never from the error.
+function writeOne(dv, plan, row, etag, now, sleep, clock) {
+  let note = null;
+  try {
+    try {
+      return { w: writeRow(dv, plan, row, etag) };
+    } catch (e) {
+      if (!(e && e.code === VERSION_MOVED && plan.mode === 'update')) throw e;
+      const r = recheck(dv, plan, row, now);
+      if (r.why) return { outcome: `failed: ${MOVED_TEXT} (${r.why}); nothing was written to it` };
+      note = 'the version stamp moved after the check but the planned columns had not, so it was re-checked and written on a second try';
+      return { w: writeRow(dv, plan, row, r.etag), note };
+    }
+  } catch (e) {
+    if (e && e.code === VERSION_MOVED) return { outcome: `failed: ${MOVED_TEXT}; nothing was written to it` };
+    if (!isTimeout(e)) return { rid: e && e.rid, outcome: e && e.rid ? `read-back failed: the write went through but the record could not be read back: ${e.message}` : `failed: ${e.message}` };
+    const l = landedAfterTimeout(dv, plan, row, e, sleep, clock);
+    return l.w ? { w: l.w, note: [note, l.note].filter(Boolean).join('; ') } : l;
+  }
 }
 
 function applyPlan(id, deps) {
-  const { access, connect, confirm, now = new Date(), env = process.env } = deps;
+  const { access, connect, confirm, now = new Date(), env = process.env, sleep = defaultSleep, clock = Date.now } = deps;
   const { record: plan, file, intact } = loadPlan(id, { env });
   if (!intact) throw new ApplyRefused('this plan file was changed after it was made. Make a new plan.', 'plan_tampered');
   if (now - new Date(plan.created) > MAX_AGE_MS) throw new ApplyRefused('this plan is more than 24 hours old. Make a new plan.', 'stale_plan');
@@ -159,11 +238,11 @@ function applyPlan(id, deps) {
     view.severity = severity.assess({ count: view.rows.length, noun: plan.severity.noun, lasting: plan.severity.lasting, irreversible: plan.severity.irreversible, unproven: plan.severity.unproven }, { warnRows: plan.severity.warn_rows });
     if (severity.grew(plan.severity, view.severity)) throw new ApplyRefused('this change is bigger or more serious now than when it was planned. Make a new plan.', 'severity_grew');
   }
-  return finishApply({ plan, view, standing, moved, me, dv, confirm, now, file });
+  return finishApply({ plan, view, standing, moved, me, dv, confirm, now, file, sleep, clock });
 }
 
 // Steps 2 and 3: the approval, then write, read back, log, consume.
-function finishApply({ plan, view, standing, moved, me, dv, confirm, now, file }) {
+function finishApply({ plan, view, standing, moved, me, dv, confirm, now, file, sleep = defaultSleep, clock = Date.now }) {
   const base = {
     time: now.toISOString(), plan_id: plan.id, person: me, env: plan.env, app: plan.app, table: plan.table,
     mode: plan.mode, source: plan.source, reason: plan.reason, approval: 'prompt', left_out: view.refused,
@@ -189,16 +268,16 @@ function finishApply({ plan, view, standing, moved, me, dv, confirm, now, file }
   const rows = [];
   for (const { row, etag } of standing) {
     const out = { name: row.name, id: row.id, changes: row.changes, before: row.before, body: row.body };
-    try {
-      const w = writeRow(dv, plan, row, etag);
+    const { w, note, outcome, rid } = writeOne(dv, plan, row, etag, now, sleep, clock);
+    if (w) {
       out.id = w.rid;
       out.after = w.after;
       out.outcome = w.bad.length ? `read-back mismatch: ${w.bad.join(', ')}` : 'written';
-    } catch (e) {
-      out.outcome = e && e.code === '0x80060882'
-        ? 'failed: the record changed between the check and the write; nothing was written to it'
-        : `failed: ${e.message}`;
+    } else {
+      out.outcome = outcome;
+      if (rid) out.id = rid;
     }
+    if (note) out.note = note;
     rows.push(out);
   }
   fs.rmSync(file, { force: true });

@@ -25,7 +25,7 @@ const { whoAmI, accessFor, PlanRefused } = require('./resolve');
 const { GUID } = require('./contract');
 const { resolveAccess } = require('./access');
 const { ApplyRefused } = require('./apply');
-const { DataverseError } = require('./cli');
+const { DataverseError, isTimeout } = require('./cli');
 const { atLeast } = require('./levels');
 const severity = require('./severity');
 const { unprovenPhrase, parseEntry } = require('./proven');
@@ -2121,10 +2121,6 @@ function schemaDetail(plan, { id } = {}) {
 }
 
 // ---------- apply ----------
-
-function isTimeout(e) {
-  return /timed? ?out|TaskCanceled|HttpClient\.Timeout/i.test(String(e && e.message));
-}
 
 // Poll until the new table answers a by-name read (a live finding 10/6: until provisioning finishes it says
 // it does not exist, and a column POSTed sooner fails "An unexpected error occurred.").
