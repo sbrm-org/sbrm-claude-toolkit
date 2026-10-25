@@ -111,7 +111,14 @@ Verify the path on first use and say it in full whenever you hand the person a c
    the engine says it expired, run the same apply again and they approve it again. If apply refuses because the
    change grew or moved since the plan, plan it again and go back to step 4.
 6. **After the apply, read the output back to them**: what was written, anything that was not, and
-   that it is in the Write Log.
+   that it is in the Write Log. Quote the engine's outcome line (`APPLIED: ...` or `APPLIED WITH PROBLEMS: ...`,
+   with its written / not written / left out counts) and every `!!` row EXACTLY as printed, then say it in
+   plain words. Never call a row done that the engine did not print as `OK`. The engine re-reads every record
+   it writes; this step makes sure the person hears its answer, not a summary of it.
+   **If any row is `!!` (a record that did not land or did not read back as written): stop. No further apply
+   in this session until the report below is filed**, even for unrelated changes (Dylan's ruling, 10/25/26).
+   Some of these have been false alarms, but the person at the keyboard cannot tell which, so the report
+   decides, not the session.
 
 Batch related changes into ONE job where you can. Separate plans for one request go on ONE
 apply line (`apply <id> <id> ...`): one approval for all of them, each still planned, checked and logged

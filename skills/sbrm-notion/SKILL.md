@@ -69,4 +69,11 @@ How the SBRM Notion workspace is organized, and how to work in it safely using t
 1. Search the workspace for the page/database by name.
 2. Retrieve the database and verify its properties before writing.
 3. Draft the change and state exactly what will be created or edited.
-4. Apply after confirmation; report the page URL of what was changed.
+4. Apply after confirmation.
+5. **Read it back before you call it done.** Do NOT re-read with the Notion connector's fetch: it can return
+   the page as it was BEFORE your write, so it would agree with you either way. If browser tools are available,
+   read the page's rendered text there; otherwise give the person the URL and the exact values to look for, and
+   ask them to confirm. Show what Notion now shows beside what you drafted, property by property. For a
+   CORRECTION, also search the page text for the OLD value and confirm it is gone everywhere: the miss on record
+   (Aug 2026) was a figure fixed in one paragraph and left in the headline four lines up. On a mismatch, fix it
+   in place and read it back again. Then report the page URL.
