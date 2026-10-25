@@ -376,8 +376,11 @@ function fakeSchemaDv({ email = 'dgross@example.org', data = world(), host = 'ht
   };
 
   // afterGet(path): runs AFTER a read has answered (a change landing between two reads of the plan).
+  // readErrorsOn(path) -> message | null: that read throws (a transient failure of the re-read itself, 1.11.23 review).
   dv.get = (p, o = {}) => {
     const at = calls.length;
+    const fail = dv.readErrorsOn ? dv.readErrorsOn(p) : null;
+    if (fail) throw new DataverseError(fail);
     try {
       const r = route(p);
       if (dv.afterGet) dv.afterGet(p);
@@ -497,8 +500,24 @@ function fakeSchemaDv({ email = 'dgross@example.org', data = world(), host = 'ht
       const t = m[1];
       if (!W.entities[t]) throw notFound(`EntityMetadata With Id = LogicalName='${t}'`);
       if ((dv.notReady[t] || 0) > 0) throw new DataverseError('An unexpected error occurred.');
+      // Live 10/23/26 (plan 20261023-163957-2ef0f3aa): the new table already answered a by-name read, yet the first
+      // column POST still failed. columnErrorsAfterReady: { table: n } = the next n column POSTs on it fail so.
+      if ((dv.columnErrorsAfterReady && dv.columnErrorsAfterReady[t]) > 0) {
+        dv.columnErrorsAfterReady[t] -= 1;
+        throw new DataverseError('An unexpected error occurred.');
+      }
       const a = newAttr(t, body);
       addComponent(headers, a.MetadataId);
+      // columnTimeoutLands: { table: n } = the next n column POSTs on it LAND but the call times out on this computer.
+      if ((dv.columnTimeoutLands && dv.columnTimeoutLands[t]) > 0) {
+        dv.columnTimeoutLands[t] -= 1;
+        throw new DataverseError('POST Attributes failed (exit 1): System.Threading.Tasks.TaskCanceledException: The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing.');
+      }
+      // columnErrorsButLands: { table: n } = the next n column POSTs on it LAND but answer the not-ready error.
+      if ((dv.columnErrorsButLands && dv.columnErrorsButLands[t]) > 0) {
+        dv.columnErrorsButLands[t] -= 1;
+        throw new DataverseError('An unexpected error occurred.');
+      }
       return {};
     }
     if ((m = /^EntityDefinitions\(LogicalName='([^']+)'\)\/Attributes\(LogicalName='([^']+)'\)$/.exec(apiPath))) {

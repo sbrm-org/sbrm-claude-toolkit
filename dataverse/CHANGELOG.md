@@ -3,6 +3,24 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.23** (2026-10-25) **A new view no longer reads back as a "mismatch"; a new table's first column gets a short
+  retry; the guard's no-node fallback holds without `grep` and sees through escaped names.** (1) **View create**
+  (live 10/23, plan 20261023-165142-37da2ab6): saving a NEW view, Dataverse adds `savedqueryid="<its id>"` to the root
+  `<fetch>`, so a correct view came back "applied with problems: read-back mismatch (fetchxml)". The read-back now drops
+  that one attribute when it names THIS view (any other id still differs); the restore-point hash is unchanged, so
+  plans made on 1.11.20 still match (`lib/component.js` `readBackField`). (2) **First column after a new table** (live
+  10/23, plan 20261023-163957-2ef0f3aa): the new table answered a read, yet its first column POST failed "An unexpected
+  error occurred."; a re-plan finished it. For a create (a column, key or lookup) on a table the SAME apply created, that
+  error is now retried, 10 s apart up to 6 times; before each send a strong re-read must CONFIRM it is absent ("not
+  found"): if it is there it is recorded as landed, and if the re-read fails or finds it there but different, nothing
+  is sent again and the step says to make a new plan. A retry that times out gets the usual 2-minute timeout check,
+  and the last retry is re-read too. Anywhere else the error still fails the step (`lib/schema.js` `createdHere`,
+  `landedOrAbsent`). (3) **JOBS.md** says what a view's `other` section holds (the `jump` column,
+  `select`, `icon`, `preview`, the row's name/id). (4) **The guard's no-node fallback** (review findings F1 + F2 of
+  1.11.20, both older than it): its Dataverse match ran through `grep`, so a machine with neither node nor grep allowed
+  every call; and it matched the raw JSON, so a tool name spelled with `\u` escapes slipped past. It now matches with
+  bash builtins, on the input as sent and with `\u00XX` decoded; classification still reads the raw input, and a tool
+  name that is MCP only once decoded is ALSO held to the MCP rule, so it can only block more than before.
 - **1.11.22** (2026-10-25) **perfect-wiki skill retired.** PerfectWiki was cancelled 10/14/26; BookStack (the bookstack skill) is the wiki. The old skill still answered "the wiki" and could route a request to a dead service. No Dataverse change.
 
 - **1.11.21** (2026-10-25) **Skills say what actually landed.** The dataverse skill now quotes the engine's outcome line and every `!!` row as printed, and stops further applies in that session until a `!!` is reported (Dylan's ruling). documenso checks stored recipients against the request's source before distribute and holds the send on a mismatch; sbrm-notion reads a write back without the connector's cached fetch and, for a correction, searches for the old value; bookstack re-reads a page after create/update and names anything the filter stripped. Skill text only; engine unchanged. From the Skill Read-Back Audit (Dylan's workspace).

@@ -116,6 +116,37 @@ test('a 300 KB Write payload reaches the guard whole (a raw write at its END sti
   assert.equal(call({ tool_name: 'Write', tool_input: { file_path: '/tmp/x.md', content: 'notes\n'.repeat(50000) } }).status, 0);
 });
 
+// 1.11.23, review F1 + F2 of 1.11.20 (pre-existing in the no-node fallback): (F1) its Dataverse match ran through
+// `grep`, so with grep missing too it allowed everything; (F2) it matched the raw JSON, so a tool name spelled with
+// \u escapes slipped past. The fallback now matches with bash builtins, on the input with \u00XX escapes decoded.
+test('WITHOUT node and WITHOUT grep: a Dataverse MCP call is still blocked; unrelated calls pass (F1)', (t) => {
+  const realBash = process.platform === 'win32' ? 'C:/Program Files/Git/usr/bin/bash.exe' : '/bin/bash';
+  if (!fs.existsSync(realBash)) { t.skip('no bash at ' + realBash); return; }
+  const empty = fs.mkdtempSync(path.join(require('os').tmpdir(), 'sbrmdv-nopath-'));
+  const env = { ...process.env, SBRM_DV_HOME: SCRATCH, SBRM_GUARD_TEST_NO_NODE: '1', PATH: empty };
+  const run = (input) => spawnSync(realBash, [RUN], { input: JSON.stringify(input), encoding: 'utf8', env });
+  const r = run({ tool_name: 'mcp__plugin_sbrm-toolkit_dataverse-donorapp__read_query' });
+  assert.equal(r.status, 2, r.stderr);
+  assert.equal(run(bash('curl -X PATCH https://sbrmdonorapp.crm.dynamics.com/api/data/v9.2/contacts(1)')).status, 2);
+  assert.equal(run(bash('ls -la')).status, 0, 'unrelated work is not bricked');
+});
+
+test('WITHOUT node: a tool name spelled with \\u escapes is decoded before the match (F2)', (t) => {
+  if (!fs.existsSync(BASH)) { t.skip('no bash at ' + BASH); return; }
+  const env = { SBRM_GUARD_TEST_NO_NODE: '1' };
+  const esc = '{"tool_name":"mcp__plugin_sbrm-toolkit_\\u0064ataverse-donorapp__read_query","tool_input":{}}';
+  const r = spawnSync(BASH, [RUN], { input: esc, encoding: 'utf8', env: { ...process.env, SBRM_DV_HOME: SCRATCH, ...env } });
+  assert.equal(r.status, 2, r.stderr);
+  // 1.11.23 review F1: an escaped mcp__ PREFIX hid the call from the MCP rule (whose words include "dynamics").
+  const pre = '{"tool_name":"\\u006dcp__dynamics__read","tool_input":{}}';
+  assert.equal(spawnSync(BASH, [RUN], { input: pre, encoding: 'utf8', env: { ...process.env, SBRM_DV_HOME: SCRATCH, ...env } }).status, 2);
+  // 1.11.23 review round 2: the KEY itself escaped (the t of tool_name), so the raw read finds no tool name at all.
+  const key = '{"\\u0074ool_name":"mcp__dynamics__read","tool_input":{}}';
+  assert.equal(spawnSync(BASH, [RUN], { input: key, encoding: 'utf8', env: { ...process.env, SBRM_DV_HOME: SCRATCH, ...env } }).status, 2);
+  const plain = '{"tool_name":"mcp__\\u0063laude_ai_Notion__search","tool_input":{}}';
+  assert.equal(spawnSync(BASH, [RUN], { input: plain, encoding: 'utf8', env: { ...process.env, SBRM_DV_HOME: SCRATCH, ...env } }).status, 0);
+});
+
 test('hooks.json runs the launcher through bash, never bare node', () => {
   const h = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', '..', 'hooks', 'hooks.json'), 'utf8'));
   const cmd = h.hooks.PreToolUse[0].hooks[0].command;

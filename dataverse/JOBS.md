@@ -125,7 +125,9 @@ It prints the `snapshot_hash` and saves the current definition to `~/.sbrm-datav
 - `intent.changed` (updates only; leave it out for every other mode) lists every section that changes; the
   engine computes the same list from its own diff and refuses on any difference. Flows: `trigger,
   concurrency, actions, notes, connections, description, other`. Views: `columns, filters, sort,
-  description, other`. Forms: `tabs, sections, fields, events, description, other`. Sitemaps: `areas,
+  description, other` (`columns` is the cells and the fetched attributes; anything else in the layout, such as
+  the grid's `jump` column (the one a row's link opens), `select`, `icon` or `preview`, or the row's `name`/`id`,
+  is `other`: changing a view's jump column with its cells is `["columns", "other"]`). Forms: `tabs, sections, fields, events, description, other`. Sitemaps: `areas,
   groups, subareas, other`. A refusal names the sections it found.
 - Admin, not develop: a flow step that reaches beyond its connection (an HTTP step, a child flow, a table
   named at run time, a step on someone else's connection), anything in a flow's "other" section, a

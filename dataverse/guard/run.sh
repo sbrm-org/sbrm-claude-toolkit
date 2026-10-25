@@ -59,7 +59,16 @@ fi
 # Step 3: fail closed for anything that touches Dataverse. A Read or Grep is blocked only near the engine's
 # store (the plan signing key); an MCP tool only when its own NAME says Dataverse (1.10.1: the wider hook
 # matcher would otherwise block every file or note that merely mentions the word).
-TOOL="$(printf '%s' "$INPUT" | grep -oE '"tool_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1)"
+# 1.11.23 (review F1 + F2 of 1.11.20): this step matches with bash builtins, never `grep` (a machine without node
+# may lack it too, and a missing grep read as "no match": everything allowed), and matches the input BOTH as sent
+# and with its \u00XX escapes decoded (JSON may spell any character that way, so a name could hide from the match).
+# Classification still reads the raw input, so a decoded copy can only ever add a match: never fewer blocks.
+shopt -s nocasematch
+TOOL=""
+RE_TOOL='"tool_name"[[:space:]]*:[[:space:]]*"[^"]*"'
+if [[ $INPUT =~ $RE_TOOL ]]; then TOOL="${BASH_REMATCH[0]}"; fi
+RAW_INPUT="$INPUT"   # the MCP case below narrows INPUT to the tool name; keep the whole input for the decoded read
+decode() { printf -v DECODED '%b' "${1//\\u00/\\x}"; }
 
 # 1.11.6 (DESIGN.md §11): the guard did not run, so nothing else records it. Leave one plain line (time, why,
 # tool) that the next engine run sends as an OPEN item and removes. Bash only (there may be no node), every
@@ -69,7 +78,8 @@ DOWN="$STORE/events/guard_down.log"
 if mkdir -p "$STORE/events" 2>/dev/null; then
   SIZE="$(wc -c < "$DOWN" 2>/dev/null || echo 0)"
   if [ $(( SIZE + 0 )) -lt 1000000 ]; then
-    printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$REASON" "$(printf '%s' "$TOOL" | sed -E 's/.*"([^"]*)"$/\1/')" >> "$DOWN" 2>/dev/null
+    NAME="${TOOL%\"}"; NAME="${NAME##*\"}"
+    printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$REASON" "$NAME" >> "$DOWN" 2>/dev/null
   fi
 fi
 case "$TOOL" in
@@ -77,7 +87,21 @@ case "$TOOL" in
   *'"mcp__'*) INPUT="$TOOL"; PATTERN='dataverse|dynamics|power.?platform|crm' ;;
   *) PATTERN='dataverse|crm[0-9]*\.dynamics\.com|sbrm-dataverse|sbrm-claude-toolkit' ;;
 esac
-if printf '%s' "$INPUT" | grep -qiE "$PATTERN"; then
+decode "$INPUT"
+BLOCK=no
+if [[ $INPUT =~ $PATTERN ]] || [[ $DECODED =~ $PATTERN ]]; then BLOCK=yes; fi
+# Review 1.11.23: an escaped "mcp__" PREFIX hides the call from the MCP case above, whose words ("dynamics", "crm")
+# the generic pattern does not have. So a tool name that is MCP once decoded is ALSO held to the MCP rule.
+# (round 2: the tool name is also read from the DECODED input, for a key spelled with escapes too)
+decode "$TOOL"
+if [ -z "$TOOL" ]; then
+  decode "$RAW_INPUT"
+  if [[ $DECODED =~ $RE_TOOL ]]; then DECODED="${BASH_REMATCH[0]}"; else DECODED=""; fi
+fi
+case "$DECODED" in
+  *'"mcp__'*) if [[ $DECODED =~ dataverse|dynamics|power.?platform|crm ]]; then BLOCK=yes; fi ;;
+esac
+if [ "$BLOCK" = yes ]; then
   echo "BLOCKED by the SBRM toolkit Dataverse guard: it could not run ($REASON), so anything that touches Dataverse is blocked until it can. Tell the person; the fix is /dataverse-setup (or start Claude Code from a terminal where node works). Do not look for another way." >&2
   exit 2
 fi

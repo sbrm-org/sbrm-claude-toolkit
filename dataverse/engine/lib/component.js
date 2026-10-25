@@ -1953,6 +1953,20 @@ function checkSubscription(dv, plan, cd, sleep) {
   return { ok: true, note: `trigger live on ${t.table}, filter ${t.filter || 'none'}, message ${want.message}, scope ${want.scope}, runas ${want.runas}` };
 }
 
+// A field as the read-back compares it. Saving a NEW view, Dataverse adds savedqueryid="<that view's id>" to the root
+// <fetch> (live 10/23/26, plan 20261023-165142-37da2ab6; "read-back mismatch (fetchxml)" on a correct view). That one
+// attribute, naming THIS view, is dropped on both sides; any other id still differs. Read-back only: the restore-point
+// hash (normField) is unchanged, so plans made before this release still match.
+function readBackField(set, field, v, rid) {
+  const n = normField(set, field, v);
+  if (set !== 'savedqueries' || field !== 'fetchxml' || !n || n.n !== 'fetch') return n;
+  const own = String(n.a.savedqueryid || '').replace(/[{}]/g, '').toLowerCase();
+  if (!own || own !== String(rid || '').replace(/[{}]/g, '').toLowerCase()) return n;
+  const a = { ...n.a };
+  delete a.savedqueryid;
+  return { ...n, a };
+}
+
 function readBack(dv, plan, rid, sleep) {
   const set = plan.component.set;
   const bad = [];
@@ -1971,7 +1985,7 @@ function readBack(dv, plan, rid, sleep) {
   if (!now) return { after: null, bad: ['it could not be read back'], notes };
   if (plan.mode === 'update' || plan.mode === 'create') {
     const fields = plan.mode === 'update' ? plan.sent_fields : SETS[set].fields.filter((f) => !blank(plan.after_definition[f]));
-    const off = fields.filter((f) => canonical(normField(set, f, now.definition[f])) !== canonical(normField(set, f, plan.after_definition[f])));
+    const off = fields.filter((f) => canonical(readBackField(set, f, now.definition[f], rid)) !== canonical(readBackField(set, f, plan.after_definition[f], rid)));
     if (off.length) bad.push(`the definition read back differs from what was sent (${off.join(', ')})`);
     if (plan.mode === 'create' && set === 'workflows' && now.statecode !== 0) bad.push(`the new flow is not off (statecode ${now.statecode})`);
   }
