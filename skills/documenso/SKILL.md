@@ -245,7 +245,7 @@ Events this instance can emit:
 ## Safety rules
 
 1. **Never send a document for signature without an explicit go-ahead from the person who owns the task.** Distribution emails real people and cannot be un-sent; the most you can do afterwards is cancel and apologise. Draft, show the draft, then send as a separate step.
-2. **Check the recipient email before distributing.** A typo'd address silently delivers confidential paperwork to a stranger. Read the address back before sending.
+2. **Check the recipient email before distributing, against the SOURCE, not against what you sent.** A typo'd address silently delivers confidential paperwork to a stranger. Before `POST /document/distribute`, `GET /document/{documentId}` and show one table: each recipient's name, email, role and signingOrder AS STORED, beside the same fields from where the request came from (the person's message, the HR record), plus the document's `meta.signingOrder` (signing order set on distribute is silently ignored, see above). Distribute only after the person has seen that table and said go. **On any mismatch: do not distribute.** Fix the draft (it stays editable) and show the table again; a sent document cannot be recalled (Dylan's ruling, 10/25/26).
 3. **Never share, paste, or commit a token.** If one leaks, delete it on the tokens page immediately and mint a new one.
 4. **Do not delete documents.** Completed documents are records. To stop something in flight, cancel it (`POST /envelope/cancel`) — the UI gives you no way to undo a delete.
 5. **Stay in your team.** If a call 404s, you are probably using the wrong team's token. Do not go looking for a broader-scoped one.

@@ -128,6 +128,12 @@ Writing rules for agents:
   <figure class="sbrm-diagram"><img src="<image url from /image-gallery>" alt="What it shows"><figcaption>What it shows. Click to zoom.</figcaption></figure>
   ```
 
+- **Read it back after every create or update.** `GET /pages/{id}` and show: (1) the page's `book_id` and
+  `chapter_id` beside the notebook and section you meant; (2) how many headings, tables and images you sent
+  beside how many the stored `html` has; (3) anything you sent that is missing from the stored `html` (the filter
+  strips some elements without an error). Give the URL only once that reads clean, or say exactly what was
+  dropped. **On a difference: tell the person what was dropped and offer ONE corrective `PUT`** (pages keep their
+  revision history, so this is cheap to undo; Dylan's ruling, 10/25/26).
 - **Do not bulk-edit** (renaming or moving many pages, deleting sections) without checking with the notebook's owner. Every change is attributed to you and shows in the department's activity feed.
 
 ### Who is the page for: a person or an agent?
@@ -160,7 +166,8 @@ Rules that keep this from rotting:
 2. Find the right section: `GET /books/{id}` → look through `contents` for a chapter such as "Procedures"; note its `id`.
 3. Check nothing exists yet: `GET /search?query=petty cash {type:page}`.
 4. Create: `POST /pages` with `chapter_id`, `name`, and `html`.
-5. Tell the person the resulting URL (`https://wiki.sbrmapps.com/link/{page id}` always works).
+5. Read it back (`GET /pages/{id}`, the rule above), then tell the person the resulting URL
+   (`https://wiki.sbrmapps.com/link/{page id}` always works).
 
 ## Troubleshooting
 
@@ -169,7 +176,7 @@ Rules that keep this from rotting:
 | `401` on every call | Header not `Token id:secret`, or the token expired / was deleted. Make a new one. |
 | `403` on a write | Your user is a Viewer, or the notebook's permissions exclude your department. Ask the administrator. |
 | `404` for a page you can see in the browser | Wrong id (page ids and notebook ids are separate sequences), or the page is in the recycle bin. |
-| Content you sent is missing after save | The wiki's HTML filter removed it (scripts, iframes, SVG, form elements). Use plain HTML. |
+| Content you sent is missing after save | The wiki's HTML filter removed it (scripts, iframes, SVG, form elements). Use plain HTML. The read-back below catches it. |
 | Search finds nothing for an exact title | Add `{in_name:...}` or quote the phrase; search also honours your permissions, so you cannot find what you cannot read. |
 | Cannot find "API Tokens" on My Account | You have the Viewer role. Ask the administrator for Editor. |
 
