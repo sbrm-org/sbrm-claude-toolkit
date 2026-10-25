@@ -3,6 +3,8 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.22** (2026-10-25) **perfect-wiki skill retired.** PerfectWiki was cancelled 10/14/26; BookStack (the bookstack skill) is the wiki. The old skill still answered "the wiki" and could route a request to a dead service. No Dataverse change.
+
 - **1.11.21** (2026-10-25) **Skills say what actually landed.** The dataverse skill now quotes the engine's outcome line and every `!!` row as printed, and stops further applies in that session until a `!!` is reported (Dylan's ruling). documenso checks stored recipients against the request's source before distribute and holds the send on a mismatch; sbrm-notion reads a write back without the connector's cached fetch and, for a correction, searches for the old value; bookstack re-reads a page after create/update and names anything the filter stripped. Skill text only; engine unchanged. From the Skill Read-Back Audit (Dylan's workspace).
 
 - **1.11.20** (2026-10-25) **The guard hook costs about half as much on every tool call.** The guard runs before every
