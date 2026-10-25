@@ -3,6 +3,16 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.20** (2026-10-25) **The guard hook costs about half as much on every tool call.** The guard runs before every
+  Bash, PowerShell, Write, Edit, Read, Grep and MCP call. Its launcher (`guard/run.sh`) started helper processes
+  (`cat`, `dirname`, two `$(...)` subshells to find node, a pipe), each ~50-100 ms on Windows, so it took 400-650 ms
+  around a guard that decides in ~100 ms. The happy path is now bash builtins + node only: the input is read with
+  `read`, the folder taken from the script's own path, node found with `hash`, and the input handed over as a
+  here-string. Measured on Windows: ~400 ms -> ~200 ms per call. The guard itself, its decisions and the no-node
+  fallback are unchanged (macOS's bash 3.2 has no `BASH_CMDS`, so it keeps the old node search). Evidence: 401 real
+  tool calls from 30 days of transcripts (200 naming Dataverse or the toolkit) gave the same exit code, output and
+  message through the old and new launcher; two new launcher tests (with PATH cut to node's folder a raw write still
+  blocks, where the old launcher let it through; a 300 KB Write arrives whole).
 - **1.11.19** (2026-10-23) **A Write Log entry over 1 MB lands; an expired approval says when its ticket was made;
   two guard false positives fixed.** (1) **The Write Log row is capped** (D-1174, 10/17: an import's 1,314,762-character
   entry was refused by Dataverse's 1,048,576 limit, parked, and retried unchanged forever). Over 1,000,000 characters the

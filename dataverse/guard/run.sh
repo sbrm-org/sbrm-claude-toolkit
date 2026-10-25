@@ -13,8 +13,19 @@
 # SBRM_GUARD_TEST_NO_NODE=1 skips step 1-2 (tests only; the hook's environment is Claude Code's, which a
 # session cannot set, and step 3 only ever blocks MORE Dataverse calls than it allows).
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INPUT="$(cat)"
+# SPEED (10/25/26): this runs before EVERY tool call, and on Windows each helper process (cat, dirname, a `$(...)`
+# subshell, a pipe) costs ~50-100 ms: the launcher took 470-650 ms around a guard that decides in ~100-160 ms. So
+# the happy path below is bash builtins + node only (guard_launcher.test.js runs it with PATH = node's folder).
+# The fallback further down may still use helpers: it runs only when node is missing or crashed.
+SRC="${BASH_SOURCE[0]}"
+case "$SRC" in
+  */*|*\\*) DIR="${SRC%[/\\]*}" ;;     # the hook passes an absolute path, slashes of either kind on Windows
+  *) DIR=. ;;
+esac
+# All of stdin, NUL bytes dropped as `$(cat)` dropped them (one `read -d ''` would stop at the first; review F3).
+INPUT=""
+while IFS= read -r -d '' CHUNK; do INPUT+="$CHUNK"; done
+INPUT+="$CHUNK"
 
 find_node() {
   local n
@@ -28,9 +39,13 @@ find_node() {
 }
 
 if [ "$SBRM_GUARD_TEST_NO_NODE" != "1" ]; then
-  NODE="$(find_node)"
+  # `hash` finds node on PATH with no subshell (BASH_CMDS needs bash 4; on macOS's bash 3.2 it reads empty and the
+  # full search runs, as before).
+  NODE=""
+  if hash node 2>/dev/null; then NODE="${BASH_CMDS[node]:-}"; fi
+  [ -n "$NODE" ] || NODE="$(find_node)"
   if [ -n "$NODE" ]; then
-    printf '%s' "$INPUT" | "$NODE" "$DIR/guard.js"
+    "$NODE" "$DIR/guard.js" <<< "$INPUT"
     STATUS=$?
     if [ "$STATUS" = "0" ] || [ "$STATUS" = "2" ]; then exit "$STATUS"; fi
     REASON="the guard crashed (exit $STATUS)"

@@ -81,6 +81,41 @@ test('WITHOUT node: anything touching Dataverse is blocked (fail closed); unrela
   assert.equal(call({ tool_name: 'Write', tool_input: { file_path: '/tmp/notes.md', content: 'lunch at noon' } }, env).status, 0);
 });
 
+// 10/25/26 (speed): every PreToolUse call runs this launcher, and each helper process it started (cat, dirname, the
+// `$(...)` subshells, a pipe) cost ~50-100 ms on Windows: the launcher took 470-650 ms around a guard that decides in
+// ~100-160 ms. With PATH reduced to node's own folder, any helper the happy path still needs is missing, so the guard
+// would see no input or not be found. A raw write still blocking and `ls` still passing proves the happy path is
+// bash builtins + node. Git's REAL bash (usr/bin): its bin/ wrapper re-adds the system folders to PATH.
+test('the happy path starts nothing but node (PATH = node\'s folder only): a raw write still blocks', (t) => {
+  const realBash = process.platform === 'win32' ? 'C:/Program Files/Git/usr/bin/bash.exe' : '/bin/bash';
+  if (!fs.existsSync(realBash)) { t.skip('no bash at ' + realBash); return; }
+  const env = { ...process.env, SBRM_DV_HOME: SCRATCH, PATH: path.dirname(process.execPath) };
+  const run = (input) => spawnSync(realBash, [RUN], { input: JSON.stringify(input), encoding: 'utf8', env });
+  const w = run(bash('curl -X PATCH https://sbrmdonorapp.crm.dynamics.com/api/data/v9.2/contacts(1)'));
+  assert.equal(w.status, 2, w.stderr);
+  assert.doesNotMatch(w.stderr, /could not run/, 'the real guard decided, not the no-node fallback');
+  assert.equal(run(bash('ls')).status, 0);
+});
+
+// Review F3 (1.11.20, Codex): `read -d ''` alone stops at the first NUL byte, where the old `$(cat)` dropped the NUL
+// and kept the rest. Valid JSON never carries one, but the launcher must read ALL of stdin either way.
+test('input past a NUL byte still reaches the decision (the fallback sees the Dataverse text after it)', (t) => {
+  if (!fs.existsSync(BASH)) { t.skip('no bash at ' + BASH); return; }
+  const raw = JSON.stringify(bash('ls')) + '\u0000' + 'dataverse';
+  const r = spawnSync(BASH, [RUN], { input: raw, encoding: 'utf8',
+    env: { ...process.env, SBRM_DV_HOME: SCRATCH, SBRM_GUARD_TEST_NO_NODE: '1' } });
+  assert.equal(r.status, 2, r.stderr);
+});
+
+// The launcher hands the input on as a here-string (no pipe): a payload far past the pipe buffer must arrive whole.
+test('a 300 KB Write payload reaches the guard whole (a raw write at its END still blocks)', (t) => {
+  if (!fs.existsSync(BASH)) { t.skip('no bash at ' + BASH); return; }
+  const tail = 'requests.patch("https://sbrmdonorapp.crm.dynamics.com/api/data/v9.2/contacts(1)", json={})\n';
+  const big = { tool_name: 'Write', tool_input: { file_path: '/tmp/x.py', content: '# pad\n'.repeat(50000) + tail } };
+  assert.equal(call(big).status, 2);
+  assert.equal(call({ tool_name: 'Write', tool_input: { file_path: '/tmp/x.md', content: 'notes\n'.repeat(50000) } }).status, 0);
+});
+
 test('hooks.json runs the launcher through bash, never bare node', () => {
   const h = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', '..', 'hooks', 'hooks.json'), 'utf8'));
   const cmd = h.hooks.PreToolUse[0].hooks[0].command;
