@@ -534,6 +534,92 @@ test('apply: a table that never becomes ready stops the run at the 5 minute ceil
   assert.ok(!writes(dv).some((c) => c.path.endsWith('/Attributes') || c.path === 'PublishXml'), 'no column, no publish');
 });
 
+// 1.11.23 (#6hqm4j5hv9MFcrpJ): live 10/23, the table answered a read, the first column POST still failed "An unexpected
+// error occurred."; a re-plan + apply finished it. On a table THIS apply created, that error is retried after a wait.
+test('apply: a column on a table this apply just created is retried on "An unexpected error occurred."', async () => {
+  const dv = fakeSchemaDv();
+  const p = await plan(dv, BUILD());
+  dv.columnErrorsAfterReady = { sbrm_schematest: 1 };
+  sleeps = [];
+  const r = await apply(p, dv);
+  assert.equal(r.outcome, 'applied', JSON.stringify(r.rows.map((x) => x.outcome)));
+  const retried = r.rows.filter((x) => /Dataverse was not ready for it yet; it landed on a retry/.test(x.note || ''));
+  assert.equal(retried.length, 1, JSON.stringify(r.rows.map((x) => [x.name, x.note])));
+  assert.match(retried[0].name, /^column .* on Schema Test$/);
+  assert.ok(sleeps.includes(S.PROVISION_POLL_MS));
+  assert.ok(dv.data.attrs.sbrm_schematest.sbrm_note, 'the column exists');
+});
+
+test('apply: a column that answered the error but LANDED is found by the re-read and never sent twice', async () => {
+  const dv = fakeSchemaDv();
+  const p = await plan(dv, BUILD());
+  dv.columnErrorsButLands = { sbrm_schematest: 1 };
+  const r = await apply(p, dv);
+  assert.equal(r.outcome, 'applied', JSON.stringify(r.rows.map((x) => x.outcome)));
+  const posts = writes(dv).filter((c) => c.path.endsWith('/Attributes') && c.body && c.body.SchemaName === 'sbrm_Note');
+  assert.equal(posts.length, 1, 'sent once');
+  assert.ok(r.rows.some((x) => /it landed on a retry \(it had gone through\)/.test(x.note || '')));
+});
+
+// 1.11.23 review (Codex) F2-F4: the retry re-sends only after a re-read CONFIRMS absence; a timed-out retry gets the
+// usual timeout reconciliation; the last retry is re-read too.
+test('apply: when the re-read itself fails, the column is NOT sent again (it may have landed)', async () => {
+  const dv = fakeSchemaDv();
+  const p = await plan(dv, BUILD());
+  dv.columnErrorsButLands = { sbrm_schematest: 1 };
+  let once = true;
+  dv.readErrorsOn = (path) => (once && /Attributes\(LogicalName='sbrm_note'\)/.test(path) ? ((once = false), 'The service is temporarily unavailable.') : null);
+  const r = await apply(p, dv);
+  const posts = writes(dv).filter((c) => c.path.endsWith('/Attributes') && c.body && c.body.SchemaName === 'sbrm_Note');
+  assert.equal(posts.length, 1, 'sent once');
+  const row = r.rows.find((x) => /sbrm_note/.test(x.name));
+  assert.match(row.outcome, /^failed: .*could not tell whether it landed, so it was not sent again/);
+});
+
+test('apply: a retry that times out is reconciled like any timeout (it landed: written)', async () => {
+  const dv = fakeSchemaDv();
+  const p = await plan(dv, BUILD());
+  dv.columnErrorsAfterReady = { sbrm_schematest: 1 };
+  dv.columnTimeoutLands = { sbrm_schematest: 1 };
+  const r = await apply(p, dv);
+  assert.equal(r.outcome, 'applied', JSON.stringify(r.rows.map((x) => x.outcome)));
+  assert.ok(r.rows.some((x) => /the retry timed out on this computer, but it landed/.test(x.note || '')));
+});
+
+test('apply: the LAST retry is re-read too (it landed while answering the error: written)', async () => {
+  const dv = fakeSchemaDv();
+  const p = await plan(dv, BUILD());
+  dv.columnErrorsAfterReady = { sbrm_schematest: 6 }; // the first try and five retries fail and do not land
+  dv.columnErrorsButLands = { sbrm_schematest: 1 }; // the sixth retry lands but answers the error
+  const r = await apply(p, dv);
+  assert.equal(r.outcome, 'applied', JSON.stringify(r.rows.map((x) => x.outcome)));
+  assert.ok(r.rows.some((x) => /it landed on a retry \(it had gone through\)/.test(x.note || '')));
+});
+
+// Review round 2: when the read AFTER the last retry fails, the step says it could not tell (not the bare error).
+test('apply: an inconclusive read after the LAST retry says it could not tell whether it landed', async () => {
+  const dv = fakeSchemaDv();
+  const p = await plan(dv, BUILD());
+  dv.columnErrorsAfterReady = { sbrm_schematest: 6 };
+  dv.columnErrorsButLands = { sbrm_schematest: 1 };
+  let reads = 0;
+  // the six re-reads before each retry pass (absent); the seventh, after the last retry, fails
+  dv.readErrorsOn = (path) => (/Attributes\(LogicalName='sbrm_note'\)/.test(path) && ++reads > 6 ? 'The service is temporarily unavailable.' : null);
+  const r = await apply(p, dv);
+  const row = r.rows.find((x) => /sbrm_note/.test(x.name));
+  assert.match(row.outcome, /^failed: .*could not tell whether it landed/, row.outcome);
+});
+
+test('apply: the same error on a column of an EXISTING table is not retried', async () => {
+  const dv = fakeSchemaDv();
+  const p = await plan(dv, ONE_COL());
+  dv.columnErrorsAfterReady = { sbrm_widget: 1 };
+  sleeps = [];
+  const r = await apply(p, dv);
+  assert.match(r.rows[0].outcome, /^failed: .*An unexpected error occurred/);
+  assert.deepEqual(sleeps, []);
+});
+
 test('apply STOPS at the first failed step; the rest are not attempted; nothing is published', async () => {
   const dv = fakeSchemaDv();
   const p = await plan(dv, BUILD());

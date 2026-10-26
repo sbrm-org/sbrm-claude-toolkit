@@ -2156,6 +2156,27 @@ async function landedAfterTimeout(dv, plan, s, sleep) {
   }
 }
 
+// The not-ready answer, and how often a step on a table this apply created is tried again (10 s apart, about a minute).
+const UNREADY = /An unexpected error occurred/i;
+const UNREADY_RETRIES = 6;
+
+// Does this apply create the table this (non-table) step writes to? Such a step is the only one retried on UNREADY.
+function createdHere(plan, s) {
+  const t = s.logical && s.logical.table;
+  return !!t && s.object !== 'table' && s.action === 'create'
+    && (plan.steps || []).some((x) => x.object === 'table' && x.action === 'create' && x.logical && x.logical.table === t);
+}
+
+// After the not-ready answer: 'landed' (it is there as asked), 'absent' (a strong re-read says it does not exist),
+// or the reason it is neither (the re-read failed, or it is there but different). Only 'absent' may be sent again.
+const ABSENT = /^(column|key|relationship) not found$/;
+function landedOrAbsent(dv, plan, s) {
+  let r;
+  try { r = checkStep(strongDv(dv), plan, s); } catch (e) { return `the re-read failed: ${String(e && e.message).slice(0, 120)}`; }
+  if (r.ok) return 'landed';
+  return ABSENT.test(String(r.why)) ? 'absent' : `it reads: ${String(r.why).slice(0, 120)}`;
+}
+
 async function runStep(dv, plan, s, sleep) {
   if (stepKind(s) === 'table.update' || stepKind(s) === 'column.update') {
     // Metadata takes no If-Match, so this is the substitute (10/7 re-verify): re-read right before the PUT
@@ -2185,6 +2206,39 @@ async function runStep(dv, plan, s, sleep) {
   try {
     dv.metadata(s.method, s.path, s.method === 'DELETE' ? undefined : s.body, s.headers);
   } catch (e) {
+    // 1.11.23: a table this apply created can answer the by-name read and still refuse what goes on it "An
+    // unexpected error occurred." (live 10/23/26, plan 20261023-163957-2ef0f3aa: its first column). Only on such a
+    // table and only that error: wait, re-read, and send again ONLY when the re-read confirms it is absent (review
+    // 1.11.23: a re-read that fails, or finds it there but different, is not absence, so it is never sent twice).
+    if (!isTimeout(e) && createdHere(plan, s) && UNREADY.test(String(e && e.message))) {
+      const gone = 'Dataverse was not ready for it yet; it landed on a retry (it had gone through)';
+      for (let i = 0; i < UNREADY_RETRIES; i += 1) {
+        await sleep(PROVISION_POLL_MS);
+        const st = landedOrAbsent(dv, plan, s);
+        if (st === 'landed') return { note: gone };
+        if (st !== 'absent') {
+          throw new Error(`Dataverse answered "An unexpected error occurred." and a re-read could not tell whether it landed, so it was not sent again (${st}). Make a new plan (a new plan lists only what is missing).`);
+        }
+        try {
+          dv.metadata(s.method, s.path, s.body, s.headers);
+          return { note: `Dataverse was not ready for it yet; it landed on a retry (${i + 1} of ${UNREADY_RETRIES})` };
+        } catch (e2) {
+          if (isTimeout(e2)) {
+            if (await landedAfterTimeout(dv, plan, s, sleep)) return { note: 'Dataverse was not ready for it yet; the retry timed out on this computer, but it landed' };
+            throw new Error(`a retry timed out on this computer and has not shown up in 2 minutes. It may still land: make a new plan before trying again (a new plan lists only what is missing). (${String(e2.message).slice(0, 160)})`);
+          }
+          if (!UNREADY.test(String(e2 && e2.message))) throw e2;
+        }
+      }
+      // The last retry can land while answering the error too: read once more before calling it failed.
+      await sleep(PROVISION_POLL_MS);
+      const last = landedOrAbsent(dv, plan, s);
+      if (last === 'landed') return { note: gone };
+      if (last !== 'absent') {
+        throw new Error(`Dataverse answered "An unexpected error occurred." and a re-read could not tell whether it landed (${last}). Make a new plan (a new plan lists only what is missing).`);
+      }
+      throw e;
+    }
     // A delete or a slow create that times out is "unknown", not "failed": re-read before calling it.
     if (!isTimeout(e)) throw e;
     if (await landedAfterTimeout(dv, plan, s, sleep)) return { note: 'the request timed out on this computer, but it landed' };

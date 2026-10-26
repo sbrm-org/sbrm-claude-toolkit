@@ -304,6 +304,12 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
       const n = Object.keys(d[set]).length + 1;
       const id = `cccccccc-cccc-cccc-cccc-${String(n).padStart(12, '0')}`;
       d[set][id] = { [ID_COL[set]]: id, ismanaged: false, statecode: 0, statuscode: 1, _ownerid_value: userId, solution: opts.solution || null, ...body };
+      // Live (10/23/26, plan 20261023-165142-37da2ab6): saving a NEW view, Dataverse adds savedqueryid="<its new
+      // id>" to the root <fetch>. `fetchIdStamp: 'other'` stamps a different id (a control), false stamps nothing.
+      if (set === 'savedqueries' && typeof body.fetchxml === 'string' && dv.fetchIdStamp !== false) {
+        const stamp = dv.fetchIdStamp === 'other' ? 'dddddddd-dddd-dddd-dddd-000000000001' : id;
+        d[set][id].fetchxml = body.fetchxml.replace(/<fetch\b/, `<fetch savedqueryid="${stamp}"`);
+      }
       return { [ID_COL[set]]: id };
     },
     remove(set, id, etag) {

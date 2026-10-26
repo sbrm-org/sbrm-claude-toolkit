@@ -491,6 +491,21 @@ test('apply refuses a snapshot that moved after the plan, and a plan made by som
   assert.deepEqual(nonGets(dv), []);
 });
 
+// 1.11.23 (#6hqm4j5hv9MFcrpJ, live 10/23 plan 20261023-165142-37da2ab6): Dataverse adds savedqueryid="<new id>" to
+// a new view's root <fetch> on save, and the read-back called a correct view "read-back mismatch (fetchxml)".
+test('a view create reads back as written although Dataverse stamps its own id on the <fetch>; another id still differs', async () => {
+  const mk = () => valid(job({ component: { set: 'savedqueries', name: 'Big Donors' }, mode: 'create', solution: 'SBRMAdHocChanges', definition: { fetchxml: FETCH, layoutxml: LAYOUT, returnedtypecode: 'contact' }, intent: { verb: 'create', component: 'view', name: 'Big Donors' } }));
+  const dv = dvAs('dev');
+  const { res } = await applied(await C.planComponent(dv, mk(), ctx()), dv);
+  const stored = Object.values(dv.data.savedqueries).find((v) => v.name === 'Big Donors');
+  assert.match(stored.fetchxml, /<fetch savedqueryid="/, 'the fake models the live stamp');
+  assert.equal(res.rows[0].outcome, 'written');
+  const dv2 = dvAs('dev');
+  dv2.fetchIdStamp = 'other';
+  const r2 = (await applied(await C.planComponent(dv2, mk(), ctx()), dv2)).res;
+  assert.match(r2.rows[0].outcome, /read-back mismatch: the definition read back differs from what was sent \(fetchxml\)/);
+});
+
 test('apply reports a read-back mismatch, and a failed publish, never as written', async () => {
   const dv = dvAs('dev');
   const plan = await C.planComponent(dv, valid(viewJob(dv, { layoutxml: SWAPPED_LAYOUT })), ctx());
