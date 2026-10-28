@@ -10,6 +10,9 @@
 //       Dylan's review (at most DAILY_OPEN a day per machine; past that, counted)
 // The shadow week's done-condition: no "next blocks" item that is ordinary work, and every "old blocks" line one of
 // the recorded false-positive shapes or a new one Dylan accepts. Doctor's own probes are not recorded.
+// From the 1.11.14 cut-over the roles swapped: the NEXT model decides and the old one watches (guard.js shadowOld),
+// with the same fields. The words say so since 1.11.24 (#6hr2m7pRppqwGmvr item 4: "Old (decided)" sent the 10/26
+// review after a block that never blocked); the headline's "[old x / next y]" prefix is kept, the review counts by it.
 
 const fs = require('fs');
 const path = require('path');
@@ -50,11 +53,11 @@ function record(input, old, next, { now = new Date() } = {}) {
   note.note({
     id: note.newId('S', now), time: now, kind: 'guard shadow', code: 'guard_shadow', signal: open,
     env: blocks.envOf(call, blocks.readEnvs()), by: 'guard', command: cut(call, 300),
-    headline: `Shadow [old ${old.kind} / next ${next.kind}]: ${line.tool}${newStop ? ' (the redesign would stop this call)' : ''}`,
+    headline: `Shadow [old ${old.kind} / next ${next.kind}]: ${line.tool}${newStop ? ' (stopped; the old model would have let it run)' : next.kind === 'allow' ? ' (ran; only the old model would have stopped it)' : ''}`,
     detail: [
-      `The guard's next decision model (1.11.11 candidate) disagreed with the guard that decided (toolkit ${line.toolkit}).`,
-      `Old (decided): ${old.kind}${old.why ? `: ${old.why}` : ''}`,
-      `Next (shadow only): ${next.kind}${next.why ? `: ${next.why}` : ''}`,
+      `The guard's old model (watching only since the 1.11.14 cut-over) disagreed with the next model, which decided (toolkit ${line.toolkit}).`,
+      `Next (decided): ${next.kind}${next.why ? `: ${next.why}` : ''}`,
+      `Old (watching only): ${old.kind}${old.why ? `: ${old.why}` : ''}`,
       `Tool: ${line.tool}   Mode: ${line.mode || 'not given'}   Folder: ${line.cwd || 'not given'}`,
       'The call, as the guard saw it:',
       call,

@@ -3,6 +3,28 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.24** (2026-10-28) **Three guard false positives fixed, one older hole closed, and the shadow lines say which
+  model decided.** (1) **H-1081** (a Todoist close blocked as "the Dataverse CLI with the unknown option -"): the old
+  whole-text CLI rule still ran before the parse, read "Memory System (" in the quoted note as a shell-out call, then
+  scanned the note for the CLI word. The CLI is now judged per parsed command: a script run on data (`python
+  todoist_api.py ...`) and a pure printer or searcher (echo, printf, grep, rg, Write-Output, Select-String) hand their
+  words to no shell, so those are data; a shell handed a string, inline code, `$( )`, a heredoc into a shell, awk, sed
+  and git keep the old read, and a line the parser cannot read keeps the whole-text rule (`guard_next.js` `cliRuns`).
+  (2) **H-1093 / H-1095** (a `sed -i '18s/a/b/'` on a skill file blocked as a prompt hook): the skill-file sed check
+  now reads a numeric line address, N or N,M, before an s///; a pattern, negated, stepped or `$` address still fails
+  closed (`sedSubsOnly`). (3) **D-1388** (a name-only find of home blocked once it carried `-not -path`): the find
+  expression is now read as logic. It passes when every name it can print has passed a `-name`/`-iname` test that
+  cannot match the key's file name, so an ANDed exclusion (`-not -path`, `! -name`, `-prune` with an explicit `-print`)
+  passes. The same read closes an older hole: an `-o` branch with no name test (`-iname "*.md" -o -type f`) passed and
+  listed everything; it is now a home sweep. Any action but `-print`/`-print0`, an unknown word or an unbalanced
+  parenthesis fails closed (`findListsNamesOnly`). (4) **Shadow wording**: since the 1.11.14 cut-over the NEXT model
+  decides and the old one watches, but a shadow event still said "Old (decided)" and the review's line read backwards.
+  The detail now reads "Next (decided)" / "Old (watching only)", the headline adds "(ran; only the old model would
+  have stopped it)" or "(stopped; the old model would have let it run)", and the review line reads "N ran that the old
+  model would have stopped, M stopped that the old model would have allowed". The "[old x / next y]" prefix the review
+  counts by is unchanged (`lib/shadow.js`, `lib/review.js`). Checks: suite 878 (877 + 1 skip), self-test 247, mutation
+  pass 18 of 18, the saved H-1081/H-1093/D-1388 calls allow on staging, and 210 of 210 recorded calls the deciding
+  model allowed still allow.
 - **1.11.23** (2026-10-25) **A new view no longer reads back as a "mismatch"; a new table's first column gets a short
   retry; the guard's no-node fallback holds without `grep` and sees through escaped names.** (1) **View create**
   (live 10/23, plan 20261023-165142-37da2ab6): saving a NEW view, Dataverse adds `savedqueryid="<its id>"` to the root

@@ -240,7 +240,7 @@ function render(s, { generatedBy = null } = {}) {
   out.push(b.length ? `Guard blocks: ${b.reduce((n, [, c]) => n + c, 0)}   (${b.map(([k, c]) => `${k} ${c}`).join(', ')}; any Claude judged wrong are under Open)` : 'Guard blocks: none');
   if (s.shadow) {
     const o = s.shadow;
-    out.push(`Guard shadow (next model): ${o.total} disagreement${o.total === 1 ? '' : 's'} (${o.unblocked} the redesign unblocks, ${o.newStops} it would newly stop${o.newStops ? ': each is an Open item to judge' : ''}${o.total - o.unblocked - o.newStops ? `, ${o.total - o.unblocked - o.newStops} other` : ''})`);
+    out.push(`Guard shadow (old model watching): ${o.total} disagreement${o.total === 1 ? '' : 's'} (${o.unblocked} ran that the old model would have stopped, ${o.newStops} stopped that the old model would have allowed${o.newStops ? ': each is an Open item to judge' : ''}${o.total - o.unblocked - o.newStops ? `, ${o.total - o.unblocked - o.newStops} other` : ''})`);
   }
   const hc = s.people.filter((p) => p.health).map((p) => `${first(p.name)} ${md(p.health.time)} ${p.health.code === 'health_passed' ? 'pass' : p.health.code === 'drift' ? 'DRIFT' : 'FAIL'}`);
   out.push(`Health checks: ${hc.length ? hc.join(', ') : 'none on record'}`);

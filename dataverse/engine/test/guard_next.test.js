@@ -283,6 +283,9 @@ const NEW_STOPS_PASS = [
   ['D-1175 shape: a JS string .replace of a slash, then a read', sh(`node -e "const p='a/b'.replace('/', '\\\\\\\\'); console.log(require('fs').readFileSync(p.replace(/x/g,'y'),'utf8'))"`)],
   ['H-1028 a .py docstring that opens with the product name', write('C:/Users/x/Documents/Claude/EOM/prerec_check.py', `"""Checks.\n\n${J('Data', 'verse')} UserLocal DateOnly comes back as 07:00Z, so dates are read in UTC.\n"""\nprint(1)\n`)],
   ['10/21 a python -c whose string names an app beside the product word', sh(`cd /c/Users/x/repos/tracker && python -c "\nfor name in [('sharepoint (cert)', 1), ('${CLI} hgs (secret)', 2)]:\n    print(name)\n" 2>&1 | tail -4`)],
+  // H-1093/H-1095 (10/25): a line address narrows where an s/// applies, so it can only change less
+  ['H-1093 a sed edit of a skill with a line address (N s///)', sh(`cd "${SKILL}" && sed -i '18s/a/b/' SKILL.md`)],
+  ['H-1093 a sed edit of a skill with a line range and two commands (N,M s///)', sh(`sed -i '3,9s/old text/new text/g; 12s/x/y/' "${SKILL}/SKILL.md"`)],
 ];
 for (const [label, input] of NEW_STOPS_PASS) {
   test(`new stop now passes: ${label}`, () => {
@@ -306,6 +309,13 @@ const NEW_STOPS_BLOCK = [
   ['a sed edit of a skill with the w flag', sh(`sed -i 's/a/b/w /tmp/out.txt' "${SKILL}/SKILL.md"`), /prompt-answerer/],
   ['a sed edit of a skill with the e flag (runs the result)', sh(`sed -i 's/a/b/e' "${SKILL}/SKILL.md"`), /prompt-answerer/],
   ['a sed edit of a skill through -e (the script is not read)', sh(`sed -i -e 's/a/b/' "${SKILL}/SKILL.md"`), /prompt-answerer/],
+  ['a line-addressed sed edit of a skill that writes a hook word', sh(`sed -i '2s/^name: x$/hooks:/' "${SKILL}/SKILL.md"`), /prompt-answerer/],
+  ['a line-addressed sed edit of a skill with the e flag', sh(`sed -i '18s/a/b/e' "${SKILL}/SKILL.md"`), /prompt-answerer/],
+  ['a line-addressed sed command that is not s (d)', sh(`sed -i '18d' "${SKILL}/SKILL.md"`), /prompt-answerer/],
+  ['a sed edit of a skill with a pattern address (not read)', sh(`sed -i '/^name/s/a/b/' "${SKILL}/SKILL.md"`), /prompt-answerer/],
+  ['a sed edit of a skill with a negated address (not read)', sh(`sed -i '18!s/a/b/' "${SKILL}/SKILL.md"`), /prompt-answerer/],
+  ['a sed edit of a skill with a stepped address (not read)', sh(`sed -i '1~2s/a/b/' "${SKILL}/SKILL.md"`), /prompt-answerer/],
+  ['a sed address with nothing after it', sh(`sed -i '18' "${SKILL}/SKILL.md"`), /prompt-answerer/],
 ];
 for (const [label, input, message] of NEW_STOPS_BLOCK) {
   test(`still blocks: ${label}`, () => {
@@ -504,4 +514,63 @@ test('POSIX variable names are case-sensitive: set in one case and read in anoth
   assert.equal(next(sh(`A=/tmp/safe; printf '{}' > "$A/out.json"`)).kind, 'allow');
   assert.equal(next(sh(`printf '{}' > "$HOME/notes/out.json"`)).kind, 'allow');
   assert.equal(next(sh(`A=${hp}/${S}; printf '{}' > "$A/plans/x.json"`)).kind, 'block');
+});
+
+// H-1081 (10/25, 1.11.19; still blocked on 1.11.23): a Todoist close whose quoted note held "Memory System (" and
+// "Dataverse ->" was read as the CLI with the unknown option "-". The old whole-text CLI rule ran before the parse:
+// "System (" read as a shell-out call, so it scanned the whole note for the CLI word. The CLI is now judged per parsed
+// command: a script's data arguments and a printer's are data; a shell handed a string, inline code, a command
+// substitution and the CLI as a command are still read.
+test('H-1081: the Dataverse CLI words inside a script\'s or a printer\'s quoted argument are data; run, they still block', () => {
+  const DV = J('data', 'verse');
+  const note = `3 ${DV} -> ${DV} Reference, qbo_write -> QBO Write Path, index -> Memory System (asserted on`;
+  for (const c of [
+    `python todoist_api.py done X "${note}"`,
+    `cd "/c/Users/x/proj" && python todoist_api.py comment 6abc "${note}"`,
+    `echo "${note}"`,
+    `printf '%s\\n' "${note}"`,
+    `grep -n "System (x) ${DV} -y" notes.md`,
+    // the CLI's own read is still a read
+    `${DV} data query --help`,
+  ]) assert.equal(next(sh(c)).kind, 'allow', `${c}: ${next(sh(c)).why}`);
+  for (const c of [
+    `${DV} ${J('data cre', 'ate')} --table x`,
+    `cd x && ${DV} ${J('data del', 'ete')} --table x`,
+    `python todoist_api.py done X "${note}"; ${DV} ${J('data cre', 'ate')} --table x`,
+    `python todoist_api.py done X "$(${DV} ${J('data cre', 'ate')} --table x)"`,
+    `bash -c "${DV} ${J('data cre', 'ate')} --table x"`,
+    `python -c "import os; os.${J('sys', 'tem')}('${DV} ${J('data cre', 'ate')} --table x')"`,
+    `echo "$(${DV} ${J('data cre', 'ate')} --table x)"`,
+    `awk 'BEGIN { ${J('sys', 'tem')}("${DV} ${J('data cre', 'ate')} --table x") }'`,
+  ]) assert.equal(next(sh(c)).kind, 'block', c);
+  // the same in PowerShell
+  assert.equal(next(ps(`python todoist_api.py done X "${note}"`)).kind, 'allow', next(ps(`python todoist_api.py done X "${note}"`)).why);
+  assert.equal(next(ps(`${DV} ${J('data cre', 'ate')} --table x`)).kind, 'block');
+});
+
+// D-1388 (Daian 10/26, still blocked on 1.11.23): fork 3's find of home by name blocked as soon as it carried an
+// exclusion (-not -path), though an ANDed exclusion can only narrow the listing. The find expression is now read as
+// logic: it passes when every name it can print has passed a -name / -iname test that cannot match the key's file
+// name. The same read closes an older hole: an -o branch with no name test (-iname "*.md" -o -type f) lists everything.
+test('D-1388: a find of home by name may carry exclusions; an or-branch with no name test still sweeps', () => {
+  for (const c of [
+    'find ~ -maxdepth 4 \\( -iname "*niagara*" -o -iname "*distech*" -o -iname "*tridium*" -o -iname "*.jnlp" \\) -not -path "*/Library/Caches/*" 2>/dev/null | head',
+    'find ~ -maxdepth 3 -iname "*.pdf" ! -ipath "*/node_modules/*"',
+    'find ~ -maxdepth 4 -type f -iname "*.xlsx" -not -name \'~$*\' -print',
+    'find ~ -path "*/node_modules" -prune -o -iname "*.xlsx" -print',
+    'find ~ -maxdepth 4 -iname "*niagara*"',
+  ]) assert.equal(next(sh(c)).kind, 'allow', `${c}: ${next(sh(c)).why}`);
+  for (const c of [
+    'find ~ -maxdepth 4 -iname "*.md" -o -type f',
+    'find ~ -maxdepth 4 -not -iname "*.md"',
+    'find ~ -maxdepth 4 \\( -iname "*.md" -o -path "*x*" \\) -not -path "*/y/*"',
+    'find ~ -path "*/node_modules" -prune -o -iname "*.xlsx"',
+    'find ~ -iname "*.pdf" -o -path "*" -print',
+    'find ~ -iname "*.key" -not -path "*/x/*"',
+    'find ~ -iname "*.pdf" -not -path "*/x/*" -printf "%p"',
+    J('find ~ -iname "*.pdf" -not -path "*/x/*" -ex', 'ec cat {} \\;'),
+    'find ~ -iname "*.pdf" -not -path "*/x/*" | xargs cat',
+    'find ~ \\( -iname "*.pdf" -not -path "*/x/*"',
+    'find ~ -iname "*.pdf" -print -o ! \\( -type d -print \\)',
+  ]) assert.match(next(sh(c)).why || '', /home-sweep|home folder/, c);
 });
