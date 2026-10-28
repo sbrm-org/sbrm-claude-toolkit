@@ -522,6 +522,39 @@ test('apply reports a read-back mismatch, and a failed publish, never as written
   assert.match(r2.rows[0].notes.join(' '), /saved but NOT published/);
 });
 
+// H-1016 (live 10/18, plan 20261018-092942-6cd38bd9): the guest form saved and published with its new field, but the
+// new cell's label read back as the field's display name ("Monthly Income", sent "Income (Monthly)"), and the write
+// was logged "0 written, 1 not written". A label-only difference on a save that LANDED is written, named in a note.
+test('H-1016: a form read back with only a label changed is written, with the label named; a save that did not land, or any other difference, is a mismatch', async () => {
+  const formJob = (dv, formxml, changed) => valid(job({ component: { set: 'systemforms', id: IDS.form, name: 'SBRM Donor: Contact' }, mode: 'update', definition: { formxml }, snapshot_hash: live(dv, 'systemforms', IDS.form).hash, intent: { verb: 'update', component: 'form', name: 'SBRM Donor: Contact', changed } }));
+  const relabeled = FORM.replace('description="Last Name"', 'description="Surname (Legal)"');
+  const both = relabeled.replace(/<row><cell id="\{9783[^]*?<\/row>/, '');
+  const run = async (formxml, over) => {
+    const dv = dvAs('dev');
+    Object.assign(dv, over);
+    const changed = formxml === relabeled ? ['other'] : ['fields', 'other'];
+    return (await applied(await C.planComponent(dv, formJob(dv, formxml, changed), ctx()), dv)).res;
+  };
+  // the field left the form (it landed) and the label came back as the platform's own
+  const r = await run(both, { formLabelOnSave: ['Surname (Legal)', 'Last Name'] });
+  assert.equal(r.rows[0].outcome, 'written');
+  assert.equal(r.outcome, 'applied');
+  assert.match(r.rows[0].notes.join(' '), /a label read back different from the one sent: "Surname \(Legal\)" came back "Last Name"/);
+  // a plan that changed ONLY that label, and the save stored nothing new: the read-back is the before, so not written
+  const r2 = await run(relabeled, { readBackDrops: 'formxml' });
+  assert.match(r2.rows[0].outcome, /read-back mismatch: the definition read back differs from what was sent \(formxml\)/);
+  // a structural difference (the field still there) is a mismatch whatever the labels
+  const r3 = await run(both, { readBackDrops: 'formxml' });
+  assert.match(r3.rows[0].outcome, /read-back mismatch: the definition read back differs from what was sent \(formxml\)/);
+  // the save landed, but more than a label differs (a control locked, beside the label): a mismatch
+  const r5 = await run(both, { formLabelOnSave: ['Surname (Legal)', 'Last Name'], formTextOnSave: ['disabled="false"', 'disabled="true"'] });
+  assert.match(r5.rows[0].outcome, /read-back mismatch: the definition read back differs from what was sent \(formxml\)/);
+  // no label difference: written, no note
+  const r4 = await run(both, {});
+  assert.equal(r4.rows[0].outcome, 'written');
+  assert.doesNotMatch(r4.rows[0].notes.join(' '), /label read back/);
+});
+
 test('apply a form change: publishes the form\'s table; a sitemap change publishes that sitemap only', async () => {
   const dv = dvAs('dev');
   const s = live(dv, 'systemforms', IDS.form);

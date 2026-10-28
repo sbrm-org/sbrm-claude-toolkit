@@ -1967,6 +1967,32 @@ function readBackField(set, field, v, rid) {
   return { ...n, a };
 }
 
+// H-1016 (live 10/18/26, plan 20261018-092942-6cd38bd9): the guest form saved and published with its new field, but the
+// new cell's label read back as the field's display name ("Monthly Income", sent "Income (Monthly)"), so a write that
+// landed was logged "not written". A formxml whose ONLY differences are label texts is written when the save landed
+// (the read-back is not the form as it was before), and each label that came back different is named in a note. A
+// plan that changed only labels and read back unchanged is still a mismatch; so is any other difference.
+const labelsOf = (n, out = []) => {
+  if (n && typeof n === 'object') {
+    if (n.n === 'label' && n.a && 'description' in n.a) out.push(String(n.a.description));
+    for (const c of n.c || []) labelsOf(c, out);
+  }
+  return out;
+};
+const withoutLabelText = (n) => (n && typeof n === 'object'
+  ? { ...n, a: n.n === 'label' && n.a && 'description' in n.a ? { ...n.a, description: '' } : n.a, c: (n.c || []).map(withoutLabelText) }
+  : n);
+function labelOnlyDifference(plan, now, rid) {
+  const got = readBackField('systemforms', 'formxml', now.definition.formxml, rid);
+  const sent = readBackField('systemforms', 'formxml', plan.after_definition.formxml, rid);
+  const before = plan.live_before && plan.live_before.definition ? readBackField('systemforms', 'formxml', plan.live_before.definition.formxml, rid) : null;
+  if (!got || !sent || canonical(withoutLabelText(got)) !== canonical(withoutLabelText(sent))) return null;
+  if (before && canonical(got) === canonical(before)) return null;
+  const a = labelsOf(sent);
+  const b = labelsOf(got);
+  return a.map((x, i) => [x, b[i]]).filter(([x, y]) => x !== y);
+}
+
 function readBack(dv, plan, rid, sleep) {
   const set = plan.component.set;
   const bad = [];
@@ -1985,7 +2011,14 @@ function readBack(dv, plan, rid, sleep) {
   if (!now) return { after: null, bad: ['it could not be read back'], notes };
   if (plan.mode === 'update' || plan.mode === 'create') {
     const fields = plan.mode === 'update' ? plan.sent_fields : SETS[set].fields.filter((f) => !blank(plan.after_definition[f]));
-    const off = fields.filter((f) => canonical(readBackField(set, f, now.definition[f], rid)) !== canonical(readBackField(set, f, plan.after_definition[f], rid)));
+    let off = fields.filter((f) => canonical(readBackField(set, f, now.definition[f], rid)) !== canonical(readBackField(set, f, plan.after_definition[f], rid)));
+    if (set === 'systemforms' && off.includes('formxml')) {
+      const labels = labelOnlyDifference(plan, now, rid);
+      if (labels) {
+        off = off.filter((f) => f !== 'formxml');
+        notes.push(`a label read back different from the one sent: ${labels.map(([x, y]) => `"${x}" came back "${y}"`).join(', ')}; the rest of the form read back as sent, so the change landed. Check the label in the app`);
+      }
+    }
     if (off.length) bad.push(`the definition read back differs from what was sent (${off.join(', ')})`);
     if (plan.mode === 'create' && set === 'workflows' && now.statecode !== 0) bad.push(`the new flow is not off (statecode ${now.statecode})`);
   }

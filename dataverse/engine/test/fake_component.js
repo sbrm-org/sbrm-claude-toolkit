@@ -222,6 +222,8 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
     switchOffOnSave: false, // the platform turns the flow off when a saved definition fails its own validation
     publishFails: false,
     readBackDrops: null, // a field the platform silently does not store (read-back mismatch)
+    formLabelOnSave: null, // [sent, stored]: a form label the platform stores differently (H-1016)
+    formTextOnSave: null, // [sent, stored]: any other form text the platform stores differently
     failReads: null, // an id whose reads fail with something other than "does not exist", once anything was written
     touch(set, id, patch) { Object.assign(d[set][id], patch); bump(set, id); },
     get(p, opts = {}) {
@@ -293,6 +295,13 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
         if (k === 'ownerid@odata.bind') rec._ownerid_value = /\(([^)]+)\)/.exec(v)[1];
         else if (k !== dv.readBackDrops) rec[k] = v;
       }
+      // Live (10/18/26, H-1016, plan 20261018-092942-6cd38bd9): a saved form read back one cell's label as the field's
+      // own display name, not the label sent. `formLabelOnSave: [sent, stored]` models it.
+      if (set === 'systemforms' && typeof body.formxml === 'string' && dv.formLabelOnSave && dv.readBackDrops !== 'formxml') {
+        rec.formxml = body.formxml.split(`description="${dv.formLabelOnSave[0]}"`).join(`description="${dv.formLabelOnSave[1]}"`);
+      }
+      // `formTextOnSave: [sent, stored]`: any other text the platform stores differently (a control for H-1016)
+      if (set === 'systemforms' && typeof rec.formxml === 'string' && dv.formTextOnSave) rec.formxml = rec.formxml.split(dv.formTextOnSave[0]).join(dv.formTextOnSave[1]);
       bump(set, id);
       if (d.drafts[set]) delete d.drafts[set][id]; // a PATCH replaces the unpublished layer: the draft is gone
       if (set === 'workflows' && body.clientdata && dv.switchOffOnSave) Object.assign(rec, { statecode: 0, statuscode: 1 });
