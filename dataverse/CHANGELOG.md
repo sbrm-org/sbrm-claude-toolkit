@@ -3,6 +3,15 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.25** (2026-10-28) **A form change that landed is no longer reported "not written" over one label (H-1016).**
+  Live 10/18 (plan 20261018-092942-6cd38bd9, HGS guest form): the form saved and published with its new field, but the
+  new cell's label read back as the field's display name ("Monthly Income", sent "Income (Monthly)"), and the whole
+  formxml compare logged "0 written, 1 not written". Now, when the read-back formxml differs from what was sent ONLY
+  in label texts and the save landed (the read-back is not the form as it was before), the outcome is "written" and a
+  note names each label that came back different ("Income (Monthly)" came back "Monthly Income"). A plan that changed
+  only labels and read back unchanged, or any other difference, is still a read-back mismatch
+  (`lib/component.js` `labelOnlyDifference`). Why Dataverse changed that label is not known (untested: it may serve a
+  cell's label from the field's stored display name). Checks: component tests 68, `mutate_1_11_25.js` 5 of 5.
 - **1.11.24** (2026-10-28) **Three guard false positives fixed, one older hole closed, and the shadow lines say which
   model decided.** (1) **H-1081** (a Todoist close blocked as "the Dataverse CLI with the unknown option -"): the old
   whole-text CLI rule still ran before the parse, read "Memory System (" in the quoted note as a shell-out call, then
