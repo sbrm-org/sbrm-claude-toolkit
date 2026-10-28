@@ -937,6 +937,8 @@ function redirectTargets(c) {
 // Passes only a literal script (no -e / -f) made of nothing but s/// commands with plain flags (no e, no w), whose
 // text names no hook, permission or request, and that re-inserts nothing it matched (no \1 or &) and decodes no
 // character escape (\x \u \o \d \c). Anything else on a skill file fails closed as before.
+// H-1093 (10/28): an s/// may carry a line address, N or N,M (`18s/a/b/`): it narrows where the change applies, so it
+// can only change less. A pattern, negated, stepped or $ address is still not read.
 function sedSubsOnly(script) {
   const s = String(script);
   const parts = [];
@@ -944,6 +946,7 @@ function sedSubsOnly(script) {
   while (i < s.length) {
     while (i < s.length && /[\s;]/.test(s[i])) i += 1;
     if (i >= s.length) break;
+    i += /^(?:\d+(?:,\d+)?\s*)?/.exec(s.slice(i))[0].length;
     if (s[i] !== 's') return null;
     const d = s[i + 1];
     if (!d || /[\s\\]/.test(d)) return null;
@@ -1109,15 +1112,92 @@ function sweepVerdict(c, ctx, pipe) {
 // The same reasoning applied to `find` (build, 10/13; named to Dylan as an extension of fork 3): a find of home by
 // -name / -iname patterns none of which can match the key's file name, with no action of its own and nothing
 // downstream reading the files, lists names only.
+// D-1388 (10/28): the find EXPRESSION is read as logic, not as a list of tests. It passes when every name it can
+// print has passed a -name / -iname test that cannot match the key's file name: an ANDed exclusion (-not -path,
+// ! -name, -prune with an explicit -print) only narrows the listing, while an -o branch with no such test lists
+// everything (that branch was a hole before: `-iname "*.md" -o -type f` passed). Any action but -print / -print0, any
+// unknown word and any unbalanced parenthesis fails closed.
+const FIND_ARG_TESTS = /^-(?:path|ipath|wholename|iwholename|regex|iregex|regextype|lname|ilname|type|xtype|maxdepth|mindepth|[acm](?:time|min)|newer|newer[acmBt]{2}|size|user|group|uid|gid|perm|links|inum|samefile|fstype|used)$/;
+const FIND_BARE_TESTS = /^-(?:true|false|empty|readable|writable|executable|depth|mount|xdev|nouser|nogroup|noleaf|daystart|follow|ignore_readdir_race|noignore_readdir_race|prune|quit)$/;
+function findExpr(lits) {
+  let i = 0;
+  const peek = () => lits[i];
+  function primary() {
+    const l = lits[i];
+    if (l === undefined) throw new Error('end');
+    if (l === '(') {
+      i += 1;
+      const e = orExpr();
+      if (lits[i] !== ')') throw new Error('paren');
+      i += 1;
+      return e;
+    }
+    if (l === '!' || l === '-not') { i += 1; return { t: 'not', x: primary() }; }
+    if (/^-i?name$/.test(l)) {
+      const p = lits[i + 1];
+      if (p === undefined) throw new Error('name');
+      i += 2;
+      return { t: 'name', safe: !globRe(p).test('plan.key') };
+    }
+    if (FIND_ARG_TESTS.test(l)) {
+      if (lits[i + 1] === undefined) throw new Error('arg');
+      i += 2;
+      return { t: 'test' };
+    }
+    if (FIND_BARE_TESTS.test(l)) { i += 1; return { t: 'test' }; }
+    if (l === '-print' || l === '-print0') { i += 1; return { t: 'print' }; }
+    throw new Error(`unread ${l}`);
+  }
+  function andExpr() {
+    const xs = [primary()];
+    while (i < lits.length && peek() !== ')' && peek() !== '-o' && peek() !== '-or') {
+      if (peek() === '-a' || peek() === '-and') i += 1;
+      xs.push(primary());
+    }
+    return xs.length === 1 ? xs[0] : { t: 'and', xs };
+  }
+  function orExpr() {
+    const xs = [andExpr()];
+    while (peek() === '-o' || peek() === '-or') { i += 1; xs.push(andExpr()); }
+    return xs.length === 1 ? xs[0] : { t: 'or', xs };
+  }
+  if (!lits.length) return null;
+  const e = orExpr();
+  if (i !== lits.length) throw new Error('trailing');
+  return e;
+}
+// true when every file that satisfies e has passed a key-proof name test
+const findNamed = (e) => (e.t === 'name' ? e.safe : e.t === 'and' ? e.xs.some(findNamed) : e.t === 'or' ? e.xs.every(findNamed) : false);
+const findPrints = (e) => e.t === 'print' || ((e.t === 'and' || e.t === 'or') && e.xs.some(findPrints)) || (e.t === 'not' && findPrints(e.x));
+// with explicit prints: every -print is reached only through a key-proof name test (guarded)
+function findPrintsNamed(e, guarded) {
+  if (e.t === 'print') return guarded;
+  if (e.t === 'not') return !findPrints(e.x);
+  if (e.t === 'or') return e.xs.every((x) => findPrintsNamed(x, guarded));
+  if (e.t === 'and') {
+    let g = guarded;
+    for (const x of e.xs) {
+      if (!findPrintsNamed(x, g)) return false;
+      g = g || findNamed(x);
+    }
+    return true;
+  }
+  return true;
+}
+function findListsNamesOnly(lits) {
+  const start = lits.findIndex((l) => /^-/.test(l) || l === '(' || l === '!' || l === ')');
+  if (start < 0) return false;
+  let e;
+  try { e = findExpr(lits.slice(start)); } catch { return false; }
+  if (!e) return false;
+  return findPrints(e) ? findPrintsNamed(e, false) : findNamed(e);
+}
 function extensionFiltered(c, pipe) {
   const downstreamReads = pipe.some((x) => x.pos > c.pos && (PIPE_READERS.has(x.name) || x.fromStdin));
   if (c.name === 'find') {
     const lits = (c.args || []).map(literal);
-    if (lits.some((l) => l === null || /^-(?:exec|execdir|ok|okdir|delete|fprint\w*|fls|path|ipath|wholename|iwholename|regex|iregex|lname|ilname)$/.test(l))) return false;
-    const pats = [];
-    lits.forEach((l, i) => { if (/^-i?name$/.test(l)) pats.push(lits[i + 1]); });
-    if (!pats.length || pats.some((p) => !p || globRe(p).test('plan.key'))) return false;
-    return !downstreamReads;
+    if (lits.some((l) => l === null)) return false;
+    return findListsNamesOnly(lits) && !downstreamReads;
   }
   if (c.shell !== 'ps' || !['get-childitem', 'gci', 'ls', 'dir'].includes(c.name)) return false;
   const { named } = argsOf(c);
@@ -1324,6 +1404,25 @@ function applyRuns(cmds) {
   }
   return false;
 }
+// The Dataverse CLI run by a parsed command, at any depth (H-1081, 10/28). The old rule read the whole line, so a
+// Todoist note holding "Memory System (" (read as a shell-out call) and "Dataverse ->" was judged as the CLI with the
+// option "-". Now each command is read on its own text: a script run on data (scriptRunsData) and a pure printer or
+// searcher hand their arguments to no shell, so their words are data. A shell handed a string, inline code, a heredoc
+// into a shell and a command substitution are nested commands, read here too; awk, sed, git and the rest keep the old
+// read, since their arguments can run commands.
+const PRINTERS = new Set(['echo', 'printf', 'write-output', 'write-host', 'grep', 'egrep', 'fgrep', 'zgrep', 'rg', 'findstr', 'select-string', 'sls']);
+function cliRuns(cmds) {
+  for (const c of cmds) {
+    if (c.nested.length) {
+      const v = cliRuns(c.nested);
+      if (v) return v;
+    }
+    if (c.kind === 'cmd' && c.word && (PRINTERS.has(c.name) || scriptRunsData(c))) continue;
+    const v = G.cliVerdict(String((c.kind === 'expr' ? c.code : c.src) || '').replace(I.HARMLESS_REDIRECT, ' '));
+    if (v) return v;
+  }
+  return null;
+}
 function applyRunsText(command, shells) {
   for (const sh of shells) {
     let cmds;
@@ -1340,7 +1439,15 @@ function shellVerdict(command, cwd = null, shell = 'posix', { ctx = null, depth 
   const textIn = String(command || '');
   if (I.HIDDEN_CODE.test(textIn)) return MSG.hidden;
   const plain = textIn.replace(I.HARMLESS_REDIRECT, ' ');
-  const cli = G.cliVerdict(plain);
+  let cmds = null;
+  let parseError = null;
+  try {
+    cmds = SP.parse(textIn, shell);
+  } catch (e) {
+    parseError = e;
+  }
+  // per parsed command (H-1081); a line the parser cannot read keeps the whole-text rule
+  const cli = cmds ? cliRuns(cmds) : G.cliVerdict(plain);
   if (cli) return `${cli}, which writes to Dataverse`;
   if (I.targetsDataverse(plain, { shell: true })) return MSG.http;
   const inj = I.shellInjection(textIn);
@@ -1348,13 +1455,10 @@ function shellVerdict(command, cwd = null, shell = 'posix', { ctx = null, depth 
   if (/dataverse-write(?:\.js)?["']?\s+(?:apply|resolve)\b/i.test(textIn) && PATH_ON_APPLY.test(textIn)) {
     return 'changing PATH or node options on the same line as an apply (the engine must run the real Dataverse CLI)';
   }
-  let cmds;
-  try {
-    cmds = SP.parse(textIn, shell);
-  } catch (e) {
+  if (parseError) {
     // a line the parser cannot read: the current whole-text rules decide it (fail closed)
     const old = G.shellVerdict(textIn, cwd);
-    return old ? `${old} [parser fallback: ${e.message}]` : null;
+    return old ? `${old} [parser fallback: ${parseError.message}]` : null;
   }
   // The hook's input always names the session's folder; without one, the folder the hook runs in stands for it.
   // (A `cd` the guard cannot follow later on the line still makes relative targets unknown.)

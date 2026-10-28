@@ -34,7 +34,11 @@ test('record: the call and both verdicts go to guard_shadow.jsonl and to an even
   assert.match(l.call, /SBRM_DV_CONFIG/);
   const e = shadowEvents().pop();
   assert.equal(e.signal, false, 'what the redesign is for: counted, not opened');
-  assert.match(e.headline, /^Shadow \[old block \/ next allow\]: Bash$/);
+  assert.match(e.headline, /^Shadow \[old block \/ next allow\]: Bash \(ran; only the old model would have stopped it\)$/);
+  // since the 1.11.14 cut-over the NEXT model decides (#6hr2m7pRppqwGmvr item 4: the detail said "Old (decided)")
+  assert.match(e.detail, /^The guard's old model \(watching only since the 1\.11\.14 cut-over\) disagreed with the next model, which decided/);
+  assert.match(e.detail, /\nNext \(decided\): allow\nOld \(watching only\): block/);
+  assert.doesNotMatch(e.detail, /Old \(decided\)|1\.11\.11 candidate|shadow only/);
   assert.ok(pending().some((f) => f.endsWith(`${e.event_id}.json`)), 'queued for the app\'s event table');
 });
 
@@ -43,7 +47,7 @@ test('old allow / next block opens an item for the review, at most DAILY_OPEN a 
   const today = shadowEvents().filter((e) => /next block/.test(e.headline));
   assert.equal(today.filter((e) => e.signal).length, shadow.DAILY_OPEN);
   assert.equal(today.length, shadow.DAILY_OPEN + 2, 'the rest are still counted');
-  assert.match(today[0].headline, /the redesign would stop this call/);
+  assert.match(today[0].headline, /\(stopped; the old model would have let it run\)$/);
 });
 
 // The cut-over (1.11.14, guard_review/DESIGN.md §7): the NEXT model decides; the old verdict watches for two weeks.
@@ -118,5 +122,8 @@ test('the review counts shadow disagreements on a line of their own, apart from 
   });
   assert.equal(s.routine.guard_shadow, undefined);
   assert.deepEqual(s.shadow, { total: 3, unblocked: 2, newStops: 1 });
-  assert.match(review.render(s), /Guard shadow \(next model\): 3 disagreements \(2 the redesign unblocks, 1 it would newly stop/);
+  assert.match(review.render(s), /Guard shadow \(old model watching\): 3 disagreements \(2 ran that the old model would have stopped, 1 stopped that the old model would have allowed: each is an Open item to judge\)/);
+  // events recorded before 1.11.24 carry the old suffix and still count by their prefix
+  const s2 = review.summarize({ now, access: { people: {} }, logs: [], events: [ev('Shadow [old allow / next block]: Bash (stopped; the old model would have let it run)', true), ev('Shadow [old block / next allow]: Bash (ran; only the old model would have stopped it)')] });
+  assert.deepEqual(s2.shadow, { total: 2, unblocked: 1, newStops: 1 });
 });
