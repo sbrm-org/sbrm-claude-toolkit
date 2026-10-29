@@ -603,26 +603,28 @@ function callArgs(code, open, lits) {
 // not a target; makedirs(name=...) names what it creates.
 const PATH_KEYWORD = /^(?:file|path|name|src|source|dst|dest|destination|target|target_path|new_path|filename|newname)$/i;
 const SOURCE_KEYWORD = /^(?:src|source)$/i;
-function keywordValues(all, lang, keyRe) {
+function keywordValues(all, lang, keyRe, rx) {
   const out = [];
   for (const a of all) {
     if (!a.keyword) continue;
     const m = /^([A-Za-z_]\w*)\s*=\s*([\s\S]*)$/.exec(a.text);
     if (!m || !keyRe.test(m[1])) continue;
     const l = codeLiterals(m[2], lang)[0];
-    // a string prefix (r'', b'', u'') is still a literal; an f-string is not (its value is null)
-    out.push(l && /^[rbuRBU]{0,2}$/.test(m[2].slice(0, l.start)) && l.end === m[2].length ? l.value : undefined);
+    // a string prefix (r'', b'', u'') is still a literal; an f-string is not (its value is null); a name bound once or a
+    // joined path is followed (G4)
+    const v = l && /^[rbuRBU]{0,2}$/.test(m[2].slice(0, l.start)) && l.end === m[2].length ? l.value : undefined;
+    out.push(typeof v === 'string' ? v : rx ? rx(m[2]) : undefined);
   }
   return out;
 }
-function keywordTargets(all, lang, which = 'all') {
+function keywordTargets(all, lang, which = 'all', rx) {
   const keys = { source: [], other: [] };
   for (const a of all) {
     if (!a.keyword) continue;
     const m = /^([A-Za-z_]\w*)\s*=/.exec(a.text);
     if (m && PATH_KEYWORD.test(m[1])) keys[SOURCE_KEYWORD.test(m[1]) ? 'source' : 'other'].push(a);
   }
-  const vals = (list) => keywordValues(list, lang, PATH_KEYWORD);
+  const vals = (list) => keywordValues(list, lang, PATH_KEYWORD, rx);
   return which === 'last' ? vals(keys.other) : [...vals(keys.other), ...vals(keys.source)];
 }
 
@@ -640,6 +642,176 @@ const RECEIVER_WRITES = /\.(?:write_text|write_bytes|unlink|touch|rmdir|rename|r
 
 // Does the code name the store or the plugin anywhere (for C2: a write target it cannot read)?
 const namesProtected = (t) => I.STORE_IN_TEXT.test(t) || I.STORE_ANY.test(t) || I.PLUGIN_IN_TEXT.test(t);
+
+// ---------- names bound once, and paths joined from known parts (inline_code_review GATE_2 G4, ruled 10/29/26) ----------
+// The reader follows what honest code does: a name assigned once to a literal, the home folder, a temp folder, and a
+// join (os.path.join, path.join, Path / 'x', a + b, an f-string or template) whose EVERY part is known, joined as the
+// language joins (an absolute later part wins). Anything else is unknown. A path built at run time to get past this is
+// an accepted residual (G4.4), not a gap to patch.
+
+// The environment variables a path is honestly built from, and the value the guard takes for each.
+const ENV_PATHS = { HOME: () => HOME_F, USERPROFILE: () => HOME_F, TEMP: () => TMP_F, TMP: () => TMP_F, TMPDIR: () => TMP_F, LOCALAPPDATA: () => process.env.LOCALAPPDATA, APPDATA: () => process.env.APPDATA };
+const envPath = (n) => { const f = ENV_PATHS[String(n).toUpperCase()]; const v = f && f(); return v ? String(v).replace(/\\/g, '/') : undefined; };
+
+// The index of the bracket closing the one at `open`, skipping string literals; -1 when it never closes.
+function closeOf(code, open, lits) {
+  const litAt = new Map(lits.map((l) => [l.start, l]));
+  let depth = 0;
+  for (let i = open; i < code.length; i += 1) {
+    const l = litAt.get(i);
+    if (l) { i = l.end - 1; continue; }
+    const c = code[i];
+    if (c === '(' || c === '[' || c === '{') depth += 1;
+    else if (c === ')' || c === ']' || c === '}') { depth -= 1; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
+// Split code at top-level separators (outside literals and brackets): the pieces, trimmed.
+function splitTop(code, isSep, lits) {
+  const litAt = new Map(lits.map((l) => [l.start, l]));
+  const out = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < code.length; i += 1) {
+    const l = litAt.get(i);
+    if (l) { i = l.end - 1; continue; }
+    const c = code[i];
+    if (c === '(' || c === '[' || c === '{') depth += 1;
+    else if (c === ')' || c === ']' || c === '}') depth -= 1;
+    else if (depth === 0 && isSep(code, i)) { out.push(code.slice(start, i)); start = i + 1; }
+  }
+  out.push(code.slice(start));
+  return out.map((s) => s.trim());
+}
+
+const joinPaths = (parts) => parts.slice(1).reduce((acc, p) => (/^(?:[\\/]|[A-Za-z]:)/.test(p) ? p : `${acc.replace(/[\\/]+$/, '')}/${p}`), parts[0]);
+
+// Text joined after a known folder and a separator (f"{D}/{k}.txt", D + '/' + k) can only land under that folder
+// (`..` aside, the accepted residual): it resolves to the folder plus UNDER, judged by the folder (judgeTarget). A
+// path.join is not read this way: an absolute later part wins there (GATE_2 correction 2).
+const UNDER = '\u0001';
+const underPrefix = (pre) => (/[\\/]$/.test(pre) && pre.length > 1 && !pre.includes(UNDER) ? `${pre}${UNDER}` : undefined);
+
+// An f-string, template or PowerShell string with only known names in it, filled in; a known folder prefix, as above;
+// undefined otherwise.
+function fillTemplate(raw, binds, lang, depth) {
+  const re = lang === 'py' ? /\{([^{}]*)\}/g : lang === 'ps' ? /\$\{([^}]*)\}|\$([A-Za-z_]\w*)/g : /\$\{([^}]*)\}/g;
+  let out = '';
+  let last = 0;
+  let m;
+  while ((m = re.exec(raw)) !== null) {
+    const pre = out + raw.slice(last, m.index);
+    const v = resolveExpr(m[1] !== undefined ? m[1] : (lang === 'ps' ? `$${m[2]}` : m[2]), binds, lang, depth + 1);
+    if (v === undefined) return underPrefix(pre);
+    if (v.endsWith(UNDER)) return pre + v;
+    out = pre + v;
+    last = m.index + m[0].length;
+  }
+  return out + raw.slice(last);
+}
+
+// The path text an expression stands for, or undefined when the guard cannot know it.
+function resolveExpr(expr, binds, lang, depth = 0) {
+  let e = String(expr || '').trim().replace(/;$/, '').trim();
+  if (!e || depth > 8) return undefined;
+  let lits = codeLiterals(e, lang);
+  while (e[0] === '(' && closeOf(e, 0, lits) === e.length - 1) { e = e.slice(1, -1).trim(); lits = codeLiterals(e, lang); }
+  const R = (x) => resolveExpr(x, binds, lang, depth + 1);
+  // a module under another name (p = require('path'), import os.path as osp) is read as the module
+  const al = /^([A-Za-z_$][\w$]*)(?=\s*\.)/.exec(e);
+  if (al && binds.aliases && binds.aliases.has(al[1])) { e = binds.aliases.get(al[1]) + e.slice(al[1].length); lits = codeLiterals(e, lang); }
+  // one string literal (a prefix allowed); an f-string or template is filled in from known names
+  if (lits.length === 1 && lits[0].end === e.length && /^[rbuRBUfF@]{0,2}$/.test(e.slice(0, lits[0].start))) {
+    return lits[0].value !== null ? lits[0].value : fillTemplate(lits[0].text, binds, lang, depth);
+  }
+  // a name bound once
+  const nm = lang === 'ps' ? /^\$([A-Za-z_]\w*)$/.exec(e) : /^([A-Za-z_$][\w$]*)$/.exec(e);
+  if (nm) return binds.has(nm[1]) ? binds.get(nm[1]) : undefined;
+  // the home folder and the environment's temp folders
+  if (/^(?:os\.homedir\(\s*\)|(?:pathlib\.)?Path\.home\(\s*\))$/.test(e)) return HOME_F;
+  const ev = /^os\.environ\s*\[\s*(["'])(\w+)\1\s*\]$/.exec(e) || /^os\.(?:environ\.get|getenv)\s*\(\s*(["'])(\w+)\1\s*\)$/.exec(e)
+    || /^process\.env\s*\[\s*(["'`])(\w+)\1\s*\]$/.exec(e) || /^process\.env\.()(\w+)$/.exec(e) || (lang === 'ps' ? /^\$env:()(\w+)$/i.exec(e) : null);
+  if (ev) return envPath(ev[2]);
+  // a method that keeps the path: .expanduser(), .resolve(), .absolute()
+  const sfx = /\.(?:expanduser|resolve|absolute)\(\s*\)$/.exec(e);
+  if (sfx) return R(e.slice(0, sfx.index));
+  // a call that wraps or joins paths, when it is the whole expression
+  const call = /^((?:os\.path|posixpath|ntpath|path(?:\.posix|\.win32)?)\.(?:join|resolve|expanduser|abspath|normpath|realpath|normalize)|(?:pathlib\.)?(?:Pure(?:Posix|Windows)?)?Path|str|os\.fspath|\[(?:System\.)?IO\.Path\]::Combine|Join-Path)\s*\(/.exec(e);
+  if (call && closeOf(e, call[0].length - 1, lits) === e.length - 1) {
+    const args = callArgs(e, call[0].length - 1, lits);
+    if (!args.length || args.some((a) => a.keyword)) return undefined;
+    const parts = args.map((a) => R(a.text));
+    if (parts.some((p) => p === undefined || (p.endsWith(UNDER) && parts.length > 1))) return undefined;
+    return parts.length === 1 ? parts[0] : joinPaths(parts);
+  }
+  // a + b (text joined as is) or, in Python, Path / 'x' (joined as a path)
+  const plus = splitTop(e, (s, i) => s[i] === '+' && s[i + 1] !== '=' && s[i + 1] !== '+' && s[i - 1] !== '+', lits);
+  if (plus.length > 1) {
+    let pre = '';
+    for (const part of plus) {
+      const v = R(part);
+      if (v === undefined) return underPrefix(pre);
+      if (v.endsWith(UNDER)) return pre + v;
+      pre += v;
+    }
+    return pre;
+  }
+  if (lang === 'py') {
+    const slash = splitTop(e, (s, i) => s[i] === '/' && s[i + 1] !== '/' && s[i - 1] !== '/' && s[i + 1] !== '=', lits);
+    if (slash.length > 1) {
+      const parts = slash.map(R);
+      return parts.some((p) => p === undefined || p.endsWith(UNDER)) ? undefined : joinPaths(parts);
+    }
+  }
+  return undefined;
+}
+
+// The names the code binds exactly once, each to the path text it stands for (undefined when unknown). A name bound
+// more than once, or by a loop, `with ... as`, an unpacking or an augmented assignment, is unknown.
+function collectBinds(src, lang, lits) {
+  const binds = new Map();
+  const seen = new Map();
+  binds.aliases = new Map();
+  // the path and os modules under other names
+  for (const m of src.matchAll(/\b(?:const|let|var)?\s*([A-Za-z_$][\w$]*)\s*=\s*require\(\s*["'`](?:node:)?(path|os)["'`]\s*\)/g)) binds.aliases.set(m[1], m[2]);
+  for (const m of src.matchAll(/\bimport\s+(os\.path|os|posixpath|ntpath)\s+as\s+([A-Za-z_]\w*)/g)) binds.aliases.set(m[2], m[1]);
+  for (const m of src.matchAll(/\bfrom\s+os\s+import\s+path\s+as\s+([A-Za-z_]\w*)/g)) binds.aliases.set(m[1], 'os.path');
+  // a JS declaration of several names (const a = 1, b = 2) is one statement per name
+  const stmts = splitTop(src, (s, i) => s[i] === '\n' || s[i] === ';', lits).flatMap((st) => {
+    const d = /^(?:const|let|var)\s+/.exec(st);
+    if (!d || lang !== 'js') return [st];
+    const rest = st.slice(d[0].length);
+    return splitTop(rest, (s, i) => s[i] === ',', codeLiterals(rest, lang));
+  });
+  const assign = lang === 'ps' ? /^\$([A-Za-z_]\w*)\s*=(?!=)\s*([\s\S]+)$/ : /^(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*(?::\s*[\w.[\], ]+)?=(?!=)\s*([\s\S]+)$/;
+  const once = [];
+  for (const st of stmts) {
+    const m = assign.exec(st);
+    if (m) { seen.set(m[1], (seen.get(m[1]) || 0) + 1); once.push(m); continue; }
+    // other ways a name gets a value: loops, with-as, unpacking, augmented or walrus assignment
+    const others = [
+      ...[...st.matchAll(/\bfor\s*\(?\s*(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)/g)].map((x) => x[1]),
+      ...[...st.matchAll(/\bas\s+([A-Za-z_]\w*)/g)].map((x) => x[1]),
+      ...[...st.matchAll(/\$?([A-Za-z_$][\w$]*)\s*(?:[-+*/%|&^]|\*\*|\/\/|<<|>>|:)=(?!=)/g)].map((x) => x[1]),
+    ];
+    const un = /^(?:(?:const|let|var)\s+)?[[(]?\s*([\w$]+(?:\s*,\s*[\w$*]+)+)\s*[\])]?\s*=(?!=)/.exec(st);
+    if (un) others.push(...un[1].split(',').map((x) => x.trim().replace(/^\*/, '')));
+    for (const n of others) seen.set(n, (seen.get(n) || 0) + 2);
+  }
+  for (const m of once) {
+    if (seen.get(m[1]) !== 1) { binds.set(m[1], undefined); continue; }
+    binds.set(m[1], resolveExpr(m[2], binds, lang));
+  }
+  return binds;
+}
+
+// A method name that is a file call only on a file module (os.remove, shutil.move, fs.rm, File.Delete): on a list, a
+// dict or a string it is text work (fpc: a list's remove on code naming the store, 10/29).
+const AMBIGUOUS_WRITE = /^(?:remove|rename|replace|move|Move|Replace|copy|Copy|Delete|Create|rm|link)\b/;
+const FILE_MODULE = /(?:^|[^\w.])(?:os|shutil|fs|fsp|promises|posix|nt|File|Directory|FileUtils|Bun|Deno)\s*\.\s*$|require\(\s*["'](?:node:)?fs(?:\/promises)?["']\s*\)\s*\.\s*$/;
+
+const askUnknown = (src) => ({ ask: `SBRM Dataverse guard: this code names ${I.STORE_IN_TEXT.test(src) || I.STORE_ANY.test(src) ? "the engine's own store" : "the toolkit plugin's files"} and writes a file, but the guard could not tell where it writes. Check the target before you say Yes; Yes runs it, No stops it.` });
 
 function codeVerdict(code, lang, ctx, env, depth = 0) {
   const src = String(code || '');
@@ -659,11 +831,24 @@ function codeVerdict(code, lang, ctx, env, depth = 0) {
       if (p && inConfig(p) && !/\/dev_dirs\.json$/i.test(p)) return MSG.keyRead;
     }
   }
-  // file writes whose target is a literal: judged by where it lands; an unreadable target on code that names the
-  // store or the plugin fails closed (C2)
+  // file writes whose target is a literal, a name bound once or a joined path: judged by where it lands. An unreadable
+  // target on code that names the store or the plugin ASKS (G4, Dylan 10/29: "ask"; before, C2 failed closed), and the
+  // scan goes on, so a later block still wins.
+  const binds = collectBinds(src, lang, lits);
+  const rx = (t) => resolveExpr(t, binds, lang);
+  const argsAt = (open) => callArgs(src, open, lits).map((a) => (a.keyword || typeof a.literal === 'string' ? a : { ...a, literal: rx(a.text) }));
+  let unknown = null;
   const named = namesProtected(src);
   const judgeTarget = (value, removal) => {
     if (value === undefined || value === null) return named ? 'unknown' : null;
+    if (value.endsWith(UNDER)) {
+      // something under a known folder: judged as a file in it, unless the folder is home, above it, Claude Code's own
+      // folder, or above the store or plugin, where the rest of the name decides (G4)
+      const d = resolveText(value.slice(0, -1).replace(/[\\/]+$/, '') || '/', ctx);
+      if (d !== null && (protectedStore(d) || inPluginP(d))) return judgeTarget(`${d}/x`, removal);
+      if (d === null || sweepsHome(d) || under(d, USER_CLAUDE) || above(d, USER_CLAUDE) || storeAncestor(d) || pluginAncestor(d)) return named ? 'unknown' : null;
+      return judgeTarget(`${d}/x`, removal);
+    }
     const v = value.replace(/^\+?[<>]{1,2}\s*/, '');
     if (!/[\\/~]|^\.{1,2}$/.test(v) && !ctx.here) return null;
     const p = resolveText(v, ctx);
@@ -676,7 +861,10 @@ function codeVerdict(code, lang, ctx, env, depth = 0) {
     if (isProfile(p)) return 'profile';
     return null;
   };
-  const hit = (k) => (k === 'store' || k === 'unknown' && I.STORE_IN_TEXT.test(src) ? tag(MSG.store, 'store-tamper') : k === 'plugin' || k === 'unknown' ? tag(MSG.plugin, 'plugin-tamper') : k === 'loading' ? MSG.loading : k === 'profile' ? MSG.profile : null);
+  const hit = (k) => {
+    if (k === 'unknown') { if (!unknown) unknown = askUnknown(src); return null; }
+    return k === 'store' ? tag(MSG.store, 'store-tamper') : k === 'plugin' ? tag(MSG.plugin, 'plugin-tamper') : k === 'loading' ? MSG.loading : k === 'profile' ? MSG.profile : null;
+  };
   for (const [re, which, removal] of CODE_WRITES) {
     re.lastIndex = 0;
     let m;
@@ -686,14 +874,22 @@ function codeVerdict(code, lang, ctx, env, depth = 0) {
       // unknown on code that names the store), never here, where a string's .replace(old, new) read its arguments as
       // paths (D-1175, 10/17: `k.replace("/","\\")` read as moving the drive root). A bare replace( is still judged.
       if (/^replace/i.test(m[0]) && /\.\s*$/.test(src.slice(0, m.index))) continue;
-      const all = callArgs(src, m.index + m[0].length - 1, lits);
+      // a list's remove, a dict's copy: a file call only on a file module (G4, fpc)
+      if (AMBIGUOUS_WRITE.test(m[0]) && /\.\s*$/.test(src.slice(0, m.index)) && !FILE_MODULE.test(src.slice(Math.max(0, m.index - 80), m.index))) continue;
+      const all = argsAt(m.index + m[0].length - 1);
       const args = all.filter((a) => !a.keyword);
       let targets = [];
       if (which === 'open') {
         // the file positionally, or by keyword (open(file=..., mode="w"), round 5)
-        const [fileKw] = keywordValues(all, lang, /^(?:file|path)$/i);
+        const [fileKw] = keywordValues(all, lang, /^(?:file|path)$/i, rx);
         const hasFile = !!args[0] || all.some((a) => a.keyword && /^(?:file|path)\s*=/.test(a.text));
         const file = args[0] ? args[0].literal : fileKw;
+        // opening anything in the store's settings folder, even to read, reaches the plan signing key (G4: a joined
+        // path is now followed there, as a literal always was by KEY_NAMED)
+        if (typeof file === 'string') {
+          const fp = resolveText(file.replace(UNDER, 'x'), ctx);
+          if (fp && inConfig(fp) && !/\/dev_dirs\.json$/i.test(fp)) return MSG.keyRead;
+        }
         const mode = args.slice(1).find((a) => typeof a.literal === 'string');
         const perlTarget = args.find((a) => typeof a.literal === 'string' && /^\+?[<>]/.test(a.literal));
         if (perlTarget) { if (/^\+?>|^\+</.test(perlTarget.literal)) targets = [perlTarget.literal]; }
@@ -703,7 +899,6 @@ function codeVerdict(code, lang, ctx, env, depth = 0) {
         const modeKw = all.filter((a) => a.keyword && /^mode\s*=/.test(a.text));
         const [modeVal] = keywordValues(modeKw, lang, /^mode$/i);
         if (!targets.length && hasFile && modeKw.length && (modeVal === undefined || /^[rwaxbt+]*[wax+][rwaxbt+]*$/.test(modeVal))) targets = [file];
-        if (!targets.length && /\bmode\s*=\s*["'][rwaxbt+]*[wax+]/.test(src.slice(m.index, m.index + 300)) && hasFile) targets = [file];
         // a positional mode that is not a literal (open(p, m)) could be a write (round 7)
         if (!targets.length && !perlTarget && args[1] && typeof args[1].literal !== 'string' && hasFile) targets = [file];
       } else if (which === 'first') targets = args[0] ? [args[0].literal] : [];
@@ -712,10 +907,10 @@ function codeVerdict(code, lang, ctx, env, depth = 0) {
       else if (which === 'last') targets = all.some((a) => a.keyword && /^(?:dst|dest|destination|target)\s*=/i.test(a.text)) ? [] : (args.length ? [args[args.length - 1].literal] : []);
       else targets = args.map((a) => a.literal);
       // a path passed by keyword (os.replace(src, dst=...), open(file=..., mode="w") excepted) is a target too (round 4)
-      if (which !== 'open') targets.push(...keywordTargets(all, lang, which));
+      if (which !== 'open') targets.push(...keywordTargets(all, lang, which, rx));
       for (const t of targets) {
-        const k = judgeTarget(t, removal);
-        if (k) return hit(k);
+        const h = hit(judgeTarget(t, removal));
+        if (h) return h;
       }
     }
   }
@@ -731,23 +926,29 @@ function codeVerdict(code, lang, ctx, env, depth = 0) {
     const lm = /Path\s*\(\s*[rbRB]?(["'])((?:(?!\1).)*)\1\s*\)\s*$/.exec(before);
     const strReceiver = !lm && (/(?:^|[^\w.\])'"])[rbRB]?(["'])(?:(?!\1).)*\1\s*$/.test(before)
       || /(?:^|[^\w.\])'"])\(\s*[rbRB]?(["'])(?:(?!\1).)*\1\s*\)\s*$/.test(before));
-    // a string literal's method changes no file, whatever its text names (round 6)
-    const k = strReceiver ? null : judgeTarget(lm ? lm[2] : undefined, /unlink|rmdir|rename|replace/.test(rm[0]));
-    if (k) return hit(k);
     // A rename, replace or link also WRITES its first argument: judged as a target (review 10/23: only the source was).
-    // `.replace(` is far more often a string's: its argument counts when the receiver is Path(...), or an object the
-    // guard cannot read in code that uses pathlib, never when the receiver is a plain string literal (rounds 2 and 3).
+    // `.replace(` is far more often a string's: it is a file call only when the receiver is Path(...), or an object the
+    // guard cannot read in code that uses pathlib, never on a plain string literal (rounds 2 and 3) or in code with no
+    // pathlib at all (G4: H-1086, a string's replace on a variable in code naming the plugin, was read as a file move).
     // os.replace / shutil-style module calls are file moves whatever else the code imports (round 4).
     const moduleCall = /(?:^|[^\w.])(?:os|shutil)\s*$/.test(before); // os.replace(src, dst): both are paths
     const pathReceiver = moduleCall || (!strReceiver && /\bpathlib\b|\bPath\s*\(/.test(src));
-    if (/rename|symlink_to|hardlink_to/.test(rm[0]) || (/replace/.test(rm[0]) && pathReceiver)) {
-      const all = callArgs(src, rm.index + rm[0].length - 1, lits);
+    if (/replace/.test(rm[0]) && !pathReceiver) continue;
+    // the receiver: Path("x"), or a name bound once (G4); a string literal's method changes no file, whatever its text
+    // names (round 6); a module's own call is judged by its arguments below
+    const idm = !lm && /(?:^|[^\w.$])([A-Za-z_$][\w$]*)\s*$/.exec(before);
+    if (!strReceiver && !moduleCall) {
+      const h = hit(judgeTarget(lm ? lm[2] : idm ? rx(idm[1]) : undefined, /unlink|rmdir|rename|replace/.test(rm[0])));
+      if (h) return h;
+    }
+    if (/rename|symlink_to|hardlink_to/.test(rm[0]) || /replace/.test(rm[0])) {
+      const all = argsAt(rm.index + rm[0].length - 1);
       // a Path method's destination is its first argument, a module call's are all of them; or by keyword (round 4)
       const positional = all.filter((a) => !a.keyword);
       const dests = moduleCall ? positional : positional.slice(0, 1);
-      for (const v of [...dests.map((a) => a.literal), ...keywordTargets(all, lang)]) {
-        const kd = judgeTarget(v, false);
-        if (kd) return hit(kd);
+      for (const v of [...dests.map((a) => a.literal), ...keywordTargets(all, lang, 'all', rx)]) {
+        const h = hit(judgeTarget(v, false));
+        if (h) return h;
       }
     }
   }
@@ -757,10 +958,10 @@ function codeVerdict(code, lang, ctx, env, depth = 0) {
     let sm;
     while ((sm = SHELL_CALL.exec(src)) !== null) {
       if (lits.some((l) => sm.index >= l.start && sm.index < l.end)) continue;
-      const span = callArgs(src, sm.index + sm[0].length - 1, lits);
+      const span = argsAt(sm.index + sm[0].length - 1);
       const lines = [];
       for (const a of span) {
-        if (typeof a.literal === 'string') lines.push(a.literal);
+        if (typeof a.literal === 'string' && !a.literal.includes(UNDER)) lines.push(a.literal);
         else if (/^\[/.test(a.text)) {
           const inner = codeLiterals(a.text, lang).map((l) => l.value);
           if (inner.length && inner.every((x) => typeof x === 'string')) lines.push(inner.map((x) => (/\s/.test(x) ? `'${x.replace(/'/g, "'\\''")}'` : x)).join(' '));
@@ -772,7 +973,7 @@ function codeVerdict(code, lang, ctx, env, depth = 0) {
       }
     }
   }
-  return null;
+  return unknown;
 }
 
 // The code a command runs inline, if any: [{ code, lang }].
@@ -912,11 +1113,14 @@ function judgeOne(c, ctx, env, pipe) {
   if (f) return f;
 
   // code the command runs inline
+  // an ask from one piece of code waits while the rest are read for a block (G4)
+  let ask = null;
   for (const { code, lang } of inlineCode(c, pipe)) {
     const v = codeVerdict(code, lang, ctx, env);
-    if (v) return v;
+    if (typeof v === 'string') return v;
+    if (v && !ask) ask = v;
   }
-  return null;
+  return ask;
 }
 
 // Where a command's output redirects write (fd duplicates and null sinks write nothing).
