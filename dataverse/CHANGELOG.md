@@ -3,6 +3,23 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.26** (2026-10-29) **Inline code (python -c, node -e, a heredoc into python) is read the way the code builds
+  its paths, and a write the guard cannot trace ASKS instead of blocking (H-1086, H-1102; inline-code review, ruled
+  10/29/26).** The reader now follows a name bound once (`p = '<path>'`, `const a = ..., p = ...`), the home and temp
+  folders (`os.path.expanduser('~')`, `os.homedir()`, `Path.home()`, `os.environ['TEMP']`), the path and os modules
+  under another name (`p = require('path')`, `import os.path as osp`), and a join whose every part is known
+  (`os.path.join`, `path.join`, `Path / 'x'`, `a + b`, an f-string or template), joined as the language joins it (an
+  absolute later part wins). Text joined after a known folder (`f"{D}/{k}.txt"`) is judged by that folder; a
+  `path.join` with an unknown part is not. A list's `.remove`, a dict's `.copy` and a string's `.replace` are text work,
+  not file calls, unless called on a file module or a pathlib object. Opening a file in the store's settings folder,
+  even to read, is the signing key whether the path is a literal or joined. **Dylan's ruling ("ask"):** a write whose
+  target the guard cannot trace, in code that names the store or the plugin, now gets Claude Code's prompt saying the
+  guard could not tell where it writes (before: blocked, C2); a literal or resolved write into a protected place still
+  blocks, and an ask never hides a later block. C2 is unchanged for shell lines. **Accepted residual:** a path built
+  at run time to get past the guard passes; the reader catches honest mistakes, not evasion. Replays: the 32 review
+  cases (every false-positive shape allows, every literal threat blocks, 11 threat shapes that passed now block);
+  H-1086's recorded call allows; `replay_shadow.js --allowed` 227 rows, 0 newly stopped. Checks: engine suite 882,
+  guard self-test 247, `mutate_1_11_26.js`.
 - **1.11.25** (2026-10-28) **A form change that landed is no longer reported "not written" over one label (H-1016).**
   Live 10/18 (plan 20261018-092942-6cd38bd9, HGS guest form): the form saved and published with its new field, but the
   new cell's label read back as the field's display name ("Monthly Income", sent "Income (Monthly)"), and the whole

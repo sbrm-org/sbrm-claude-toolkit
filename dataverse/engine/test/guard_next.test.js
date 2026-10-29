@@ -574,3 +574,84 @@ test('D-1388: a find of home by name may carry exclusions; an or-branch with no 
     'find ~ -iname "*.pdf" -print -o ! \\( -type d -print \\)',
   ]) assert.match(next(sh(c)).why || '', /home-sweep|home folder/, c);
 });
+
+// Inline-code review (inline_code_review\GATE_2.md G4, ruled 10/29/26): the reader follows a name bound once and a path
+// joined from known parts, stops reading a list's or a string's method as a file call, and an untraceable write target
+// on code that names the store or the plugin ASKS (Dylan: "ask") instead of blocking. A literal or resolved write into
+// a protected place still blocks. A path built at run time to get past the guard is an accepted residual.
+test('inline review G4: the recorded false positives pass', () => {
+  for (const c of [
+    // H-1086 core (fpd): a string's replace on a variable, the plugin path only in its text, a relative write
+    J(`python -c "s=open('equiv.py').read();s=s.repl`, `ace(r'~\\.claude\\plugins\\cache\\sbrm-claude-toolkit\\sbrm-toolkit\\1.11.19\\run.sh','x');open('equiv.py','w').wri`, `te(s)"`),
+    // fpc: a list's remove, the store only in a print
+    `python -c "l=[1,2];x=1;l.remove(x);print('see ~/.sbrm-dataverse/plans')"`,
+    // H-1102 shapes (fpb, fpb3, fpk): read the events file, write a scratch file through a join, an f-string, a +
+    J(`python -c "import os;ev=os.path.expanduser('~/.sbrm-dataverse/events/events.jsonl');out=os.path.join(os.environ['TEMP'],'x.md');open(out,'w').wri`, `te(open(ev).read()[:10])"`),
+    J(`python -c "import os;ev=os.path.expanduser('~/.sbrm-dataverse/events/events.jsonl');t=os.environ['TEMP'];open(f'{t}/x.md','w').wri`, `te(open(ev).read()[:10])"`),
+    `python -c "import json,os;d=json.load(open(os.path.expanduser('~/.sbrm-dataverse/plans/a.json')));out=os.environ['TEMP']+'/a.json';json.dump(d,open(out,'w'))"`,
+    // a dict's copy and a module-qualified rename between scratch files, on code naming the store
+    J(`python -c "import os;d={'a':1}.copy();os.ren`, `ame('C:/temp/a.json','C:/temp/b.json');print('~/.sbrm-dataverse')"`),
+  ]) assert.equal(next(sh(c)).kind, 'allow', `${c}: ${next(sh(c)).why}`);
+});
+
+test('inline review G4: a name bound once and a joined path are followed into the store, the plugin and settings', () => {
+  for (const c of [
+    J(`python -c "p='~/.sbrm-dataverse/plans/x.json';open(p,'w').wri`, `te('x')"`),
+    J(`python -c "import os;p=os.path.join(os.path.expanduser('~'),'.sbrm-dataverse','plans','x.json');open(p,'w').wri`, `te('x')"`),
+    J(`python -c "import os;p=os.environ['USERPROFILE']+'/.sbrm-'+'dataverse/plans/x.json';open(p,'w').wri`, `te('x')"`),
+    J(`python -c "import os;h=os.path.expanduser('~');open(f'{h}/.sbrm-dataverse/plans/x.json','w').wri`, `te('x')"`),
+    J(`python -c "from pathlib import Path;p=Path.home()/'.sbrm-dataverse'/'plans'/'x.json';p.wri`, `te_text('x')"`),
+    J(`node -e "const os=require('os'),path=require('path'),fs=require('fs');const p=path.join(os.homedir(),'.sbrm-dataverse','plans','x.json');fs.wri`, `teFileSync(p,'x')"`),
+    // an absolute later part wins the join, as the language does it
+    J(`python -c "import os;p=os.path.join('C:/temp','${H}/.sbrm-dataverse/plans/x.json');open(p,'w').wri`, `te('x')"`),
+  ]) assert.match(next(sh(c)).why || '', /engine's own store/, c);
+  assert.match(next(sh(J(`python -c "import os;g=os.path.join('${PLUG}','dataverse','guard','guard.js');open(g,'w').wri`, `te('x')"`))).why || '', /toolkit plugin's files/);
+  // the path module under another name, and a declaration of several names (replay t1e, t1f)
+  for (const c of [
+    J(`node -e "const fs=require('fs'),p=require('path'),os=require('os');fs.wri`, `teFileSync(p.join(os.homedir(),'.sbrm-dataverse','plans','x.json'),'x')"`),
+    J(`node -e "const fs=require('fs'),p=require('path'),os=require('os');fs.wri`, `teFileSync(p.join(os.homedir(),'.sbrm-'+'dataverse','plans','x.json'),'x')"`),
+    J(`python -c "import os.path as osp;open(osp.join(osp.expanduser('~'),'.sbrm-dataverse','plans','x.json'),'w').wri`, `te('x')"`),
+    // (the store's name in pieces from here on: a line spelling the store path out is already stopped by the line rule,
+    // so only the reader's own work can catch these)
+    J(`node -e "const fs=require('fs'),path=require('path'),os=require('os');const a='C:/temp',p=path.join(os.homedir(),'.sbrm-'+'dataverse','plans','x.json');fs.wri`, `teFileSync(p,'x')"`),
+    // a keyword target held in a name bound once, and a pathlib receiver bound once
+    J(`python -c "import os;p=os.path.join(os.path.expanduser('~'),'.sbrm-'+'dataverse','plans','x.json');open(file=p,mode='w').wri`, `te('x')"`),
+    J(`python -c "from pathlib import Path;p=Path.home()/('.sbrm-'+'dataverse')/'plans'/'x.json';p.wri`, `te_text('x')"`),
+  ]) assert.match(next(sh(c)).why || '', /engine's own store/, c);
+  // a joined path into the store's settings folder, even read, is the signing key (replay t2b); dev_dirs.json is not
+  assert.match(next(sh(`python -c "import os;print(open(os.path.expanduser('~/.sbrm-'+'dataverse/config/x'+'.bin')).read())"`)).why || '', /signing key/);
+  assert.equal(next(sh(`python -c "import os;print(open(os.path.join(os.path.expanduser('~'),'.sbrm-dataverse','config','dev_dirs.json')).read())"`)).kind, 'allow');
+  assert.equal(next(sh(J(`python -c "import os,json;p=os.path.expanduser('~/.claude/settings.json');json.dump({},open(p,'w'))"`))).kind, 'block');
+  // the absolute later part wins the other way too: out of the store, nothing protected is written
+  assert.equal(next(sh(J(`python -c "import os;p=os.path.join('~/.sbrm-dataverse','C:/temp/x.json');open(p,'w').wri`, `te('x')"`))).kind, 'allow');
+});
+
+test('inline review G4: an untraceable write target on code naming the store or plugin asks, and never hides a block', () => {
+  const unknownStore = J(`python -c "import sys;p=sys.argv[1];open(p,'w').wri`, `te('x');print('~/.sbrm-dataverse/plans')"`);
+  const r = next(sh(unknownStore));
+  assert.equal(r.kind, 'ask', r.why);
+  assert.match(r.why, /could not tell where/);
+  // a name bound twice, or by a loop, is not followed (its last value is not the one written to)
+  assert.equal(next(sh(J(`python -c "p=input();open(p,'w').wri`, `te('x');p='C:/temp/a';print('~/.sbrm-dataverse')"`))).kind, 'ask');
+  assert.equal(next(sh(J(`python - <<'EOF'\nimport sys\np='C:/temp/a'\nfor p in sys.argv:\n    open(p,'w').wri`, `te('~/.sbrm-dataverse')\nEOF`))).kind, 'ask');
+  // the plugin named in the text, a pathlib receiver the guard cannot read
+  assert.equal(next(sh(J(`python -c "from pathlib import Path;import sys;q=Path(sys.argv[1]);q.wri`, `te_text('${PLUG}')"`))).kind, 'ask');
+  // nothing protected named: allowed, as before
+  assert.equal(next(sh(J(`python -c "import sys;p=sys.argv[1];open(p,'w').wri`, `te('x')"`))).kind, 'allow');
+  // text joined after a known folder lands in that folder (B-...-f78b4b's shape: replay files written in a loop into
+  // the scratchpad, by code that reads the events file)
+  const loop = (target) => J(`python - <<'EOF'\nimport os,json\nD=r"${SCRATCH}/replay"\nev=os.path.expanduser('~/.sbrm-dataverse/events/events.jsonl')\nfor k in ['a','b']:\n    open(${target},'w').wri`, `te(k)\nEOF`);
+  assert.equal(next(sh(loop('f"{D}/{k}.txt"'))).kind, 'allow', next(sh(loop('f"{D}/{k}.txt"'))).why);
+  assert.equal(next(sh(loop("D+'/'+k+'.txt'"))).kind, 'allow');
+  // ... but a join keeps every part known (an absolute later part would win), and home is no folder to judge by
+  assert.equal(next(sh(loop('os.path.join(D,k)'))).kind, 'ask');
+  assert.equal(next(sh(loop("os.path.expanduser('~')+'/'+k"))).kind, 'ask');
+  assert.equal(next(sh(loop("f\"{os.path.expanduser('~')}/.claude/{k}\""))).kind, 'ask');
+  // under the store or the plugin, the folder alone decides
+  assert.match(next(sh(loop("f\"{os.path.expanduser('~/.sbrm-dataverse/plans')}/{k}.json\""))).why || '', /engine's own store/);
+  assert.match(next(sh(loop(`'${PLUG}/dataverse/'+k`))).why || '', /toolkit plugin's files/);
+  // an ask never masks a block later in the same code
+  assert.match(next(sh(J(`python -c "import sys;p=sys.argv[1];open(p,'w').wri`, `te('x');open('~/.sbrm-dataverse/plans/y.json','w').wri`, `te('y')"`))).why || '', /engine's own store/);
+  // nor a block in a later command on the line
+  assert.equal(next(sh(J(`python -c "import sys;open(sys.argv[1],'w');print('~/.sbrm-dataverse')" && echo x > ~/.sbrm-dataverse/plans/z.json`))).kind, 'block');
+});
