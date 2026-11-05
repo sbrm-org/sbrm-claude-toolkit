@@ -56,4 +56,28 @@ function toLocalMidnight(job, columns, behaviours) {
   }
 }
 
-module.exports = { localMidnightUtc, namedDay, toLocalMidnight, TIME_ZONE };
+// A TRUE date-only column (behaviour DateOnly, Edm.Date) has no time zone and takes a bare "YYYY-MM-DD"; Dataverse
+// refuses anything with a time at the write (D-1874, Daian's gift batch 11/4/26: "2026-11-04T08:00:00Z" into the
+// batch's Batch Date, refused only at apply). Midnight UTC names its day unambiguously here (no zone to shift it), so it
+// becomes the bare date; any other time of day is refused at plan: guessing the day from a zoned instant is the 10/14
+// trap the other way round, so the job must say the day. Rewrites in place; returns the refusal reasons.
+function dateOnlyErrors(job, columns, behaviours) {
+  const errs = [];
+  for (const col of Object.values(columns)) {
+    if (col.kind !== 'plain' || col.type !== 'DateTime') continue;
+    const b = behaviours.get(col.attr);
+    if (!b || b.behaviour !== 'DateOnly') continue;
+    for (const r of job.rows) {
+      if (!(col.key in r.body)) continue;
+      const v = r.body[col.key];
+      if (v === null || (typeof v === 'string' && DAY.test(v))) continue;
+      const day = namedDay(v);
+      if (day) { r.body[col.key] = day; continue; }
+      const like = typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : '2026-11-04';
+      errs.push(`${r.name}: ${col.label} takes a date only, like ${like} (it has no time of day or time zone); the job sent ${JSON.stringify(v)}`);
+    }
+  }
+  return errs;
+}
+
+module.exports = { localMidnightUtc, namedDay, toLocalMidnight, dateOnlyErrors, TIME_ZONE };

@@ -7,7 +7,7 @@
 
 const { loadTable, choiceLabels, refTable, dateBehaviours, isChoice, NUMERIC, OWNER, OWNER_SETS } = require('./meta');
 const closedYear = require('./closedyear');
-const { toLocalMidnight } = require('./localdate');
+const { toLocalMidnight, dateOnlyErrors } = require('./localdate');
 const { resolveAccess, TOOLKIT_SETS, LOG_TABLES, APP_DEFINITION_SETS } = require('./access');
 const { BIND_KEY, BIND_VALUE } = require('./contract');
 const { DataverseError } = require('./cli');
@@ -112,9 +112,23 @@ function resolveColumns(table, job) {
       if (!attr[write]) { errs.push(`"${attr.label}" (${key}) cannot be set on ${write}`); continue; }
       col = { key, kind: 'plain', attr: key, readKey: key, type: attr.type, typeName: attr.typeName, label: attr.label };
     }
-    if (byAttr.has(col.attr)) { errs.push(`"${key}" and "${byAttr.get(col.attr)}" both set ${col.label}`); continue; }
-    byAttr.set(col.attr, key);
+    // A polymorphic lookup (Customer, Owner) has one key per target table, all writing one column with one read key.
+    // A job may bind a different arm on each row (a donor batch with contact and account donors, D-1052 / D-1054);
+    // only ONE row setting two arms is refused, below (CONTRACT.md: both arms in one body).
+    if (byAttr.has(col.attr) && !(col.kind === 'lookup' && columns[byAttr.get(col.attr)].kind === 'lookup')) {
+      errs.push(`"${key}" and "${byAttr.get(col.attr)}" both set ${col.label}`); continue;
+    }
+    if (!byAttr.has(col.attr)) byAttr.set(col.attr, key);
     columns[key] = col;
+  }
+  for (const r of job.rows) {
+    const seen = new Map();
+    for (const key of Object.keys(r.body)) {
+      const col = columns[key];
+      if (!col) continue;
+      if (seen.has(col.attr)) errs.push(`${r.name}: "${seen.get(col.attr)}" and "${key}" both set ${col.label}`);
+      else seen.set(col.attr, key);
+    }
   }
 
   // verify: must include every column the job writes (an unverified column has no read-back
@@ -221,7 +235,13 @@ function planJob(dv, job, { envs, access, warnRows }) {
   if (choiceErrs.length) throw new PlanRefused(choiceErrs, 'invalid_job');
   // A date-only, user-local column (a gift's book date) is written as local midnight on the day it names, before
   // the closed-year check reads it and before the plan is signed (lib/localdate.js; batch 2026_863, 10/14/26).
-  if (Object.values(columns).some((c) => c.kind === 'plain' && c.type === 'DateTime')) toLocalMidnight(job, columns, dateBehaviours(dv, table));
+  // A true date-only column takes a bare date (D-1874): refused here, not by Dataverse after the approval.
+  if (Object.values(columns).some((c) => c.kind === 'plain' && c.type === 'DateTime')) {
+    const behaviours = dateBehaviours(dv, table);
+    toLocalMidnight(job, columns, behaviours);
+    const dateErrs = dateOnlyErrors(job, columns, behaviours);
+    if (dateErrs.length) throw new PlanRefused(dateErrs, 'invalid_job');
+  }
 
   const hasState = table.attrs.has('statecode');
   // The closed-year guard (DESIGN.md §8d): the book-date column of a guarded table, from envs.json.
@@ -234,10 +254,13 @@ function planJob(dv, job, { envs, access, warnRows }) {
   const readKeys = [...new Set([...verify.map((v) => v.readKey), ...(hasState ? ['statecode'] : []), table.entity.primaryName, guard, created].filter(Boolean))];
   const rows = [];
   const refused = [];
-  const targetNames = new Map(); // "/set(guid)" -> display name | null when missing
+  const targetNames = new Map(); // "<column key> /set(guid)" -> display name | null when missing
 
+  // Cached per COLUMN and bind (1.11.27 review F1): two arms of one lookup may name the same "/set(guid)", and each arm
+  // must check its own target table.
   const lookupTarget = (col, bind) => {
-    if (targetNames.has(bind)) return targetNames.get(bind);
+    const cacheKey = `${col.key} ${bind}`;
+    if (targetNames.has(cacheKey)) return targetNames.get(cacheKey);
     const [, set, guid] = BIND_VALUE.exec(bind);
     // An Owner lookup points at a user or a team, never at the abstract owner table (meta.js OWNER_SETS, R-1035).
     const owner = col.referenced === OWNER;
@@ -261,7 +284,7 @@ function planJob(dv, job, { envs, access, warnRows }) {
         out = { error: `${col.label}: the linked ${ref.singular.toLowerCase()} ${guid} does not exist` };
       }
     }
-    targetNames.set(bind, out);
+    targetNames.set(cacheKey, out);
     return out;
   };
 

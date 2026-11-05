@@ -86,6 +86,44 @@ test('both arms of a polymorphic lookup in one body are refused', () => {
   } }] })), /both set Company Name/);
 });
 
+// D-1052 / D-1054 (10/9): a donor batch names some gifts' donors as contacts and others as accounts. CONTRACT.md
+// refuses both arms in ONE body; the job as a whole may bind different arms on different rows.
+test('different arms of one polymorphic lookup on different rows plan (contact donor and account donor)', () => {
+  const { plan } = run(job({ mode: 'update', table: 'msnfp_transactions', rows: [
+    { name: 'TRN-2', id: IDS.t2, body: { 'msnfp_customerid_contact@odata.bind': `/contacts(${IDS.jane})` } },
+    { name: 'TRN-3', id: IDS.t3, body: { 'msnfp_customerid_account@odata.bind': `/accounts(${IDS.acme2})` } },
+  ] }));
+  assert.equal(plan.rows.length, 2);
+  assert.deepEqual(plan.refused, []);
+  assert.equal(plan.columns['msnfp_customerid_contact@odata.bind'].read_key, '_msnfp_customerid_value');
+  assert.equal(plan.columns['msnfp_customerid_account@odata.bind'].read_key, '_msnfp_customerid_value');
+  assert.deepEqual(plan.verify.map((v) => v.attr), ['msnfp_customerid'], 'one read-back for the one column');
+  assert.equal(plan.rows[0].changes[0].new, IDS.jane);
+  assert.equal(plan.rows[1].changes[0].new, IDS.acme2);
+});
+
+// 1.11.27 review F1: the lookup check was cached by the bind text alone, so a second row pointing the ACCOUNT arm at
+// the same "/contacts(...)" the first row's contact arm used skipped its own target check and failed only at the write.
+test('each arm checks its own target table, even when an earlier row bound the same record on another arm', () => {
+  const { plan } = run(job({ mode: 'update', table: 'msnfp_transactions', rows: [
+    { name: 'TRN-2', id: IDS.t2, body: { 'msnfp_customerid_contact@odata.bind': `/contacts(${IDS.jane})` } },
+    { name: 'TRN-3', id: IDS.t3, body: { 'msnfp_customerid_account@odata.bind': `/contacts(${IDS.jane})` } },
+  ] }));
+  assert.equal(plan.rows.length, 1);
+  assert.equal(plan.refused.length, 1);
+  assert.match(plan.refused[0].why, /Donor must point at accounts \(accounts\), not contacts/);
+});
+
+test('mixed arms across rows still refuse a row that sets both arms itself', () => {
+  refused(() => run(job({ mode: 'update', rows: [
+    { name: 'Bob Sample', id: IDS.bob, body: { 'parentcustomerid_contact@odata.bind': `/contacts(${IDS.jane})` } },
+    { name: 'Jane Example', id: IDS.jane, body: {
+      'parentcustomerid_account@odata.bind': `/accounts(${IDS.acme})`,
+      'parentcustomerid_contact@odata.bind': `/contacts(${IDS.bob})`,
+    } },
+  ] })), /Jane Example: "parentcustomerid_\w+@odata\.bind" and "parentcustomerid_\w+@odata\.bind" both set Company Name/);
+});
+
 test('verify must cover every written column', () => {
   refused(() => run(job({ mode: 'update', verify: ['address1_line1'], rows: [{ name: 'a', id: IDS.jane, body: { address1_city: 'X' } }] })),
     /leaves out written column\(s\) address1_city/);
@@ -263,4 +301,27 @@ test('book date: a create converts the same way', () => {
 test('a true date-only column (no time zone) keeps its bare date', () => {
   const { plan } = run(job({ mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { birthdate: '1980-05-01' } }] }));
   assert.equal(plan.rows[0].body.birthdate, '1980-05-01');
+});
+
+// D-1874 (Daian, 11/4/26): a gift batch's Batch Date is a TRUE date-only column (Edm.Date). The job sent
+// 2026-11-04T08:00:00Z (local midnight, the gift book-date form), the plan passed it, and Dataverse refused the POST
+// ("Cannot convert the literal ... to the expected type 'Edm.Date'"): an approval spent on a write that could not land.
+const birthJob = (v) => job({ mode: 'update', rows: [{ name: 'Jane Example', id: IDS.jane, body: { birthdate: v } }] });
+
+test('D-1874: a time of day sent into a true date-only column is refused at plan, naming the column and the form', () => {
+  refused(() => run(birthJob('1980-05-01T08:00:00Z')), /Jane Example: Birthday takes a date only, like 1980-05-01/);
+});
+
+test('D-1874: the refusal is the whole job, before any approval (invalid_job)', () => {
+  assert.throws(() => run(birthJob('1980-05-01T13:45:00Z')), (e) => e instanceof PlanRefused && e.code === 'invalid_job');
+});
+
+test('D-1874: midnight UTC on a true date-only column names its day and is sent as the bare date', () => {
+  const { plan } = run(birthJob('1980-05-01T00:00:00Z'));
+  assert.equal(plan.rows[0].body.birthdate, '1980-05-01');
+});
+
+test('D-1874: a user-local date-only column (a gift book date) still takes local midnight', () => {
+  const { plan } = run(bookJob('update', '2099-11-04T08:00:00Z'));
+  assert.equal(plan.rows[0].body.msnfp_bookdate, '2099-11-04T08:00:00Z');
 });

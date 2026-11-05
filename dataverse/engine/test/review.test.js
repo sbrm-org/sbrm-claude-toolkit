@@ -131,6 +131,58 @@ test('toolkit: each state graded against the main the review fetched; worst mach
   assert.equal(brief(s).match(/toolkit 1\.11\.9: [^.]*/)[0], 'toolkit 1.11.9: Alex current, Dylan restart needed, Jordan pending, Sam AUTO-UPDATE NOT PULLING');
 });
 
+// The 10/29/26 review (D-1255 .. D-1556): Daian's check-ins stopped reaching the tables after 10/23 while her other
+// events kept arriving, and the review showed her 6-day-old state as current with no age; a renamed host that had
+// sent nothing since 10/21 still raised the auto-update WARN.
+test('toolkit: a machine line says how old its last check-in is', () => {
+  const s = summarize(toolkitWeek([
+    ci('arivera@example.org', 'Alex Rivera', '2026-10-08T09:00:00', 'ALEX-MAC', '1.11.9', '1.11.9', '1.11.9', 'current'),
+  ]));
+  assert.match(render(s), /Alex Rivera +current 1\.11\.9 +ALEX-MAC, checked 10\/8 9:00 AM \(6 days ago\)/);
+});
+
+test('toolkit: check-ins that stop while the person\'s other events keep arriving are flagged', () => {
+  const s = summarize(toolkitWeek([
+    ci('arivera@example.org', 'Alex Rivera', '2026-10-08T09:00:00', 'ALEX-MAC', '1.11.9', '1.11.9', '1.11.9', 'current'),
+  ], { events: [ev('arivera@example.org', 'Alex Rivera', '2026-10-13T15:00:00', { machine: 'ALEX-MAC' })] }));
+  const out = render(s);
+  assert.match(out, /Alex Rivera +WARN check-ins not arriving: last 10\/8 9:00 AM \(6 days ago\), other events up to 10\/13 3:00 PM/);
+  assert.match(brief(s), /Alex CHECK-INS NOT ARRIVING/);
+  // Check-ins fresh, or no other events since the last one: no flag.
+  const fresh = summarize(toolkitWeek([ci('arivera@example.org', 'Alex Rivera', '2026-10-13T16:00:00', 'ALEX-MAC', '1.11.9', '1.11.9', '1.11.9', 'current')],
+    { events: [ev('arivera@example.org', 'Alex Rivera', '2026-10-13T15:00:00', { machine: 'ALEX-MAC' })] }));
+  assert.ok(!/not arriving/.test(render(fresh)));
+});
+
+// 1.11.27 review F6: once the last check-in was older than the 14-day machine window, the row read "no check-in lately"
+// and the flag was never reached, so the warning vanished exactly when the stoppage had lasted longest.
+test('toolkit: check-ins stopped for longer than the machine window are still flagged while other events arrive', () => {
+  const s = summarize(toolkitWeek([
+    ci('arivera@example.org', 'Alex Rivera', '2026-09-20T09:00:00', 'ALEX-MAC', '1.11.9', '1.11.9', '1.11.9', 'current'),
+  ], { events: [ev('arivera@example.org', 'Alex Rivera', '2026-10-13T15:00:00', { machine: 'ALEX-MAC' })] }));
+  assert.match(render(s), /Alex Rivera +WARN check-ins not arriving: last 9\/20 9:00 AM \(24 days ago\), other events up to 10\/13 3:00 PM/);
+  assert.match(brief(s), /Alex CHECK-INS NOT ARRIVING/);
+  // no other events since: still the quiet line
+  const quiet = summarize(toolkitWeek([ci('arivera@example.org', 'Alex Rivera', '2026-09-20T09:00:00', 'ALEX-MAC', '1.11.9', '1.11.9', '1.11.9', 'current')]));
+  assert.match(render(quiet), /no check-in since 9\/20/);
+});
+
+test('toolkit: a host name with nothing at all in 7 days drops out when the person has a live machine', () => {
+  const s = summarize(toolkitWeek([
+    ci('arivera@example.org', 'Alex Rivera', '2026-10-05T09:00:00', 'Mac.localdomain', '1.11.8', '1.11.8', '1.11.9', 'stale'),
+    ci('arivera@example.org', 'Alex Rivera', '2026-10-13T16:00:00', 'Alexs-MacBook-Air.local', '1.11.9', '1.11.9', '1.11.9', 'current'),
+  ]));
+  const out = render(s);
+  assert.ok(!/Mac\.localdomain|auto-update not pulling/.test(out), out);
+  assert.match(out, /Alex Rivera +current 1\.11\.9 +Alexs-MacBook-Air\.local/);
+  // The same old host with an event in the last 7 days stays.
+  const kept = summarize(toolkitWeek([
+    ci('arivera@example.org', 'Alex Rivera', '2026-10-05T09:00:00', 'Mac.localdomain', '1.11.8', '1.11.8', '1.11.9', 'stale'),
+    ci('arivera@example.org', 'Alex Rivera', '2026-10-13T16:00:00', 'Alexs-MacBook-Air.local', '1.11.9', '1.11.9', '1.11.9', 'current'),
+  ], { events: [ev('arivera@example.org', 'Alex Rivera', '2026-10-12T10:00:00', { machine: 'Mac.localdomain' })] }));
+  assert.match(render(kept), /Mac\.localdomain/);
+});
+
 test('toolkit: three days after a release with no stale proof = not updated; no check-in; quiet machines; ahead of main; install record missing', () => {
   const s = summarize(toolkitWeek([
     ci('arivera@example.org', 'Alex Rivera', '2026-10-10T09:00:00', 'ALEX-MAC', '1.11.9', '1.11.9', '1.11.9', 'current'),

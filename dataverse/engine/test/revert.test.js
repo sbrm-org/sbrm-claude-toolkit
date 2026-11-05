@@ -89,6 +89,21 @@ test('a lookup cleared by the original write is restored to its old record (set 
   assert.equal(dv.data.contacts[IDS.bob]._parentcustomerid_value, IDS.acme);
 });
 
+// The undo of a mixed-arm job is itself a mixed-arm job (each row clears the arm it set), so it must plan too.
+test('a job that set different lookup arms on different rows is undone row by row', () => {
+  const dv = fakeDv();
+  const { id: orig } = applied({ mode: 'update', rows: [
+    { name: 'Jane Example', id: IDS.jane, body: { 'parentcustomerid_account@odata.bind': `/accounts(${IDS.acme})` } },
+    { name: 'Bob Sample', id: IDS.bob, body: { 'parentcustomerid_contact@odata.bind': `/contacts(${IDS.jane})` } },
+  ] }, dv);
+  const { id, plan } = revertOf(orig, dv);
+  assert.deepEqual(plan.rows.find((r) => r.id === IDS.jane).body, { 'parentcustomerid_account@odata.bind': null });
+  assert.deepEqual(plan.rows.find((r) => r.id === IDS.bob).body, { 'parentcustomerid_contact@odata.bind': null });
+  assert.equal(run(id, dv).outcome, 'applied');
+  assert.equal(dv.data.contacts[IDS.jane]._parentcustomerid_value, null);
+  assert.equal(dv.data.contacts[IDS.bob]._parentcustomerid_value, null);
+});
+
 // R-1035: the old owner comes back as a pointer at ITS table (the before image keeps only the id, and the abstract
 // owner table cannot be pointed at), a team as surely as a user.
 test('an owner change is undone back to the old owner, a team or a user', () => {

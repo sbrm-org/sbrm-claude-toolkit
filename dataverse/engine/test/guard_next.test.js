@@ -255,6 +255,30 @@ test('approvals: the exact form still asks; the words in a running position are 
   assert.equal(N.approvalVerdict(A(`git commit -m "node ${own} ${AP}"`)), null);
 });
 
+// D-1444, D-1565, D-1637 (10/26, 10/29): a long-lived session's skill folder lags the guard it runs under, so its
+// Claude writes the approval line on an OLDER version folder's engine. Still refused (the guard asks only for its own
+// engine), but the reason now names the guard's engine and the corrected line instead of "<this plugin>".
+test('an approval line on another toolkit version folder is refused WITH the guard\'s own engine path and the fixed line', () => {
+  const own = (G._internals.ownEngine() || '').replace(/\\/g, '/');
+  const A = (command) => ({ tool_name: 'Bash', tool_input: { command }, permission_mode: 'default' });
+  const old = `${H}/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.11.13/dataverse/engine/dataverse-write.js`;
+  for (const tail of [`${AP} ${ID}`, `${J('res', 'olve')} D-1444 fixed "done"`]) {
+    const v = N.approvalVerdict(A(`node "${old}" ${tail}`));
+    assert.ok(v && v.block, tail);
+    assert.ok(v.block.includes(`node "${own}" ${tail}`), `the fixed line in: ${v.block}`);
+    assert.match(v.block, /older than the guard/);
+    assert.ok(!v.block.includes('<this plugin>'), v.block);
+    assert.ok(N.approvalVerdict(A(`node "${own}" ${tail}`)).ask, 'the guard\'s own engine still asks');
+  }
+  // Not the approval form apart from the folder (a chained command): the general reason, no corrected line offered.
+  const chained = N.approvalVerdict(A(`node "${old}" ${AP} ${ID} && echo ok`));
+  assert.ok(chained && chained.block);
+  assert.ok(!chained.block.includes(own), chained.block);
+  // An engine outside the toolkit's plugin folders is never "corrected" either.
+  const lookalike = N.approvalVerdict(A(`node "C:/Users/x/dev/dataverse/engine/dataverse-write.js" ${AP} ${ID}`));
+  assert.ok(!lookalike || !lookalike.block || !lookalike.block.includes(own));
+});
+
 // Settings files: the iTerm2 case (10/9) and the loading set. A settings file Claude Code loads (here: the project
 // folder's, with that folder as the session's) is diffed as before; the same file in a folder nothing loads from
 // is not a hook (blocks #8, #9).

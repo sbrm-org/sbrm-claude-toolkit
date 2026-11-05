@@ -1595,6 +1595,29 @@ function describe(dv, { mode, set, name, table, id, live, written, unproven, car
 
 // ---------- plan ----------
 
+// A trigger change on a flow that is ON half-lands (live 10/31/26, recovery flow 5be9e73d, plans 20261031-193122-4b1a7df4
+// and 20261031-193233-508efde1): Dataverse re-registers the trigger subscription as part of the save, which moves the
+// flow's version, so the If-Match definition write is then refused (0x80060882) while the NEW trigger filter is already
+// live and the saved definition still holds the OLD one. An actions-only change of an ON flow writes fine (same evening).
+// So a trigger change is made on an OFF flow: three jobs, off, update, on. Plan and apply both refuse it (apply because
+// the flow may have been turned on since the plan). Returns the reason, or null.
+function liveTriggerRefusal(facts, name) {
+  if (facts.set !== 'workflows' || facts.mode !== 'update' || !facts.live_on || !(facts.sections || []).includes('trigger')) return null;
+  return `'${name}' is on, and changing the trigger of a flow that is on half-lands (the platform switches the live trigger, then refuses the saved definition). Turn it off first: three jobs, mode "off", this update, then mode "on". Nothing was written.`;
+}
+
+// The backstop for the same case at apply (10/31): a refused flow write whose trigger subscription changed between a
+// read just before the write and a read after the refusal did change something live. Compared as read, never against
+// this machine's clock (1.11.27 review F8). null = the subscription could not be read (F7: then it is NOT KNOWN).
+function subscriptionStamp(dv, id) {
+  try {
+    const cb = dv.get(filterPath('callbackregistrations', 'callbackregistrationid,name,modifiedon,filteringattributes,message,scope,runas', `name eq '${q(id)}'`)).value || [];
+    return canonical(cb.map((c) => [c.callbackregistrationid, c.modifiedon, c.filteringattributes, c.message, c.scope, c.runas].map((x) => (x === undefined ? null : x))).sort());
+  } catch {
+    return null;
+  }
+}
+
 function title(plan) {
   const c = plan.component;
   const on = c.table ? ` (${c.table})` : '';
@@ -1772,6 +1795,8 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
   if (!atLeast(acc.level, need.level)) {
     throw new PlanRefused([`this change takes admin access in the ${envInfo.name} because ${need.why.join(', and ')}; ${identity.fullname} has ${acc.level}. Ask Dylan.`], 'not_permitted');
   }
+  const onTrigger = liveTriggerRefusal(facts, live ? live.name : job.component.name);
+  if (onTrigger) throw new PlanRefused([onTrigger], 'invalid_job');
 
   const plan = {
     contract: CONTRACT, kind: 'component', env: job.env, host: envInfo.host, app: envInfo.name, mode: job.mode,
@@ -1993,6 +2018,9 @@ function labelOnlyDifference(plan, now, rid) {
   return a.map((x, i) => [x, b[i]]).filter(([x, y]) => x !== y);
 }
 
+const PUBLISH_SETTLE_TRIES = 6;
+const PUBLISH_SETTLE_MS = 3000;
+
 function readBack(dv, plan, rid, sleep) {
   const set = plan.component.set;
   const bad = [];
@@ -2007,11 +2035,23 @@ function readBack(dv, plan, rid, sleep) {
     if (still) bad.push('it is still there');
     return { after: null, bad, notes };
   }
-  const now = readComponent(dv, set, rid);
+  let now = readComponent(dv, set, rid);
   if (!now) return { after: null, bad: ['it could not be read back'], notes };
   if (plan.mode === 'update' || plan.mode === 'create') {
     const fields = plan.mode === 'update' ? plan.sent_fields : SETS[set].fields.filter((f) => !blank(plan.after_definition[f]));
-    let off = fields.filter((f) => canonical(readBackField(set, f, now.definition[f], rid)) !== canonical(readBackField(set, f, plan.after_definition[f], rid)));
+    const offIn = (c) => fields.filter((f) => canonical(readBackField(set, f, c.definition[f], rid)) !== canonical(readBackField(set, f, plan.after_definition[f], rid)));
+    let off = offIn(now);
+    // F-1171 / F-1173 (live 11/5/26): a published view, form or sitemap reads back as it was BEFORE the save for a few
+    // seconds after PublishXml (metadata reads lag a publish), so a change that landed was logged "not written" and its
+    // stale after-state then blocked its own revert. A published component is re-read until it matches, up to ~18 s;
+    // the settled read is the after-state. One that never matches is still a mismatch.
+    for (let i = 0; off.length && plan.publish && i < PUBLISH_SETTLE_TRIES; i += 1) {
+      sleep(PUBLISH_SETTLE_MS);
+      const again = readComponent(dv, set, rid);
+      if (!again) break;
+      now = again;
+      off = offIn(now);
+    }
     if (set === 'systemforms' && off.includes('formxml')) {
       const labels = labelOnlyDifference(plan, now, rid);
       if (labels) {
@@ -2106,6 +2146,9 @@ async function applyComponent(plan, deps, { id, file, fs }) {
       ? `this change takes admin access because ${need.why.join(', and ')}; you have ${acc.level}. Nothing was written.`
       : `your access to the ${plan.app} is now ${acc.level}, not ${need.level}. Nothing was written.`, 'access_revoked');
   }
+  // The flow may have been turned on since the plan: a trigger change on an ON flow is refused here too.
+  const onTrigger = liveTriggerRefusal(d.facts, live ? live.name : plan.component.name);
+  if (onTrigger) throw new ApplyRefused(onTrigger, 'snapshot_moved');
   const sevNow = severityFor(d.facts, plan.severity.warn_rows);
   if (severity.grew(plan.severity, sevNow)) {
     throw new ApplyRefused(['this change is more serious than when it was planned, so it is not shown for approval:', ...sevNow.lines.map((l) => `  ! ${l}`), 'Make a new plan.'].join('\n'), 'severity_grew');
@@ -2133,6 +2176,8 @@ async function applyComponent(plan, deps, { id, file, fs }) {
   const row = { name: view.component.name, id: plan.component.id, set, action: plan.mode, changes: changesFor(view), before: stateOf(live), after: null, notes: [] };
   let rid = plan.component.id;
   let wrote = false;
+  const flowUpdate = set === 'workflows' && plan.mode === 'update';
+  const subBefore = flowUpdate ? subscriptionStamp(dv, rid) : null;
   try {
     if (plan.mode === 'create') {
       const res = dv.create(set, body, { solution: plan.solution.uniquename });
@@ -2159,7 +2204,14 @@ async function applyComponent(plan, deps, { id, file, fs }) {
     row.outcome = problems.length ? `read-back mismatch: ${problems.join('; ')}` : 'written';
   } catch (e) {
     if (!wrote && isConnectionRefusal(e)) row.outcome = `refused: ${connectionRefusalText(view)}`;
-    else if (!wrote && e && e.code === '0x80060882') row.outcome = 'failed: the component changed between the check and the write; nothing was written to it';
+    else if (!wrote && e && e.code === '0x80060882' && flowUpdate) {
+      const subAfter = subscriptionStamp(dv, rid);
+      if (subBefore === null || subAfter === null) {
+        row.outcome = 'failed: the flow write was refused (version conflict), and its trigger subscription could not be read, so it is NOT KNOWN whether the live trigger changed. Check the trigger in the designer before re-planning';
+      } else if (subAfter !== subBefore) {
+        row.outcome = 'failed: PARTLY WRITTEN: the live trigger changed, the saved definition did not (the platform re-registered the trigger, then refused the definition write). Turn the flow off, re-plan the update on the off flow, then turn it on';
+      } else row.outcome = 'failed: the component changed between the check and the write; nothing was written to it';
+    } else if (!wrote && e && e.code === '0x80060882') row.outcome = 'failed: the component changed between the check and the write; nothing was written to it';
     else row.outcome = `failed: ${e.message}`;
     try { row.after = wrote ? stateOf(readComponent(dv, set, rid)) : stateOf(live); } catch { row.after = null; }
   }
