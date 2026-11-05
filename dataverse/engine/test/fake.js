@@ -72,8 +72,11 @@ const ATTRS = {
     A('donotemail', 'Boolean', 'Do not allow Emails'),
     A('yomifullname', 'String', 'Yomi Full Name', { AttributeOf: 'fullname' }),
     A('createdon', 'DateTime', 'Created On', { IsValidForCreate: false, IsValidForUpdate: false, ...DT_STAMP }),
-    // stands in for a gift's book date in the closed-year tests; a true date-only column (no time zone), as in Dataverse
+    // a true date-only column (no time zone), as in Dataverse: takes a bare date (D-1874)
     A('birthdate', 'DateTime', 'Birthday', DT_DATEONLY),
+    // stands in for a gift's book date in the closed-year tests: date only, user local, like msnfp_bookdate. Until
+    // 11/5/26 those tests used birthdate, whose true date-only form cannot hold the local-midnight instants they send.
+    A('sbrm_bookdate', 'DateTime', 'Book Date', DT_LOCALDATE),
   ],
   account: [
     A('accountid', 'Uniqueidentifier', 'Account', { IsValidForUpdate: false }),
@@ -100,6 +103,11 @@ const NAVS = {
     { ReferencingAttribute: 'ownerid', ReferencedEntity: 'owner', ReferencingEntityNavigationPropertyName: 'ownerid' },
   ],
   account: [],
+  // The gift's Donor is a Customer lookup: an account arm and a contact arm, as live (D-1054, b860 gift fixes).
+  msnfp_transaction: [
+    { ReferencingAttribute: 'msnfp_customerid', ReferencedEntity: 'account', ReferencingEntityNavigationPropertyName: 'msnfp_customerid_account' },
+    { ReferencingAttribute: 'msnfp_customerid', ReferencedEntity: 'contact', ReferencingEntityNavigationPropertyName: 'msnfp_customerid_contact' },
+  ],
 };
 
 const OPT = (Value, s) => ({ Value, Label: L(s) });

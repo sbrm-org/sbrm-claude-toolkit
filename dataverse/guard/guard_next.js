@@ -1807,15 +1807,35 @@ function verdict(input, dirs = I.devDirs(), { popup = I.popupOpen } = {}) {
   return null;
 }
 
+// The engine named by a `node "<path>" apply|resolve ...` line, when that path is another VERSION FOLDER of this
+// toolkit's own plugin install (D-1444, D-1565, D-1637: a long-lived session's skill folder lags the guard it runs
+// under). -> { line } = the same line on the guard's own engine, when that line is exactly the approval form; else null.
+const OTHER_ENGINE = /^\s*node(?:\.exe)?\s+(["']?)([^"'\s]*?[\\/]\.claude[\\/]plugins[\\/](?:cache|marketplaces)[\\/]sbrm-claude-toolkit[\\/][^"']*?[\\/]dataverse[\\/]engine[\\/]dataverse-write\.js)\1(?=\s)/i;
+function otherFolderEngine(command, own) {
+  const m = OTHER_ENGINE.exec(command);
+  if (!m || !own) return null;
+  const ownFwd = own.replace(/\\/g, '/');
+  if (I.norm(m[2]).toLowerCase() === I.norm(ownFwd).toLowerCase()) return null;
+  const line = `node "${ownFwd}"${command.slice(m[0].length)}`.trim();
+  return G.approvalCommand(line, own) ? { line } : null;
+}
+
 // null (not an approval), { block }, or { ask: { verb, keys } } (unchanged from guard.js except that the apply
 // words in a NON-running position are not refused).
 function approvalVerdict(input, { engine } = {}) {
   const tool = String(input.tool_name || '');
   if (tool !== 'Bash' && tool !== 'PowerShell') return null;
   const command = String((input.tool_input || {}).command || '');
-  const ap = G.approvalCommand(command, engine === undefined ? I.ownEngine() : engine);
+  const own = engine === undefined ? I.ownEngine() : engine;
+  const ap = G.approvalCommand(command, own);
   const shell = tool === 'PowerShell' ? 'ps' : 'posix';
-  if (!ap) return applyRunsText(command, [shell]) ? { block: MSG.apply } : null;
+  if (!ap) {
+    if (!applyRunsText(command, [shell])) return null;
+    const fix = otherFolderEngine(command, own);
+    // Still refused (only the guard's own engine is asked about); the reason now says which engine that is.
+    if (fix) return { block: `an apply or resolve on another toolkit version folder's engine: this session's skill folder is older than the guard it runs under. Run it again, as its own command, on the guard's own engine: ${fix.line}` };
+    return { block: MSG.apply };
+  }
   if (input.agent_id || input.agent_type) return { block: 'an apply from a subagent (the main session runs applies, so the person sees Claude Code\'s prompt)' };
   const mode = input.permission_mode;
   if (!I.ASK_MODES.has(mode)) {

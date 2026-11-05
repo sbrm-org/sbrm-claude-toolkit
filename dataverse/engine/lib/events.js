@@ -163,29 +163,79 @@ function pendingFor(env) {
     .sort();
 }
 
-// Send this environment's pending events (and the machine's). Stops at the first failure (the rest
-// would fail the same way) and leaves everything unsent in place. Returns { sent, left, error }.
+const PARK_AFTER = 3;
+const PROBE_AHEAD = 5; // how many later files a failure is probed against before the app counts as down
+const parkedDir = () => store.dir(path.join('events', 'parked'));
+const triesFile = () => path.join(store.dir('events'), 'tries.json');
+function readTries() {
+  try { return JSON.parse(fs.readFileSync(triesFile(), 'utf8')); } catch { return {}; }
+}
+
+// Send this environment's pending events (and the machine's), in name order. A failure is PROBED against the next
+// file (D-1255 .. D-1482, 10/29/26: one check-in that could never send held every later check-in on that machine):
+//   - the next file sends: the failure is that file's own (too big, malformed), so it is skipped, a try is counted,
+//     and the queue goes on; at PARK_AFTER such tries it moves to events/parked/ (kept here, counted by the health
+//     check, never sent again by itself);
+//   - none of the next PROBE_AHEAD files sends, or there is none: the app or the connection is down, so stop and count nothing (the
+//     rest would fail the same way).
+// Returns { sent, left, error, skipped, parked }; `error` is set only when the queue stopped.
 function flush(conn, env) {
   const files = pendingFor(env);
+  const tries = readTries();
+  const skipped = [];
+  const parked = [];
   let sent = 0;
-  for (const f of files) {
+  let stopped = null;
+  const send = (f) => {
     const file = path.join(pendingDir(), f);
     try {
       conn.createEvent(rowFor(JSON.parse(fs.readFileSync(file, 'utf8'))));
     } catch (err) {
-      if (!isDuplicateKey(err)) return { sent, left: files.length - sent, error: err.message };
+      if (!isDuplicateKey(err)) return err;
     }
     fs.rmSync(file, { force: true });
+    delete tries[f];
     sent += 1;
+    return null;
+  };
+  for (let i = 0; i < files.length; i++) {
+    const err = send(files[i]);
+    if (!err) continue;
+    // Probe ahead (1.11.27 review F2: two bad files in a row used to read as an outage): the first later file that
+    // sends shows every failure before it is that file's own; if none of the next PROBE_AHEAD sends, the app is down.
+    const failed = [[files[i], err]];
+    let ok = -1;
+    for (let j = i + 1; j < files.length && j <= i + PROBE_AHEAD; j++) {
+      const e = send(files[j]);
+      if (!e) { ok = j; break; }
+      failed.push([files[j], e]);
+    }
+    if (ok < 0) { stopped = err.message; break; }
+    i = ok; // the probe that sent
+    for (const [f, e] of failed) {
+      const n = ((tries[f] && tries[f].n) || 0) + 1;
+      tries[f] = { n, error: String(e.message).slice(0, 300), at: new Date().toISOString() };
+      if (n >= PARK_AFTER) {
+        fs.renameSync(path.join(pendingDir(), f), path.join(parkedDir(), f));
+        delete tries[f];
+        parked.push(f);
+      } else skipped.push(f);
+    }
   }
-  return { sent, left: 0, error: null };
+  try { fs.writeFileSync(triesFile(), JSON.stringify(tries), 'utf8'); } catch { /* counting is best effort */ }
+  const left = pendingFor(env).length;
+  return { sent, left, error: stopped, skipped, parked };
 }
 
 function pendingCount() {
   return fs.readdirSync(pendingDir()).filter((f) => f.endsWith('.json')).length;
 }
 
+function parkedCount() {
+  return fs.readdirSync(parkedDir()).filter((f) => f.endsWith('.json')).length;
+}
+
 module.exports = {
-  newRun, record, flush, rowFor, eventConnection, isSignal, pendingFor, pendingCount, versions,
-  SIGNAL, EVENT_SET, ENGINE_VERSION,
+  newRun, record, flush, rowFor, eventConnection, isSignal, pendingFor, pendingCount, parkedCount, versions,
+  SIGNAL, EVENT_SET, ENGINE_VERSION, PARK_AFTER,
 };

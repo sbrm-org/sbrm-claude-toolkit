@@ -387,6 +387,7 @@ test('levels: write refused; develop ok; adding or swapping a connection referen
   for (const mk of [swap, add, trig]) {
     const dev = dvAs('dev');
     await refused(C.planComponent(dev, valid(mk(dev)), ctx()), /this change takes admin access in the Donor App because/, 'not_permitted');
+    if (mk === trig) continue; // an admin's trigger change on an ON flow is refused outright (10/31; test below)
     const adm = dvAs('admin');
     const p = await C.planComponent(adm, valid(mk(adm)), ctx());
     assert.equal(p.need, 'admin');
@@ -555,6 +556,36 @@ test('H-1016: a form read back with only a label changed is written, with the la
   assert.doesNotMatch(r4.rows[0].notes.join(' '), /label read back/);
 });
 
+// F-1171 / F-1173 (live 11/5/26, Donor App Dev, plans 20261105-142645-4bf7ac1c and 20261105-143545-0bc16b8e): a form
+// relabel saved and published, but the read-back right after the publish still returned the form as it was BEFORE, so
+// a change that landed was logged "read-back mismatch, 0 done" both ways, and the plan's stale after-state then made
+// its own revert refuse. The read-back of a published component waits for the publish to show through.
+test('F-1171: a published form read back before the publish shows through is re-read until it settles; the settled form is the after-state', async () => {
+  const formJob = (dv, formxml) => valid(job({ component: { set: 'systemforms', id: IDS.form, name: 'SBRM Donor: Contact' }, mode: 'update', definition: { formxml }, snapshot_hash: live(dv, 'systemforms', IDS.form).hash, intent: { verb: 'update', component: 'form', name: 'SBRM Donor: Contact', changed: ['other'] } }));
+  const relabeled = FORM.replace('description="Last Name"', 'description="Surname (Legal)"');
+  const run = async (over) => {
+    const dv = dvAs('dev');
+    Object.assign(dv, over);
+    let slept = 0;
+    const { res } = await applied(await C.planComponent(dv, formJob(dv, relabeled), ctx()), dv, { sleep: () => { slept += 1; } });
+    return { res, slept };
+  };
+  // two stale reads, then the published form: written, and the row's after-state is the form as sent
+  const { res, slept } = await run({ publishLag: 2 });
+  assert.equal(res.rows[0].outcome, 'written');
+  assert.equal(res.outcome, 'applied');
+  assert.ok(slept >= 2, 'waited for the publish');
+  assert.match(res.rows[0].after.definition.formxml, /description="Surname \(Legal\)"/);
+  // no lag: no waiting at all
+  const fast = await run({});
+  assert.equal(fast.res.rows[0].outcome, 'written');
+  assert.equal(fast.slept, 0);
+  // a save that never shows through within the wait is still a mismatch (never assumed written)
+  const never = await run({ publishLag: 1000 });
+  assert.match(never.res.rows[0].outcome, /read-back mismatch: the definition read back differs from what was sent \(formxml\)/);
+  assert.ok(never.slept > 0 && never.slept <= 10, 'a bounded wait');
+});
+
 test('apply a form change: publishes the form\'s table; a sitemap change publishes that sitemap only', async () => {
   const dv = dvAs('dev');
   const s = live(dv, 'systemforms', IDS.form);
@@ -590,13 +621,77 @@ test('flow PATCH carries trigger concurrency forward (it can never be removed), 
 });
 
 test('a flow change whose trigger subscription does not re-register is reported, not called written', async () => {
+  // An actions change on an ON flow, whose subscription the platform re-registers from a stale definition.
   const dv = dvAs('admin');
-  const plan = await C.planComponent(dv, valid(flowJob(dv, flowCd({ filter: 'msnfp_amount,statecode', note: 'Also on status.' }), { changed: ['trigger', 'notes'] })), ctx());
-  dv.staleSubscription = true;
+  const cd = flowCd();
+  cd.properties.definition.actions.Compose_total.inputs = 'changed';
+  const plan = await C.planComponent(dv, valid(flowJob(dv, cd, { changed: ['actions'] })), ctx());
+  dv.subscriptionScope = 1;
   let slept = 0;
   const { res } = await applied(plan, dv, { sleep: () => { slept += 1; } });
-  assert.match(res.rows[0].outcome, /read-back mismatch: the trigger is not live as the definition says \(msnfp_transaction, filter msnfp_amount,statecode; registered: filter msnfp_amount\)/);
+  assert.match(res.rows[0].outcome, /read-back mismatch: the trigger is not live as the definition says \(msnfp_transaction, filter msnfp_amount; registered: scope 1 \(the definition says 4\)\)/);
   assert.equal(slept, 9, 'polled ~30 s before saying so');
+});
+
+// Live 10/31/26 (recovery flow 5be9e73d, plans 20261031-193122-4b1a7df4 and -193233-508efde1): a trigger change on an
+// ON flow re-registered the live trigger, then the definition write was refused, and the apply said "nothing was written".
+test('10/31: a trigger change on a flow that is ON is refused at plan, and at apply when the flow was turned on since', async () => {
+  const dv = dvAs('admin');
+  const trig = flowJob(dv, flowCd({ filter: 'msnfp_amount,statecode', note: 'Also on status.' }), { changed: ['trigger', 'notes'] });
+  await refused(C.planComponent(dv, valid(trig), ctx()), /'Add Soft Credit' is on, and changing the trigger of a flow that is on half-lands .*Turn it off first: three jobs, mode "off", this update, then mode "on"/, 'invalid_job');
+  // planned while off, turned on before the apply: refused before any write, no pop-up
+  const f = dvAs('admin');
+  const off = flowJob(f, flowCd({ filter: 'msnfp_amount,statecode', note: 'Also on status.', refs: { shared_commondataserviceforapps: REF('sbrm_dataverse_owner2') } }), { changed: ['trigger', 'notes'], id: IDS.offflow, name: 'Sync Letters' });
+  const p = await C.planComponent(f, valid(off), ctx());
+  f.touch('workflows', IDS.offflow, { statecode: 1, statuscode: 2 });
+  await assert.rejects(applied(p, f, { confirm: () => { throw new Error('no pop-up'); } }), (e) => e.code === 'snapshot_moved' && /'Sync Letters' is on, and changing the trigger/.test(e.message));
+  assert.equal(nonGets(f).length, 0, 'nothing written');
+  // the same change on the flow while it stays off applies
+  const g = dvAs('admin');
+  const p2 = await C.planComponent(g, valid(flowJob(g, flowCd({ filter: 'msnfp_amount,statecode', note: 'Also on status.', refs: { shared_commondataserviceforapps: REF('sbrm_dataverse_owner2') } }), { changed: ['trigger', 'notes'], id: IDS.offflow, name: 'Sync Letters' })), ctx());
+  assert.equal((await applied(p2, g)).res.outcome, 'applied');
+});
+
+test('10/31 backstop: a refused flow write whose trigger was re-registered during it says PARTLY WRITTEN, never "nothing was written"', async () => {
+  const dv = dvAs('admin');
+  const cd = flowCd();
+  cd.properties.definition.actions.Compose_total.inputs = 'changed';
+  const plan = await C.planComponent(dv, valid(flowJob(dv, cd, { changed: ['actions'] })), ctx());
+  dv.reRegisterThenConflict = true;
+  const { res } = await applied(plan, dv);
+  assert.equal(res.outcome, 'applied with problems');
+  assert.match(res.rows[0].outcome, /^failed: PARTLY WRITTEN: the live trigger changed, the saved definition did not/);
+  assert.doesNotMatch(res.rows[0].outcome, /nothing was written/);
+  // a plain version conflict (someone saved the flow meanwhile, no re-registration) keeps "nothing was written"
+  const quiet = dvAs('admin');
+  const p2 = await C.planComponent(quiet, valid(flowJob(quiet, cd, { changed: ['actions'] })), ctx());
+  const realUpdate = quiet.update;
+  quiet.update = (set, id, body, etag) => { quiet.touch(set, id, {}); return realUpdate(set, id, body, etag); };
+  const r2 = (await applied(p2, quiet)).res;
+  assert.match(r2.rows[0].outcome, /failed: the component changed between the check and the write; nothing was written to it/);
+});
+
+// 1.11.27 review F7 + F8: the backstop compared the server's modifiedon with this machine's clock (1 s tolerance), so a
+// subscription touched just BEFORE the write read as moved by it, and a failed read said "nothing was written". The
+// subscription is now read before the write and again after the refusal; unreadable either time = NOT KNOWN.
+test('10/31 backstop: a subscription changed just before the write is not blamed on it; an unreadable one is NOT KNOWN', async () => {
+  const cd = flowCd();
+  cd.properties.definition.actions.Compose_total.inputs = 'changed';
+  // touched a moment before the write (modifiedon = now), then an ordinary conflict: nothing was written
+  const dv = dvAs('admin');
+  const p = await C.planComponent(dv, valid(flowJob(dv, cd, { changed: ['actions'] })), ctx());
+  for (const c of dv.data.callbackregistrations) if (c.name === IDS.flow) c.modifiedon = new Date().toISOString();
+  const real = dv.update;
+  dv.update = (set, id, body, etag) => { dv.touch(set, id, {}); return real(set, id, body, etag); };
+  assert.match((await applied(p, dv)).res.rows[0].outcome, /nothing was written to it/);
+  // re-registered, then the subscription cannot be read back: never "nothing was written"
+  const u = dvAs('admin');
+  const p2 = await C.planComponent(u, valid(flowJob(u, cd, { changed: ['actions'] })), ctx());
+  u.reRegisterThenConflict = true;
+  u.subscriptionReadsFail = true;
+  const out = (await applied(p2, u)).res.rows[0].outcome;
+  assert.match(out, /^failed: the flow write was refused .*NOT KNOWN whether the live trigger changed/);
+  assert.doesNotMatch(out, /nothing was written/);
 });
 
 test('turning a flow on: a 403 ConnectionAuthorizationFailed comes back as who has to turn it on', async () => {

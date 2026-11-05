@@ -53,7 +53,8 @@ function parseCheckin(detail) {
 // The Toolkit block (1.11.9, DESIGN.md §12d): each person's latest check-in per machine, graded against the
 // main the reviewer fetched (else the newest version seen anywhere). Replaces 1.11.6's "behind" line, which
 // learned a version only when someone wrote or was refused.
-const RANK = ['stale', 'old', 'restart', 'pending', 'missing', 'ahead', 'current'];
+const RANK = ['blocked', 'stale', 'old', 'restart', 'pending', 'missing', 'ahead', 'current'];
+const DROP_DAYS = 7;
 function gradeToolkit({ now, people, checkins, events, toolkit, main, machineDays, pendingDays }) {
   const seen = [...checkins.flatMap((c) => [c.running, c.installed, c.main]), ...events.map((e) => toolkitOf(e.versions)), toolkit];
   const fetched = main && isVersion(main.version);
@@ -76,22 +77,43 @@ function gradeToolkit({ now, people, checkins, events, toolkit, main, machineDay
     }
     return { rank: 'current', short: 'current', text: `current ${mainV}` };
   };
+  // How old a check-in is, said once it is a day or more (10/29/26: a 6-day-old state read as current).
+  const ago = (t) => {
+    const d = Math.floor((now - new Date(t)) / DAY);
+    return d >= 1 ? ` (${d} day${d === 1 ? '' : 's'} ago)` : '';
+  };
   const rows = people.map((p) => {
     const mine = checkins.filter((c) => c.email === p.email).sort((a, b) => new Date(a.time) - new Date(b.time));
     if (!mine.length) return { name: p.name, lastSeen: p.lastSeen, rank: 'none', short: 'no check-in', text: 'no check-in (not set up, or a toolkit before 1.11.9)' };
+    const theirs = events.filter((e) => e.email === p.email && e.code !== 'checkin');
     const latest = {};
     for (const c of mine) latest[c.machine || ''] = c;
     const machines = Object.values(latest);
     const live = machines.filter((c) => now - new Date(c.time) <= machineDays * DAY);
+    // Check-ins stopped while the person's other events keep arriving (Daian, 10/23-10/29/26): a check-in stuck at the
+    // head of that machine's queue (events.flush now sets one aside), not a quiet person. Checked BEFORE the machine
+    // window (1.11.27 review F6), or the flag vanished once the stoppage outlasted it.
+    const lastCheckin = new Date(mine[mine.length - 1].time);
+    const lastOther = theirs.length ? new Date(Math.max(...theirs.map((e) => new Date(e.time)))) : null;
+    const stopped = now - lastCheckin > DAY && lastOther && lastOther - lastCheckin > DAY;
+    const blocked = (state) => ({ name: p.name, lastSeen: p.lastSeen, rank: 'blocked', short: 'CHECK-INS NOT ARRIVING',
+      text: `WARN check-ins not arriving: last ${when(lastCheckin)}${ago(lastCheckin)}, other events up to ${when(lastOther)}; a check-in may be stuck in that machine's queue (its health check lists any set aside). Last state: ${state}` });
     if (!live.length) {
       const last = new Date(Math.max(...machines.map((c) => new Date(c.time))));
-      return { name: p.name, lastSeen: p.lastSeen, rank: 'quiet', short: 'no check-in lately', text: `no check-in since ${md(last)} (${machines.map((c) => c.machine).join(', ')})` };
+      const quietText = `no check-in since ${md(last)} (${machines.map((c) => c.machine).join(', ')})`;
+      if (stopped) return blocked(quietText);
+      return { name: p.name, lastSeen: p.lastSeen, rank: 'quiet', short: 'no check-in lately', text: quietText };
     }
-    const graded = live.map((c) => ({ c, ...grade(c) })).sort((a, b) => RANK.indexOf(a.rank) - RANK.indexOf(b.rank));
+    // A host name with nothing at all (no check-in, no other event) in DROP_DAYS drops out while the person has another
+    // machine that is live: a Mac that renamed itself (Mac.localdomain, 10/21/26) is one machine, not a stale second.
+    const activity = (c) => Math.max(new Date(c.time), ...theirs.filter((e) => e.machine === c.machine).map((e) => new Date(e.time)));
+    const recent = live.filter((c) => now - activity(c) <= DROP_DAYS * DAY);
+    const graded = (recent.length ? recent : live).map((c) => ({ c, ...grade(c) })).sort((a, b) => RANK.indexOf(a.rank) - RANK.indexOf(b.rank));
     const worst = graded[0];
     const text = graded.length === 1
-      ? `${worst.text}   ${worst.c.machine}, checked ${when(worst.c.time)}`
-      : graded.map((g) => `${g.c.machine}: ${g.text}`).join('; ');
+      ? `${worst.text}   ${worst.c.machine}, checked ${when(worst.c.time)}${ago(worst.c.time)}`
+      : graded.map((g) => `${g.c.machine}: ${g.text}${ago(g.c.time)}`).join('; ');
+    if (stopped) return blocked(text);
     return { name: p.name, lastSeen: p.lastSeen, rank: worst.rank, short: worst.short, text };
   });
   return { main: mainV, source: fetched ? 'fetched now' : 'newest seen; GitHub not reachable', out, rows };

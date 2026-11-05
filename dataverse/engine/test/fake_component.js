@@ -225,6 +225,10 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
     formLabelOnSave: null, // [sent, stored]: a form label the platform stores differently (H-1016)
     formTextOnSave: null, // [sent, stored]: any other form text the platform stores differently
     failReads: null, // an id whose reads fail with something other than "does not exist", once anything was written
+    // F-1171 (live 11/5/26, Donor App Dev): after a form save + publish, the next reads by id still return the definition
+    // as it was BEFORE the save, for a few seconds. `publishLag: n` serves the pre-save row to the next n reads by id.
+    publishLag: 0,
+    lagged: new Map(),
     touch(set, id, patch) { Object.assign(d[set][id], patch); bump(set, id); },
     get(p, opts = {}) {
       calls.push({ method: 'GET', path: p, formatted: !!opts.formatted });
@@ -249,7 +253,9 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
       }
       if ((m = /^(workflows|savedqueries|systemforms|sitemaps)\(([0-9a-f-]{36})\)\?\$select=(.*)$/.exec(p))) {
         if (dv.failReads === m[2] && calls.some((c) => c.method !== 'GET')) throw new DataverseError('The service is temporarily unavailable', { code: '0x80072322', status: 503 });
-        const rec = d[m[1]][m[2]];
+        const lag = dv.lagged.get(`${m[1]}/${m[2]}`);
+        let rec = d[m[1]][m[2]];
+        if (lag && lag.left > 0) { lag.left -= 1; rec = lag.row; }
         if (!rec) throw notFound();
         const out = { '@odata.etag': tag(m[1], m[2]) };
         for (const k of m[3].split(',')) {
@@ -260,6 +266,8 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
       }
       if ((m = /^([a-z_]+)\?\$select=([^&]+)&\$filter=(.*)$/.exec(p))) {
         const set = m[1];
+        // `subscriptionReadsFail`: trigger subscriptions cannot be read once anything was written (1.11.27 review F7)
+        if (set === 'callbackregistrations' && dv.subscriptionReadsFail && calls.some((c) => c.method !== 'GET')) throw new DataverseError('The service is temporarily unavailable', { code: '0x80072322', status: 503 });
         const rows = ID_COL[set] ? Object.values(d[set]) : d[set];
         if (!rows) throw new DataverseError(`Resource not found for the segment '${set}'.`);
         const keep = matcher(decodeURIComponent(m[3]));
@@ -282,6 +290,17 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
       const rec = d[set] && d[set][id];
       if (!rec) throw notFound();
       if (etag !== tag(set, id)) throw new DataverseError('version mismatch', { code: '0x80060882' });
+      if (dv.publishLag) dv.lagged.set(`${set}/${id}`, { row: { ...rec }, left: dv.publishLag });
+      // Live 10/31/26 (recovery flow 5be9e73d): the platform re-registered the trigger from the NEW definition, which
+      // moved the version, then refused the definition write. `reRegisterThenConflict` models it.
+      if (set === 'workflows' && dv.reRegisterThenConflict && body.clientdata) {
+        const keep = rec.clientdata;
+        rec.clientdata = body.clientdata;
+        register(dv, id);
+        rec.clientdata = keep;
+        bump(set, id);
+        throw new DataverseError('version mismatch', { code: '0x80060882' });
+      }
       if (set === 'workflows') {
         const activates = body.statecode === 1 || 'ownerid@odata.bind' in body;
         if (activates && dv.connectionOwnerOnly) {

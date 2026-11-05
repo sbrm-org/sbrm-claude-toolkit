@@ -184,6 +184,9 @@ function doctor(deps) {
   const p = deps.pending();
   if (p.events || p.logs) add('Waiting on this machine', 'fail', `${p.logs} Write Log row(s) and ${p.events} event(s) not yet sent`, 'they go up the next time this machine reaches that app; if they are still here after a passing sign-in, tell Dylan');
   else add('Waiting on this machine', 'ok', 'nothing');
+  // An event that failed on its own three times while the ones behind it sent (events.flush) is set aside, so it no
+  // longer holds the queue; it stays on this machine for Dylan to look at.
+  if (p.parked) add('Set aside on this machine', 'fail', `${p.parked} event(s) that failed to send three times while later ones went up`, 'tell Dylan: they are kept in the store\'s events/parked folder and are not sent again on their own');
 
   // 6. drift (D4a)
   const drift = scanDrift(deps.io);

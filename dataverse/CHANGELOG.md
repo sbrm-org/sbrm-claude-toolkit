@@ -3,6 +3,79 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.27** (2026-11-05) **The `dataverse` skill points donor-app work at the
+  shared context (DESIGN ⚖3 of `Donor App Shared Context`, cutover 11/3/26).** One paragraph: where a clone of
+  `sbrm-org/donor-app-context` exists, run `ctx start` before a donor-app job and save what is learned as an entry.
+  Text only; no engine change.
+- **1.11.27** (2026-11-05) **A records job may bind a DIFFERENT arm of one
+  polymorphic lookup on each row (D-1052, D-1054).** A donor batch with some gifts' donors as contacts and others as
+  accounts was refused whole ("msnfp_customerid_contact@odata.bind and msnfp_customerid_account@odata.bind both set
+  Donor") because `resolveColumns` checked the union of body keys across the job; both hits on 10/9 were split into a
+  contact job and an account job (an extra plan and an extra approval each). Now two lookup keys for one column share
+  it across the job, and the refusal is per ROW: a row that sets both arms is still refused, naming the row (CONTRACT.md
+  "both arms of a polymorphic lookup in one body"). A plain column and a lookup never share a column. The consumers
+  already work per row and per key: the plan's changes, apply's re-check and read-back (one read key,
+  `_<attr>_value`, for every arm), and revert (the undo of a mixed job clears each row's own arm, itself a mixed job).
+  Tests first (4 new: plan on msnfp_transactions, apply, revert, the same-row refusal inside a mixed job; the fake's
+  gift table now carries its two Donor arms); both mutants (the old job-wide refusal; no per-row check) killed. Engine
+  suite 886 (885 pass, 1 skipped), guard self-test 247.
+  **Also in this release: an approval line on an OLDER toolkit version folder's engine is told the guard's own line
+  (D-1444, D-1565, D-1637).** A long-lived session's skill folder lags the guard it runs under (1.11.13 path under a
+  1.11.16 guard, 1.11.16 under 1.11.25), and the refusal printed "<this plugin>", so the person's Claude had to guess
+  (each recovered within minutes by re-planning). Still refused, nothing newly allowed: when the line is exactly the
+  approval form apart from the folder, the reason now names the folder as older than the guard and gives the same line
+  on the guard's own engine (`guard_next.js` `otherFolderEngine`). A chained or otherwise malformed line, or an engine
+  outside the toolkit's plugin folders, keeps the general reason. SKILL.md step 5: run the line the guard gives.
+  Test-first in `guard_next.test.js` (apply and resolve on an old folder; the own engine still asks; chained and
+  look-alike get no corrected line); mutant killed; `replay_shadow.js --allowed` 247 rows, 0 newly stopped.
+  **Also: one event that can never send no longer holds a machine's queue, and the review says when check-ins stop
+  (D-1255, D-1352, D-1482; Daian, 10/23-10/29).** Her check-ins stopped reaching the tables after 10/23 while her
+  donor-app and HGS events kept arriving: `flush` sends in name order and stopped at the first failure, and
+  `machine--` check-ins sort after `donorapp--` / `hgs--`, so one bad check-in at their head would hold every later one
+  (the hypothesis; her machine was not read). Now a failure is probed against the NEXT file: if that one sends, the
+  failure is the file's own, the queue goes on and a try is counted (`events/tries.json`); three such tries move it to
+  `events/parked/`, kept on the machine and listed by the health check ("Set aside on this machine"); if the next one
+  fails too, or there is none, the app is unreachable and the queue stops with nothing counted, as before. A run whose
+  own event was skipped no longer says "Recorded". The review's Toolkit block now says how old a check-in is
+  ("checked 10/8 9:00 AM (6 days ago)"), flags a person whose check-ins stopped while their other events arrive
+  (`WARN check-ins not arriving`, brief: `CHECK-INS NOT ARRIVING`), and drops a host name with nothing at all in 7
+  days while the person has another live machine (Mac.localdomain). Tests first: `events_flush.test.js` (4: not
+  blocking, parking after 3, outage stops and counts nothing, a lone failure stops), 3 review cases; the outage-stop
+  mutant killed. Engine suite 894 (893 pass, 1 skipped), guard self-test 247, real store unchanged.
+- **1.11.27** (2026-11-05) **A date with a time sent into a date-only column is
+  refused at plan, not by Dataverse after the approval (D-1874).** Daian's gift batch (11/4) sent its Batch Date as
+  `2026-11-04T08:00:00Z`; Batch Date is a TRUE date-only column (no time zone), the plan passed it, and Dataverse
+  refused the write ("Cannot convert ... to Edm.Date"): an approval spent and an "applied with problems" row for a
+  write that could not land. Now a true date-only column takes a bare `YYYY-MM-DD`; midnight UTC names its day (no zone
+  to shift it) and is sent as that bare date; any other time refuses the job, naming the row, the column and the form
+  ("Batch Date takes a date only, like 2026-11-04"). A user-local date-only column (a gift's book date) still takes local
+  midnight, unchanged. The closed-year tests used the fake's true date-only Birthday as their stand-in book date; they now
+  use a user-local Book Date, as the real guarded column is. Tests first (4 in `resolve.test.js`).
+  **Also: a published view, form or sitemap is read back once the publish shows through (F-1171, F-1173).** On Donor App
+  Dev (11/5) a form relabel and its reverse both logged "read-back mismatch, 0 done" while the live form held exactly
+  what was sent: the read right after PublishXml still returned the form as it was before, and the plan's stale
+  after-state then made its own revert refuse. The read-back now re-reads a published component until it matches, up to
+  6 tries 3 s apart; the settled read is the logged after-state; one that never matches is still a mismatch. Test with a
+  publish-lag fake (lagging, no lag = no wait, never settling = a bounded wait then a mismatch).
+  **Also: a trigger change on a flow that is ON is refused; a write that half-landed says so (10/31, recovery flow
+  5be9e73d).** Dataverse re-registers the live trigger as part of the save, which moves the flow's version, so the
+  definition write was refused while the NEW trigger was already live, and the apply said "nothing was written". Plan and
+  apply (the flow may be turned on since the plan) now refuse a trigger change on an ON flow: turn it off, update, turn it
+  on, three jobs. As a backstop, a refused flow write whose trigger subscription was re-registered after the write started
+  reports "PARTLY WRITTEN: the live trigger changed, the saved definition did not". An actions-only change on an ON flow
+  is unchanged. Tests: plan refusal, apply refusal after the flow was turned on, the off-flow change still applies, the
+  backstop and its control; the stale-subscription test now uses an actions change and scope drift.
+  **Review fixes (C1, one Codex seat, `reviews/2026-11-05_toolkit_1_11_27`; 9 findings: 5 confirmed and fixed, 3
+  refuted on rulings, 1 ruled by Dylan).** (F1) a lookup's target check is cached per column and bind, so a second row
+  pointing the account arm at the same `/contacts(...)` the first row's contact arm used is refused at plan, not at the
+  write. (F2) a failing event is probed against up to 5 later files, so two bad files in a row no longer stop the queue;
+  each failure before the first send counts a try. (F6) CHECK-INS NOT ARRIVING is checked before the 14-day machine window,
+  so the flag no longer vanishes once a stoppage outlasts it. (F7, F8) the flow backstop reads the trigger subscription
+  just before the write and again after the refusal and compares the two (no clock): changed = PARTLY WRITTEN; either read
+  failing = "NOT KNOWN whether the live trigger changed", never "nothing was written". (F5, ruled 11/5) midnight UTC on a
+  true date-only column is converted to its day, as above. Each test-first.
+  Mutation pass: `mutate_1_11_27.js`, 19 of 19 killed. Engine suite 906 (905 pass, 1 skipped), guard self-test 247, real
+  store unchanged.
 - **1.11.26** (2026-10-29) **Inline code (python -c, node -e, a heredoc into python) is read the way the code builds
   its paths, and a write the guard cannot trace ASKS instead of blocking (H-1086, H-1102; inline-code review, ruled
   10/29/26).** The reader now follows a name bound once (`p = '<path>'`, `const a = ..., p = ...`), the home and temp

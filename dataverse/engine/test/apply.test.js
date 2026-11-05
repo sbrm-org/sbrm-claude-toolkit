@@ -45,6 +45,19 @@ const twoRowUpdate = {
   ],
 };
 
+test('different lookup arms on different rows apply and read back (D-1052 / D-1054)', () => {
+  const dv = fakeDv();
+  const id = makePlan({ mode: 'update', rows: [
+    { name: 'Jane Example', id: IDS.jane, body: { 'parentcustomerid_account@odata.bind': `/accounts(${IDS.acme})` } },
+    { name: 'Bob Sample', id: IDS.bob, body: { 'parentcustomerid_contact@odata.bind': `/contacts(${IDS.jane})` } },
+  ] }, dv);
+  const res = run(id, dv);
+  assert.equal(res.outcome, 'applied');
+  assert.equal(res.written, 2);
+  assert.equal(dv.data.contacts[IDS.jane]._parentcustomerid_value, IDS.acme);
+  assert.equal(dv.data.contacts[IDS.bob]._parentcustomerid_value, IDS.jane);
+});
+
 test('approve: writes, reads back, logs a Dataverse row AND locally, consumes the plan', () => {
   const dv = fakeDv();
   const id = makePlan(twoRowUpdate, dv);

@@ -27,6 +27,12 @@ connection (an older hand-built `dataverse-donorapp`, say), it was removed: don'
 `/dataverse-setup` to bring the notes up to date. An app's connection with no tools is switched off on
 this machine (the person did not choose it in setup): to use that app, run `/dataverse-setup` again.
 
+**Donor App and Donor App Dev: read the shared context first.** If this machine has a clone of
+`sbrm-org/donor-app-context` (Dylan's and Daian's Claudes do), run `python tools/ctx.py start` in it before
+preparing a donor-app job: it prints the closed-fiscal-year rule and what both Claudes know about the app (gift
+coding, flows, forms, fields). Anything you learn while doing the change goes back there as an entry (`ctx save`),
+never into local notes or memory. This skill stays the HOW of writing; that repo is the WHAT.
+
 ## Reading many rows: `query` (read-only)
 
 For a question about a few records, use the read connection's tools as usual. When the work needs **more
@@ -104,7 +110,9 @@ Verify the path on first use and say it in full whenever you hand the person a c
    apply run any other way has none and writes nothing). While the prompt is waiting, use no tool that
    drives the screen, mouse or keyboard (the guard refuses them). Never try to answer it, and never write
    some other way if they say No: ask what they want instead. If the guard says the session is in a mode where Claude Code does not
-   ask, tell the person to switch modes (shift+tab) and run the apply again. Run applies from the main
+   ask, tell the person to switch modes (shift+tab) and run the apply again. If the guard says the line names
+   another toolkit version folder's engine, run the exact line it gives (the guard's own engine) as a command of
+   its own: the toolkit was updated while this session ran. Run applies from the main
    conversation, never from a subagent (the guard refuses those). One apply at a time: never start a
    second apply while one is still waiting for its Yes (the prompts queue and the later approvals expire,
    10/14 and 10/15); several plans for one request go on ONE apply line instead. An approval lasts ten minutes: if
@@ -138,8 +146,9 @@ on its own. Never ask the person to run or paste a command.
 - **Views, forms, sitemaps, flows** (`kind: "component"`): run `snapshot <env> <set> <id>` first; it
   saves the live definition to edit and prints its hash, which goes in the job. If anyone changes the
   component after your read, the plan refuses and you read again.
-  For a flow, the plan says who it RUNS AS: tell the person. Adding or swapping a flow's connection, or
-  changing the trigger of a flow that is On, is an admin's.
+  For a flow, the plan says who it RUNS AS: tell the person. Adding or swapping a flow's connection is an
+  admin's. A flow's TRIGGER is changed only while the flow is Off: three jobs, mode "off", the update, then
+  mode "on" (a trigger change on a flow that is On half-lands, so the engine refuses it).
 - **Settings** (`kind: "setting"`, admin): the value of an environment variable, such as a Yes/No switch
   a flow checks before it acts. Name it by its schema name and give the value as the setting stores it (a
   Yes/No setting takes "yes" or "no"). The plan names the flows that read it: tell the person which are on,

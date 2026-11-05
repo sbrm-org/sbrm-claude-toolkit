@@ -706,7 +706,7 @@ function cmdDoctor(run, deps, args = []) {
     used,
     chosen: chosen ? chosen.filter((a) => envs[a]) : null,
     profiles: chosen ? (deps.authList || realAuthList)() : null,
-    pending: () => ({ events: events.pendingCount(), logs: pendingLogCount() }),
+    pending: () => ({ events: events.pendingCount(), logs: pendingLogCount(), parked: events.parkedCount() }),
     sendPending: (reached) => {
       for (const env of reached) {
         events.flush(deps.eventConnection(envs[env].host), env);
@@ -1118,7 +1118,9 @@ function finish(run, deps) {
     }
   }
   if (run.events.length && !run.reported) {
-    const landed = sent && !sent.error;
+    // A skipped file (it failed on its own while later ones sent) may be this run's own event: not landed.
+    const own = new Set(run.events.map((e) => `${e.env}--${e.event_id}.json`));
+    const landed = sent && !sent.error && !(sent.skipped || []).some((f) => own.has(f)) && !(sent.parked || []).some((f) => own.has(f));
     console.log(landed
       ? "(Recorded for Dylan's review.)"
       : "(Recorded for Dylan's review: saved on this machine, and sent the next time it can reach Dataverse. If it's urgent, message Dylan.)");
