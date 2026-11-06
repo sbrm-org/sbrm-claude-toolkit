@@ -3,6 +3,24 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.28** (2026-11-06, task #6hwP6PqfgwVp7gWr) **Form scripts: a component job can change a text web
+  resource (Dylan 11/5/26: "add script support to the toolkit").** New set `webresourceset`, mode `update` only, for
+  JavaScript, HTML, CSS and XML web resources (an image, or a new or deleted web resource, stays the maker portal's).
+  `snapshot` saves the decoded file beside the definition to edit; the job carries the edited bytes as canonical
+  base64. The plan shows the changed lines with their line numbers and indentation (a line-ending change is one line,
+  never the whole file) and **Loaded by** (the forms whose definition names it); changing the content is admin with a
+  "Can't be fully undone" line, a description alone is develop. Apply PATCHes with If-Match, publishes THAT web
+  resource only (PublishXml `<webresources>`), re-reads until the publish shows through, and logs the full content
+  before and after; revert puts it back. Drafts (unpublished maker-portal edits) refuse the plan as for forms.
+  Shapes read live first in the Sober Living app (11/6: base64 of the file's exact bytes, CRLF kept,
+  RetrieveUnpublishedMultiple and `contains(formxml, ...)` both answer). Tests first: 15 module tests
+  (`component_webresource.test.js`) + 1 through the CLI; existing component hashes unchanged. Review C1 (one Codex
+  seat, run 20261106-093509-293ab2): 6 findings; fixed test-first: changed lines are shown whole, never clipped (F1),
+  an unpublished display-name edit counts as a draft (F2), binary content can never normalise equal to text (F5);
+  refuted: a type change after the plan (F4: the type cannot be updated, read live) and per-column component revert
+  (F6: that rule is the records revert); a timed-out component write that lands is not reconciled (F3) is pre-existing
+  for every component set and pooled for the next release. Mutation pass 19 of 19.
+
 - **1.11.27** (2026-11-05) **The `dataverse` skill points donor-app work at the
   shared context (DESIGN ⚖3 of `Donor App Shared Context`, cutover 11/3/26).** One paragraph: where a clone of
   `sbrm-org/donor-app-context` exists, run `ctx start` before a donor-app job and save what is learned as an entry.

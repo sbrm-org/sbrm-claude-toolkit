@@ -594,7 +594,7 @@ function cmdWhoami(run, deps, env) {
   return 0;
 }
 
-// snapshot <env> <set> <id>: READ a view, form, sitemap or flow as it stands now and save its definition
+// snapshot <env> <set> <id>: READ a view, form, sitemap, flow or web resource as it stands now and save its definition
 // for editing (DESIGN.md §10e). The hash goes into the component job's `snapshot_hash`, so a plan made from
 // this read is refused if anyone changes the component in between. Nothing is written to Dataverse.
 function cmdSnapshot(run, deps, args) {
@@ -621,6 +621,16 @@ function cmdSnapshot(run, deps, args) {
   console.log(`\n${snap.name || snap.id} (${set}) in the ${envs[env].name}`);
   console.log(`  snapshot_hash: ${snap.hash}`);
   console.log(`  definition saved for editing: ${file}`);
+  // A web resource's content is base64 in the definition; its decoded bytes are saved beside it as the file to edit
+  // (the extension from its name), exactly as stored, line endings included. The job's `definition.content` is that
+  // file's bytes as base64 again.
+  if (set === 'webresourceset' && snap.definition.content) {
+    const m = /\.(js|html?|css|xml)$/i.exec(String(snap.name || ''));
+    const textFile = path.join(dir('jobs'), `snapshot-${env}-${set}-${snap.id}.content${m ? `.${m[1].toLowerCase()}` : '.txt'}`);
+    fs.writeFileSync(textFile, Buffer.from(snap.definition.content, 'base64'));
+    console.log(`  content saved for editing: ${textFile}`);
+    console.log('  The job\'s definition.content is the edited file\'s bytes as base64 (one line, no spaces).');
+  }
   console.log('Nothing was changed. Put the hash in the component job; a change made since this read refuses the plan.\n');
   return 0;
 }

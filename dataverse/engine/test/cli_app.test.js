@@ -249,6 +249,34 @@ test('a records job on systemusers or roles points at kind role (1.11.13)', asyn
   assert.match(r.out, /A person's security roles are given or taken with kind "role", which takes admin access/);
 });
 
+test('web resource through the CLI: snapshot saves the decoded file to edit, its bytes go back as base64, plan, apply, publish that web resource', async () => {
+  writeConfig(K.ENVS);
+  const dv = withToolkitTables(K.fakeComponentDv({ email: 'admin@example.org' }), K.ACCESS, 'donorapp');
+  const snap = await go(['snapshot', 'donorapp', 'webresourceset', K.IDS.wr], deps(dv));
+  assert.equal(snap.code, 0, snap.out);
+  const hash = /snapshot_hash: ([0-9a-f]{64})/.exec(snap.out)[1];
+  assert.equal(hash, C.snapshot('webresourceset', dv.data.webresourceset[K.IDS.wr]).hash);
+  const textFile = /content saved for editing: (.+)$/m.exec(snap.out)[1].trim();
+  assert.ok(textFile.endsWith('.js'), textFile);
+  assert.equal(fs.readFileSync(textFile, 'utf8'), K.SCRIPT, 'the exact bytes, CRLF kept');
+  // edit the file as Claude would, and send its bytes back
+  fs.writeFileSync(textFile, K.SCRIPT.replace('setVisible(true)', 'setVisible(false)'), 'utf8');
+  const job = file({
+    contract: 'sbrm-dv-job/1', kind: 'component', env: 'donorapp', source: 'claude-session', reason: 'Hide the phone.',
+    component: { set: 'webresourceset', id: K.IDS.wr, name: 'sbrm_contact.js' }, mode: 'update',
+    definition: { content: fs.readFileSync(textFile).toString('base64') }, snapshot_hash: hash,
+    intent: { verb: 'update', component: 'web resource', name: 'sbrm_contact.js', changed: ['content'] },
+  });
+  const planned = await go(['plan', job], deps(dv, { readConnection: () => dv }));
+  assert.equal(planned.code, 0, planned.out);
+  assert.match(planned.out, /Can't be fully undone: publishes new code in the web resource 'sbrm_contact\.js'/);
+  assert.match(planned.out, /Content: 5 lines -> 5 lines \(1 removed, 1 added\)/);
+  const applied = await go(['apply', planned.run.planId], deps(dv));
+  assert.equal(applied.code, 0, applied.out);
+  assert.deepEqual(dv.calls.filter((c) => c.path === 'PublishXml').map((c) => c.body), [{ webresources: [`{${K.IDS.wr}}`] }]);
+  assert.equal(Buffer.from(dv.data.webresourceset[K.IDS.wr].content, 'base64').toString('utf8'), K.SCRIPT.replace('setVisible(true)', 'setVisible(false)'));
+});
+
 test('snapshot refuses a bad set or id without reading anything', async () => {
   writeConfig(K.ENVS);
   const dv = withToolkitTables(K.fakeComponentDv(), K.ACCESS, 'donorapp');

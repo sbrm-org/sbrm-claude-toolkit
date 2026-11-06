@@ -1,6 +1,7 @@
 'use strict';
 // App components (DESIGN.md §10b, §10e; rulings §10j, §10k, 10/7/26): a view (savedqueries), a form
-// (systemforms), a sitemap (sitemaps) or a Power Automate cloud flow (workflows, category 5). Ported from
+// (systemforms), a sitemap (sitemaps), a Power Automate cloud flow (workflows, category 5) or, from 11/6/26, the
+// content of an existing text web resource (webresourceset: a form script; update only, admin for content). Ported from
 // `the earlier Python component tool` (definition_job, new_flow_job), which proved each write live
 // 9/24-9/29. The engine keeps its one rule: COMPUTE the effect from live reads, show it, re-check it at
 // apply, verify it, log it.
@@ -66,9 +67,24 @@ const SETS = {
     select: 'sitemapid,sitemapname,sitemapnameunique,ismanaged,sitemapxml',
     sections: ['areas', 'groups', 'subareas', 'other'],
   },
+  // A web resource (task #6hwP6PqfgwVp7gWr, Dylan 11/5/26: "add script support to the toolkit"): the CONTENT of an
+  // existing text web resource (a form's JavaScript, HTML, CSS, XML), held by Dataverse as base64. Only `update`: a
+  // new or deleted web resource is the maker portal's. Read live 11/6/26 in the Sober Living app (sbrm_/Transaction/
+  // Form.js): canonical base64 of the file's bytes, CRLF kept, and RetrieveUnpublishedMultiple answers for this set.
+  webresourceset: {
+    noun: 'web resource', id: 'webresourceid', name: 'name', fields: ['content', 'description'], xml: {}, b64: 'content',
+    // Publishing a web resource publishes its whole unpublished layer, so a draft of the display name counts too (read
+    // live 11/6: RetrieveUnpublishedMultiple returns displayname, IsValidForUpdate true; 1.11.28 review F2).
+    draft_also: ['displayname'],
+    select: 'webresourceid,name,displayname,ismanaged,webresourcetype,description,content',
+    sections: ['content', 'description'],
+  },
 };
 const MODES = ['update', 'create', 'on', 'off', 'own', 'delete'];
 const FLOW_ONLY = new Set(['on', 'off', 'own']);
+// webresourcetype values whose content is text the engine can show and compare (1 HTML, 2 CSS, 3 JavaScript, 4 XML).
+// Images, Silverlight, XSL, ICO, SVG and RESX are changed in the maker portal.
+const TEXT_WEB_RESOURCE = { 1: 'HTML', 2: 'CSS', 3: 'JavaScript', 4: 'XML' };
 // Trigger messages (the earlier Python component tool MESSAGES).
 const MESSAGES = { 1: 'create', 2: 'delete', 3: 'update', 4: 'create or update', 5: 'create or delete', 6: 'update or delete', 7: 'any change' };
 // Step types that must carry a note when added (the app developer, 9/25/26; the earlier Python component tool check_notes).
@@ -228,8 +244,24 @@ function dropNullKeys(x) {
   return Object.fromEntries(Object.entries(x).filter(([, v]) => v !== null).map(([k, v]) => [k, dropNullKeys(v)]));
 }
 
+// Web resource content: base64 of the file's bytes. The text (a string) when the bytes are valid UTF-8, else
+// { base64: canonical } (an object, so no text can ever equal it: 1.11.28 review F5); either way two encodings of the
+// same bytes compare equal and any byte (a line ending, a BOM) differs.
+function b64Text(v) {
+  const bytes = Buffer.from(String(v), 'base64');
+  try {
+    return { text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes), bytes };
+  } catch {
+    return { text: null, bytes };
+  }
+}
+
 function normField(set, field, v) {
   if (blank(v)) return null;
+  if (field === SETS[set].b64) {
+    const t = b64Text(v);
+    return t.text === null ? { base64: t.bytes.toString('base64') } : t.text;
+  }
   if (field === SETS[set].json) return dropNullKeys(typeof v === 'string' ? JSON.parse(v) : v);
   if (has(SETS[set].xml, field)) return parseXml(v);
   return String(v);
@@ -247,7 +279,8 @@ function hashDef(set, id, def) {
 // (`<set>(<id>)?$select=<every field in SETS[set].fields>,<id column>`):
 //   sha256( canonical({ set, id: lowercase id, definition: { field: normalized value } }) )
 // over SETS[set].fields only (flows: clientdata + description; views: fetchxml + layoutxml + description;
-// forms: formxml + description; sitemaps: sitemapxml); canonical = lib/store.js sorted-key JSON;
+// forms: formxml + description; sitemaps: sitemapxml; web resources: content (decoded) + description);
+// canonical = lib/store.js sorted-key JSON;
 // normalized = normField. So two reads of an unchanged component always hash the same, and any change to a
 // field, an attribute value or an element does not.
 function snapshot(set, row) {
@@ -1044,6 +1077,100 @@ function diffSitemap(oldDef, newDef) {
   return { sections: order('sitemaps', found), lines, detail };
 }
 
+// A line diff that keeps indentation (code reads by it; textDiff collapses whitespace): the longest common
+// subsequence of lines, so separate edits in one file show as separate hunks. Past ~4M cells (two files of
+// ~2,000 lines) it falls back to trimming the common head and tail. [{ t: '-'|'+', line, at }], `at` = the line
+// number in the NEW text where the hunk sits.
+const LCS_CELLS = 4000000;
+function lineDiff(a, b) {
+  let s = 0;
+  while (s < a.length && s < b.length && a[s] === b[s]) s += 1;
+  let e = 0;
+  while (e < a.length - s && e < b.length - s && a[a.length - 1 - e] === b[b.length - 1 - e]) e += 1;
+  const A = a.slice(s, a.length - e);
+  const B = b.slice(s, b.length - e);
+  const out = [];
+  if ((A.length + 1) * (B.length + 1) > LCS_CELLS) {
+    for (const line of A) out.push({ t: '-', line, at: s + 1 });
+    for (const line of B) out.push({ t: '+', line, at: s + 1 });
+    return out;
+  }
+  const W = B.length + 1;
+  const L = new Uint32Array((A.length + 1) * W);
+  for (let i = A.length - 1; i >= 0; i -= 1) {
+    for (let j = B.length - 1; j >= 0; j -= 1) {
+      L[i * W + j] = A[i] === B[j] ? L[(i + 1) * W + j + 1] + 1 : Math.max(L[(i + 1) * W + j], L[i * W + j + 1]);
+    }
+  }
+  let i = 0;
+  let j = 0;
+  while (i < A.length || j < B.length) {
+    if (i < A.length && j < B.length && A[i] === B[j]) { i += 1; j += 1; }
+    else if (i < A.length && (j >= B.length || L[(i + 1) * W + j] >= L[i * W + j + 1])) { out.push({ t: '-', line: A[i], at: s + j + 1 }); i += 1; }
+    else { out.push({ t: '+', line: B[j], at: s + j + 1 }); j += 1; }
+  }
+  return out;
+}
+
+// The lines of a text, line endings apart (the eol style is reported once, on its own).
+function textLines(t) {
+  const lines = t.split(/\r?\n/);
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
+function eolOf(t) {
+  const crlf = (t.match(/\r\n/g) || []).length;
+  const lf = (t.match(/\n/g) || []).length - crlf;
+  if (!crlf && !lf) return 'none';
+  if (crlf && lf) return 'mixed';
+  return crlf ? 'CRLF' : 'LF';
+}
+
+const WR_DETAIL_MAX = 200;
+function diffWebResource(oldDef, newDef) {
+  const found = new Set();
+  const lines = [];
+  const detail = [];
+  const o = blank(oldDef.content) ? { text: '', bytes: Buffer.alloc(0) } : b64Text(oldDef.content);
+  const n = blank(newDef.content) ? { text: '', bytes: Buffer.alloc(0) } : b64Text(newDef.content);
+  if (!o.bytes.equals(n.bytes)) {
+    found.add('content');
+    if (o.text === null || n.text === null) {
+      lines.push(`Content: ${o.bytes.length} bytes -> ${n.bytes.length} bytes (not text; no line diff)`);
+    } else {
+      const la = textLines(o.text);
+      const lb = textLines(n.text);
+      const d = lineDiff(la, lb);
+      const removed = d.filter((x) => x.t === '-').length;
+      const added = d.filter((x) => x.t === '+').length;
+      if (d.length) lines.push(`Content: ${la.length} lines -> ${lb.length} lines (${removed} removed, ${added} added)`);
+      const eo = eolOf(o.text);
+      const en = eolOf(n.text);
+      if (eo !== en && eo !== 'none' && en !== 'none') lines.push(`Line endings: ${eo} -> ${en}`);
+      const bom = (t) => t.charCodeAt(0) === 0xfeff;
+      if (bom(o.text) !== bom(n.text)) lines.push(`Byte-order mark: ${bom(o.text) ? 'removed' : 'added'}`);
+      if (!lines.length) lines.push('Content: only the line break at the end of the file changed');
+      // One header per hunk: a removed line leaves the new-text position where it is, an added line moves it on by
+      // one, so the next change continues the hunk only at that position.
+      let next = null;
+      for (const x of d.slice(0, WR_DETAIL_MAX)) {
+        if (x.at !== next) detail.push(`  content @ line ${x.at}`);
+        // Whole lines, never clipped (1.11.28 review F1): this is the code being approved, and two lines that differ
+        // only past a clip would read the same.
+        detail.push(`  content ${x.t} ${x.line}`);
+        next = x.t === '+' ? x.at + 1 : x.at;
+      }
+      if (d.length > WR_DETAIL_MAX) detail.push(`  content ... ${d.length - WR_DETAIL_MAX} more changed line(s)`);
+    }
+  }
+  if ((oldDef.description || null) !== (newDef.description || null)) {
+    found.add('description');
+    lines.push(`Description: ${clipLine(oldDef.description || '(blank)', 70)} -> ${clipLine(newDef.description || '(blank)', 70)}`);
+  }
+  return { sections: order('webresourceset', found), lines, detail };
+}
+
 // The body of a create: the definition plus the fields the engine or the job adds (blind review round 2,
 // 10/7: every one of them is shown in the pop-up, so createLines is built from this same body).
 function createBody(set, name, def, extra = {}) {
@@ -1115,6 +1242,7 @@ function normAliases(def) {
 // One section's content in a definition (views, forms, sitemaps), for "is the dev change the same change?".
 function sectionContent(set, def, section) {
   if (section === 'description') return def.description || null;
+  if (set === 'webresourceset') return normField(set, 'content', def.content);
   if (set === 'savedqueries') {
     const d = normAliases(def);
     const p = viewParts(d.fetchxml, d.layoutxml);
@@ -1169,6 +1297,7 @@ function diffComponent(set, before, after) {
   }
   if (set === 'savedqueries') return diffView(before, after);
   if (set === 'systemforms') return diffForm(before, after);
+  if (set === 'webresourceset') return diffWebResource(before, after);
   return diffSitemap(before, after);
 }
 
@@ -1214,7 +1343,9 @@ function validateComponentJob(raw, { envs }) {
       if (c.id !== undefined && c.id !== null) err('"component.id" is for changing an existing component; a create gets its id from Dataverse');
     } else if (typeof c.id !== 'string' || !GUID.test(c.id)) err('"component.id" must be the component\'s GUID');
   }
-  if (set && FLOW_ONLY.has(mode) && set !== 'workflows') err(`mode "${mode}" is for flows only`);
+  if (set === 'webresourceset' && MODES.includes(mode) && mode !== 'update') {
+    err(`a web resource is only changed here (mode "update": its content or description); a new or deleted web resource is made in the maker portal, not mode "${mode}"`);
+  } else if (set && FLOW_ONLY.has(mode) && set !== 'workflows') err(`mode "${mode}" is for flows only`);
   if (set === 'sitemaps' && mode === 'create') err('a new sitemap belongs to a new app, which is made in the maker portal');
 
   const needsHash = MODES.includes(mode) && mode !== 'create';
@@ -1254,6 +1385,15 @@ function validateComponentJob(raw, { envs }) {
           if (typeof v === 'string') { try { cd = JSON.parse(v); } catch { err('"definition.clientdata" is not valid JSON'); continue; } }
           checkFlowDefinition(cd, err);
           def[f] = JSON.stringify(cd);
+        } else if (f === spec.b64) {
+          // Exactly the form Dataverse stores and `snapshot` saves: canonical base64 (no line breaks or spaces) of
+          // UTF-8 text, so what is shown, hashed, written and read back are the same bytes.
+          if (typeof v !== 'string' || !v || Buffer.from(v, 'base64').toString('base64') !== v) {
+            err(`"definition.${f}" must be the file's bytes as canonical base64 (one line, no spaces), as \`snapshot\` saves it`);
+            continue;
+          }
+          if (b64Text(v).text === null) { err(`"definition.${f}" must be UTF-8 text (a script, HTML, CSS or XML); binary web resources are changed in the maker portal`); continue; }
+          def[f] = v;
         } else if (has(spec.xml, f)) {
           if (typeof v !== 'string' || !v.trim()) { err(`"definition.${f}" must be the XML text`); continue; }
           try {
@@ -1348,8 +1488,22 @@ function readComponent(dv, set, id) {
     statuscode: row.statuscode === undefined ? null : row.statuscode,
     owner: row._ownerid_value ? { id: String(row._ownerid_value).toLowerCase(), name: row['_ownerid_value@OData.Community.Display.V1.FormattedValue'] || row._ownerid_value } : null,
     table: spec.table ? row[spec.table] || null : null,
+    restype: row.webresourcetype === undefined ? null : row.webresourcetype,
     etag: row['@odata.etag'] || null,
   };
+}
+
+// The forms that load a web resource as a script library or show it in a control (their formxml names it), for the
+// plan's "Loaded by" line: who a script change reaches. Read live 11/6/26: contains(formxml,'sbrm_/Transaction/Form.js')
+// found the Information form. null = could not be read (said so, never "none").
+function formsLoading(dv, name) {
+  try {
+    return (dv.get(filterPath('systemforms', 'formid,name,objecttypecode', `contains(formxml,'${q(name)}')`)).value || [])
+      .map((f) => `the form '${f.name}' (${f.objecttypecode})`).sort();
+  } catch (e) {
+    if (e instanceof DataverseError) return null;
+    throw e;
+  }
 }
 
 // Unpublished drafts (blind review 10/7). A view, form or sitemap edited in the maker portal and saved but not
@@ -1362,7 +1516,8 @@ function readComponent(dv, set, id) {
 // [{ id, name }] for one component (`id`) or every component on a table (`table`).
 function draftsFor(dv, set, { table = null, id = null }) {
   const spec = SETS[set];
-  const sel = `${spec.id},${spec.name},${spec.fields.join(',')}`;
+  const also = spec.draft_also || [];
+  const sel = `${spec.id},${spec.name},${[...spec.fields, ...also].join(',')}`;
   const f = id ? `${spec.id} eq ${id}` : `${spec.table} eq '${q(table)}'`;
   const un = dv.get(`${set}/Microsoft.Dynamics.CRM.RetrieveUnpublishedMultiple()?$select=${sel}&$filter=${encodeURIComponent(f)}`).value || [];
   if (!un.length) return [];
@@ -1372,7 +1527,9 @@ function draftsFor(dv, set, { table = null, id = null }) {
     const uid = String(u[spec.id]).toLowerCase();
     const p = pub.get(uid);
     let differs = true;
-    try { differs = !p || snapshot(set, u).hash !== snapshot(set, p).hash; } catch { differs = true; } // unparseable = not provably the same
+    try {
+      differs = !p || snapshot(set, u).hash !== snapshot(set, p).hash || also.some((c) => (u[c] === undefined ? null : u[c]) !== (p[c] === undefined ? null : p[c]));
+    } catch { differs = true; } // unparseable = not provably the same
     if (differs) out.push({ id: uid, name: u[spec.name] || uid });
   }
   return out;
@@ -1506,6 +1663,9 @@ function needFor(f) {
   // Round 3: a flow acts as its owner (its trigger subscription runs as the owner), so handing one over changes
   // who it acts as.
   if (f.set === 'workflows' && f.mode === 'own') why.push('it changes who owns the flow, and a flow acts as its owner');
+  // A web resource's content is code that runs in the app (JOBS.md: "a script or web content in a view or form" is
+  // admin). Its description alone is not.
+  if (f.set === 'webresourceset' && (f.sections || []).includes('content')) why.push('it changes code that runs in the app (a web resource\'s content)');
   // Round 3: what a step, script, control or page can REACH (lib: stepPower, markupPower).
   for (const p of f.power || []) why.push(p);
   return { level: why.length ? 'admin' : 'develop', why };
@@ -1524,6 +1684,9 @@ function severityFor(f, warnRows) {
     if ((f.sections || []).includes('other')) irreversible.push(`changes parts of ${what} outside its trigger, steps and connections (parameters, outputs or settings), shown in the detail`);
   }
   if (f.mode === 'on') irreversible.push(`turning on ${what} starts it running and acting as ${f.runs_as_text}`);
+  if (f.set === 'webresourceset' && (f.sections || []).includes('content')) {
+    irreversible.push(`publishes new code in ${what}, which runs at once for everyone who opens ${f.loaded_by && f.loaded_by.length ? names(f.loaded_by) : 'anything that loads it'}; whatever it does before a revert stays done`);
+  }
   if ((f.other_drafts || []).length) irreversible.push(`publishing ${f.table} also publishes unpublished edits to: ${names(f.other_drafts)}`);
   return severity.assess({ count: 1, noun: 'components', lasting, irreversible, unproven: f.unproven || null }, { warnRows });
 }
@@ -1579,8 +1742,14 @@ function describe(dv, { mode, set, name, table, id, live, written, unproven, car
       owner: live ? live.owner : null,
     };
   }
+  let loadedBy;
+  if (set === 'webresourceset') {
+    loadedBy = formsLoading(dv, name);
+    diff.lines.push(loadedBy === null ? 'Loaded by: could not check which forms load it' : `Loaded by: ${loadedBy.length ? names(loadedBy) : 'no form names it'}`);
+  }
   const drafts = draftState(dv, set, mode, id, table);
   const facts = {
+    loaded_by: loadedBy || null,
     mode, set, noun: spec.noun, name, table, sections: diff.sections,
     live_on: flow ? flow.live_on : false, trigger_changed: flow ? flow.trigger_changed : false,
     connections_added: flow ? Boolean(flow.connections.added.length || flow.connections.swapped.length) : false,
@@ -1616,6 +1785,15 @@ function subscriptionStamp(dv, id) {
   } catch {
     return null;
   }
+}
+
+// What PublishXml names after a write: that sitemap, that web resource, or the view's or form's table; a flow is not
+// published. Plan and apply both build it from here (apply from the id it wrote).
+function publishFor(set, id, table) {
+  if (set === 'workflows') return null;
+  if (set === 'sitemaps') return { sitemaps: [`{${id}}`] };
+  if (set === 'webresourceset') return { webresources: [`{${id}}`] };
+  return { entities: [table] };
 }
 
 function title(plan) {
@@ -1681,6 +1859,9 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
     if (!live) throw new PlanRefused([`there is no ${spec.noun} ${job.component.id} in the ${envInfo.name}`], 'invalid_job');
     if (live.managed) throw new PlanRefused([`'${live.name}' is a MANAGED ${spec.noun} (Microsoft's or a vendor's layer); managed components are never changed (the change rules). Make our own copy instead.`], 'not_permitted');
     if (set === 'workflows' && live.category !== 5) throw new PlanRefused([`'${live.name}' is not a cloud flow (category ${live.category}); business rules and classic workflows are changed in the maker portal`], 'invalid_job');
+    if (set === 'webresourceset' && !has(TEXT_WEB_RESOURCE, live.restype)) {
+      throw new PlanRefused([`'${live.name}' is a web resource of type ${live.restype} (not text); only text web resources (${Object.values(TEXT_WEB_RESOURCE).join(', ')}) are changed here. Change it in the maker portal.`], 'not_permitted');
+    }
     if (String(live.name || '').trim() !== job.component.name) {
       throw new PlanRefused([`the job calls this ${spec.noun} '${job.component.name}', but ${job.component.id} is named '${live.name}'. Check the id.`], 'invalid_job');
     }
@@ -1808,7 +1989,7 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
     after_definition: after, sent_fields: job.mode === 'update' ? Object.keys(job.definition).concat(carried && !job.definition.clientdata ? ['clientdata'] : []) : null,
     create_extra: createExtra,
     solution, owner_to: ownerTo, diff, flow,
-    publish: ['update', 'create'].includes(job.mode) ? (set === 'sitemaps' ? { sitemaps: [`{${live.id}}`] } : set === 'workflows' ? null : { entities: [table] }) : null,
+    publish: ['update', 'create'].includes(job.mode) ? publishFor(set, live ? live.id : null, table) : null,
     proven_in: job.proven_in || null,
     reverts_plan_id: revertOf || null,
   };
@@ -1860,7 +2041,7 @@ function componentSummary(plan) {
     const ra = plan.flow && plan.flow.trigger_runas;
     out.push(`  A flow acts as its owner: from now on it acts as ${plan.owner_to.name}${ra && ra.length ? ` (its trigger subscription: runas ${[...new Set(ra)].join(', ')})` : ' (it has no trigger subscription now)'}.`);
   }
-  if (plan.publish) out.push(`  Published after the change (${plan.publish.entities ? `the ${plan.component.table} table only` : 'this sitemap only'}).`);
+  if (plan.publish) out.push(`  Published after the change (${plan.publish.entities ? `the ${plan.component.table} table only` : plan.publish.webresources ? 'this web resource only' : 'this sitemap only'}).`);
   out.push('', `  ${undoLine(plan)}`, '', `Reason given: ${plan.reason}`);
   return out.join('\n');
 }
@@ -2191,7 +2372,7 @@ async function applyComponent(plan, deps, { id, file, fs }) {
     }
     wrote = true;
     if (plan.publish) {
-      const pub = plan.publish.sitemaps ? { sitemaps: [`{${rid}}`] } : { entities: [d.facts.table] };
+      const pub = publishFor(set, rid, d.facts.table);
       try { dv.publish(pub); } catch (e) {
         row.notes.push(`saved but NOT published: ${e.message}. Nobody sees the change until it is published.`);
         row.publish_failed = true;
