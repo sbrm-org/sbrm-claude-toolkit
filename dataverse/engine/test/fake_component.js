@@ -29,6 +29,9 @@ const IDS = {
   mview: '22222222-2222-2222-2222-000000000002',
   form: '33333333-3333-3333-3333-000000000001',
   sitemap: '44444444-4444-4444-4444-000000000001',
+  wr: '55555555-5555-5555-5555-000000000001',
+  wrimg: '55555555-5555-5555-5555-000000000002',
+  mwr: '55555555-5555-5555-5555-000000000003',
   pub: 'b39485ad-5b1d-ef11-840a-6045bd07878a',
   otherpub: '00000001-0000-0000-0000-00000000005a',
 };
@@ -97,8 +100,26 @@ const SITEMAP = '<SiteMap IntroducedVersion="7.0.0.0"><Area Id="area_donors" Sho
   + '<Group Id="group_people"><Titles><Title LCID="1033" Title="People" /></Titles>'
   + '<SubArea Id="subarea_contacts" Entity="contact" Icon="/WebResources/x" /><SubArea Id="subarea_accounts" Entity="account" /></Group></Area></SiteMap>';
 
+// A form script as the live Sober Living one is stored (11/6/26: CRLF line endings, no BOM, canonical base64).
+const SCRIPT = [
+  'var Form = Form || {};',
+  'Form.onLoad = function (ctx) {',
+  '  var f = ctx.getFormContext();',
+  '  f.getControl("telephone1").setVisible(true);',
+  '};',
+  '',
+].join('\r\n');
+const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
+
 function data() {
   return {
+    // Web resources (11/6/26): the form's script library (FORM's onload handler loads sbrm_contact.js), an image,
+    // and a managed one. webresourcetype 3 = JavaScript, 5 = PNG.
+    webresourceset: {
+      [IDS.wr]: { webresourceid: IDS.wr, name: 'sbrm_contact.js', displayname: 'Contact form script', ismanaged: false, webresourcetype: 3, description: null, content: b64(SCRIPT) },
+      [IDS.wrimg]: { webresourceid: IDS.wrimg, name: 'sbrm_/img/logo.png', displayname: 'Logo', ismanaged: false, webresourcetype: 5, description: null, content: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe]).toString('base64') },
+      [IDS.mwr]: { webresourceid: IDS.mwr, name: 'msdyn_/Common.js', displayname: 'Common', ismanaged: true, webresourcetype: 3, description: null, content: b64('var x = 1;') },
+    },
     workflows: {
       [IDS.flow]: { workflowid: IDS.flow, name: 'Add Soft Credit', ismanaged: false, category: 5, statecode: 1, statuscode: 2, _ownerid_value: IDS.appadmin, description: 'Stamp 9/25.', clientdata: JSON.stringify(flowCd()) },
       [IDS.caller]: { workflowid: IDS.caller, name: 'Gift Batch Posted', ismanaged: false, category: 5, statecode: 1, statuscode: 2, _ownerid_value: IDS.appadmin, description: null, clientdata: JSON.stringify(flowCd({ actions: { Run_child: { runAfter: {}, type: 'Workflow', inputs: { host: { workflowReferenceName: IDS.offflow } } } } })) },
@@ -139,7 +160,7 @@ function data() {
     sbrm_dataversewritelogs: [],
     // Unpublished layers (maker-portal edits saved, not published): set -> id -> the fields that differ, or a
     // whole row for a component that exists only unpublished.
-    drafts: { savedqueries: {}, systemforms: {}, sitemaps: {} },
+    drafts: { savedqueries: {}, systemforms: {}, sitemaps: {}, webresourceset: {} },
     attrs: {
       contact: ['contactid', 'fullname', 'firstname', 'lastname', 'emailaddress1', 'telephone1', 'statecode'],
       msnfp_transaction: ['msnfp_transactionid', 'msnfp_amount'],
@@ -147,7 +168,7 @@ function data() {
   };
 }
 
-const ID_COL = { workflows: 'workflowid', savedqueries: 'savedqueryid', systemforms: 'formid', sitemaps: 'sitemapid' };
+const ID_COL = { workflows: 'workflowid', savedqueries: 'savedqueryid', systemforms: 'formid', sitemaps: 'sitemapid', webresourceset: 'webresourceid' };
 const FORMATTED = '@OData.Community.Display.V1.FormattedValue';
 
 // Tiny $filter evaluator: ORs of ANDs of `col eq 'text'`, `col eq 5`, `col eq true`, `contains(col,'text')`.
@@ -244,14 +265,14 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
         return { value: d.attrs[m[1]].map((LogicalName) => ({ LogicalName })) };
       }
       // RetrieveUnpublishedMultiple: every component's latest layer (the draft where there is one), as live.
-      if ((m = /^(savedqueries|systemforms|sitemaps)\/Microsoft\.Dynamics\.CRM\.RetrieveUnpublishedMultiple\(\)\?\$select=([^&]+)&\$filter=(.*)$/.exec(p))) {
+      if ((m = /^(savedqueries|systemforms|sitemaps|webresourceset)\/Microsoft\.Dynamics\.CRM\.RetrieveUnpublishedMultiple\(\)\?\$select=([^&]+)&\$filter=(.*)$/.exec(p))) {
         const set = m[1];
         const keep = matcher(decodeURIComponent(m[3]));
         const ids = new Set([...Object.keys(d[set]), ...Object.keys(d.drafts[set])]);
         const rows = [...ids].map((id) => ({ ...(d[set][id] || {}), ...(d.drafts[set][id] || {}) }));
         return { value: rows.filter(keep).map((r) => Object.fromEntries(m[2].split(',').map((c) => [c, r[c] === undefined ? null : r[c]]))) };
       }
-      if ((m = /^(workflows|savedqueries|systemforms|sitemaps)\(([0-9a-f-]{36})\)\?\$select=(.*)$/.exec(p))) {
+      if ((m = /^(workflows|savedqueries|systemforms|sitemaps|webresourceset)\(([0-9a-f-]{36})\)\?\$select=(.*)$/.exec(p))) {
         if (dv.failReads === m[2] && calls.some((c) => c.method !== 'GET')) throw new DataverseError('The service is temporarily unavailable', { code: '0x80072322', status: 503 });
         const lag = dv.lagged.get(`${m[1]}/${m[2]}`);
         let rec = d[m[1]][m[2]];
@@ -393,4 +414,4 @@ const ACCESS = {
   },
 };
 
-module.exports = { fakeComponentDv, devDv, devEntry, secretFlowCd, PLACEHOLDER_SECRET, data, flowCd, REF, IDS, ENVS, ACCESS, FETCH, LAYOUT, FORM, SITEMAP };
+module.exports = { fakeComponentDv, devDv, devEntry, secretFlowCd, PLACEHOLDER_SECRET, data, flowCd, REF, IDS, ENVS, ACCESS, FETCH, LAYOUT, FORM, SITEMAP, SCRIPT, b64 };

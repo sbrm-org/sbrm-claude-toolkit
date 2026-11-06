@@ -4,7 +4,7 @@ description: >
   Change SBRM's Dataverse apps (Donor App, Donor App Dev, HGS apps, Recovery app, Sober Living app)
   through the shared write path: records (add, update, make inactive, merge; records are never deleted)
   AND the apps themselves (tables, columns, choices, views, forms, sitemaps, Power Automate flows,
-  environment variable settings, who holds a security role). Claude
+  form scripts and other text web resources, environment variable settings, who holds a security role). Claude
   prepares the change as a job file, the engine plans it and works out how serious it is, Claude tells
   the person, and the person approves it when Claude Code asks, before anything is written. Also covers what to do when something goes wrong
   (report it to Dylan in the person's own words) and checking that the setup works (the health check).
@@ -87,7 +87,7 @@ Verify the path on first use and say it in full whenever you hand the person a c
    shape before writing one). Records: `kind: "rows"`, env, table, create or update, one row per record by its real
    name and id, the body, a one-sentence `reason` in plain words, and an `intent` that states exactly what
    you are changing. App changes: `kind: "schema"` (tables, columns, relationships, keys, choices),
-   `kind: "component"` (a view, form, sitemap or flow), `kind: "setting"` (an environment variable's
+   `kind: "component"` (a view, form, sitemap, flow or web resource), `kind: "setting"` (an environment variable's
    value) or `kind: "role"` (who holds a security role), see below. Save it in `~/.sbrm-dataverse/jobs/`,
    never in a git folder (Recovery job files there are refused), with your file-writing tool, not a
    shell command: the guard blocks a shell line that writes into that folder, so `plan` goes in a
@@ -149,6 +149,12 @@ on its own. Never ask the person to run or paste a command.
   For a flow, the plan says who it RUNS AS: tell the person. Adding or swapping a flow's connection is an
   admin's. A flow's TRIGGER is changed only while the flow is Off: three jobs, mode "off", the update, then
   mode "on" (a trigger change on a flow that is On half-lands, so the engine refuses it).
+- **Form scripts and other text web resources** (`kind: "component"`, set `webresourceset`, mode `update`
+  only): `snapshot` also saves the script itself as a file to edit; the job's `definition.content` is the edited
+  file's bytes as base64. Changing the code is an admin's (it runs for everyone who opens a form that loads it);
+  the plan names those forms and shows the changed lines: read both to the person. A new or deleted web resource,
+  or an image, is made in the maker portal. When a form change depends on new script code, publish the script
+  first, then the form (two jobs, in that order).
 - **Settings** (`kind: "setting"`, admin): the value of an environment variable, such as a Yes/No switch
   a flow checks before it acts. Name it by its schema name and give the value as the setting stores it (a
   Yes/No setting takes "yes" or "no"). The plan names the flows that read it: tell the person which are on,

@@ -99,8 +99,8 @@ Describe the OBJECTS; the engine works out the steps, waits for a new table, pub
 
 ## App changes: `kind: "component"` (develop)
 
-A view (`savedqueries`), form (`systemforms`), sitemap (`sitemaps`) or Power Automate cloud flow
-(`workflows`). Read the live component first:
+A view (`savedqueries`), form (`systemforms`), sitemap (`sitemaps`), Power Automate cloud flow
+(`workflows`) or text web resource (`webresourceset`: a form script, HTML, CSS or XML). Read the live component first:
 
 `node "<toolkit>/dataverse/engine/dataverse-write.js" snapshot <env> <set> <id>`
 
@@ -137,6 +137,32 @@ It prints the `snapshot_hash` and saves the current definition to `~/.sbrm-datav
 - A flow plan prints who the flow RUNS AS (its connections' owner): say it to the person. Adding or
   swapping a connection, or changing the trigger of a flow that is On, is admin. Turning a flow On fails
   unless the person owns its connections; the engine says who must do it.
+
+### A web resource (a form script)
+
+`mode` is `update` only (a new or deleted web resource, and any image, is made in the maker portal), and only a
+text one: JavaScript, HTML, CSS or XML. `snapshot <env> webresourceset <id>` saves the definition AND the decoded
+file beside it (`snapshot-<env>-webresourceset-<id>.content.js`), exactly as stored, line endings included. Edit
+that file; `definition.content` is its bytes as canonical base64 (one line, no spaces), e.g.
+`fs.readFileSync(file).toString('base64')` in node. `component.name` is the web resource's name
+(`sbrm_/Transaction/Form.js`), not its display name.
+
+```json
+{ "contract": "sbrm-dv-job/1", "kind": "component", "env": "soberliving",
+  "component": { "set": "webresourceset", "id": "<webresource guid>", "name": "sbrm_/Transaction/Form.js" },
+  "mode": "update", "definition": { "content": "<the edited file, base64>" },
+  "snapshot_hash": "<64 hex from snapshot>", "source": "claude-session",
+  "reason": "Receipt Number only for Cash and Check.",
+  "intent": { "verb": "update", "component": "web resource", "name": "sbrm_/Transaction/Form.js", "changed": ["content"] } }
+```
+
+- Sections: `content`, `description`. Changing `content` is admin (code that runs for everyone who opens a form
+  that loads it) and carries a "Can't be fully undone" line; a description alone is develop.
+- The plan shows the changed lines (`-` / `+`, by line number, indentation kept; a line-ending change is one
+  line, never the whole file) and **Loaded by**: the forms whose definition names it. Apply PATCHes the content,
+  publishes that web resource only, and reads it back. Revert puts the logged content back.
+- A form that calls a NEW function in the script: publish the script first, then change the form (two jobs, in
+  that order), or the form calls a function that does not exist yet.
 
 ## App settings: `kind: "setting"` (admin)
 
