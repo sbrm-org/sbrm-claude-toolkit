@@ -1321,7 +1321,9 @@ function sweepVerdict(c, ctx, pipe) {
 // ! -name, -prune with an explicit -print) only narrows the listing, while an -o branch with no such test lists
 // everything (that branch was a hole before: `-iname "*.md" -o -type f` passed). Any action but -print / -print0, any
 // unknown word and any unbalanced parenthesis fails closed.
-const FIND_ARG_TESTS = /^-(?:path|ipath|wholename|iwholename|regex|iregex|regextype|lname|ilname|type|xtype|maxdepth|mindepth|[acm](?:time|min)|newer|newer[acmBt]{2}|size|user|group|uid|gid|perm|links|inum|samefile|fstype|used)$/;
+// H-1155 (11/8/26): -type / -xtype left this list. A type test that admits neither a regular file (f) nor a link (l)
+// cannot print the key, which is a regular file, so it reads as key-proof, like a safe -name (see primary()).
+const FIND_ARG_TESTS = /^-(?:path|ipath|wholename|iwholename|regex|iregex|regextype|lname|ilname|maxdepth|mindepth|[acm](?:time|min)|newer|newer[acmBt]{2}|size|user|group|uid|gid|perm|links|inum|samefile|fstype|used)$/;
 const FIND_BARE_TESTS = /^-(?:true|false|empty|readable|writable|executable|depth|mount|xdev|nouser|nogroup|noleaf|daystart|follow|ignore_readdir_race|noignore_readdir_race|prune|quit)$/;
 function findExpr(lits) {
   let i = 0;
@@ -1342,6 +1344,13 @@ function findExpr(lits) {
       if (p === undefined) throw new Error('name');
       i += 2;
       return { t: 'name', safe: !globRe(p).test('plan.key') };
+    }
+    if (l === '-type' || l === '-xtype') {
+      const v = lits[i + 1];
+      if (v === undefined) throw new Error('type');
+      i += 2;
+      const kinds = v.split(',');
+      return { t: 'name', safe: kinds.every((k) => /^[bcdpsD]$/.test(k)) };
     }
     if (FIND_ARG_TESTS.test(l)) {
       if (lits[i + 1] === undefined) throw new Error('arg');
@@ -1394,6 +1403,10 @@ function findListsNamesOnly(lits) {
   let e;
   try { e = findExpr(lits.slice(start)); } catch { return false; }
   if (!e) return false;
+  // R-1203 (11/8/26): -maxdepth 0 on every -maxdepth given means find prints only its starting points and never
+  // descends, so nothing below them (the key included) can be printed. The expression must still parse (no action).
+  const depths = lits.flatMap((l, k) => (l === '-maxdepth' ? [lits[k + 1]] : []));
+  if (depths.length && depths.every((d) => d === '0')) return true;
   return findPrints(e) ? findPrintsNamed(e, false) : findNamed(e);
 }
 function extensionFiltered(c, pipe) {
@@ -1438,6 +1451,26 @@ function feedVerdict(c, ctx, pipe) {
   return null;
 }
 
+// True when a `claude plugin disable|uninstall|remove|rm` (or `marketplace remove|rm`) may reach the toolkit: the
+// words from `from` on name no plugin, name one the guard cannot read as a literal (a variable, a substitution), name
+// one carrying "sbrm" (the toolkit, its marketplace, a renamed dev copy), or ask for every plugin (--all / -a). The
+// values of --scope / -s are skipped; any other flag is ignored. R-1231, 11/8/26.
+const PLUGIN_FLAG_WITH_VALUE = new Set(['--scope', '-s']);
+function pluginOffNames(lits, from) {
+  let named = 0;
+  for (let i = from; i < lits.length; i += 1) {
+    const w = lits[i];
+    if (w === null || w === undefined) return true;
+    const lw = String(w).toLowerCase();
+    if (lw === '--all' || lw === '-a') return true;
+    if (PLUGIN_FLAG_WITH_VALUE.has(lw)) { i += 1; if (lits[i] === null || lits[i] === undefined) return true; continue; }
+    if (lw.startsWith('-')) continue;
+    if (/sbrm/.test(lw)) return true;
+    named += 1;
+  }
+  return named === 0;
+}
+
 // `claude plugin ...`, `claude --settings`, `claude --plugin-dir`, and a run started where project settings hold a
 // PermissionRequest hook (F13; fork 5 ruled 10/13: install and marketplace add ASK).
 function claudeVerdict(c, ctx, lits) {
@@ -1445,8 +1478,11 @@ function claudeVerdict(c, ctx, lits) {
   const pi = a.indexOf('plugin');
   if (pi >= 0) {
     const sub = a[pi + 1];
-    if (['disable', 'uninstall', 'remove', 'rm'].includes(sub)) return MSG.pluginOff;
-    if (sub === 'marketplace' && ['remove', 'rm'].includes(a[pi + 2])) return MSG.pluginOff;
+    // R-1231 (11/8/26): switching off a plugin that is NOT the toolkit passes. Blocks when a named plugin (or
+    // marketplace) carries "sbrm", when nothing is named, on --all, or when any name is not a literal the guard can read.
+    // A passing name falls through to the checks below (a --settings or --plugin-dir on the same line is still read).
+    if (['disable', 'uninstall', 'remove', 'rm'].includes(sub) && pluginOffNames(lits, pi + 2)) return MSG.pluginOff;
+    if (sub === 'marketplace' && ['remove', 'rm'].includes(a[pi + 2]) && pluginOffNames(lits, pi + 3)) return MSG.pluginOff;
     if (['install', 'i', 'enable'].includes(sub) || (sub === 'marketplace' && a[pi + 2] === 'add')) {
       return { ask: `SBRM Dataverse guard: adding a plugin to Claude Code (${c.src.slice(0, 160)}). A plugin can bring hooks that answer approval prompts. Yes runs it; No stops it.` };
     }
