@@ -149,6 +149,8 @@ on its own. Never ask the person to run or paste a command.
   For a flow, the plan says who it RUNS AS: tell the person. Adding or swapping a flow's connection is an
   admin's. A flow's TRIGGER is changed only while the flow is Off: three jobs, mode "off", the update, then
   mode "on" (a trigger change on a flow that is On half-lands, so the engine refuses it).
+  To RENAME a flow, view or form (a dashboard is a form), put the new name in `definition.name` (JOBS.md); the
+  plan shows old -> new and refuses a name already in use. Say both names to the person.
 - **Form scripts and other text web resources** (`kind: "component"`, set `webresourceset`, mode `update`
   only): `snapshot` also saves the script itself as a file to edit; the job's `definition.content` is the edited
   file's bytes as base64. Changing the code is an admin's (it runs for everyone who opens a form that loads it);

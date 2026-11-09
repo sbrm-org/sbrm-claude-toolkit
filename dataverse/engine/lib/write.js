@@ -58,13 +58,15 @@ function checkMeta(method, apiPath, headers) {
 
 // <importexportxml> for PublishXml. Only components this apply changed are published, never everyone's
 // unpublished drafts (DESIGN.md §10b: no PublishAllXml).
-function publishXml({ entities = [], optionsets = [], sitemaps = [], appmodules = [], webresources = [] } = {}) {
+// A dashboard (a systemform with no table, objecttypecode "none") is published by its own id (1.11.30; Microsoft
+// Learn, "Analyze data with dashboards": PublishXml naming the dashboard id).
+function publishXml({ entities = [], optionsets = [], sitemaps = [], appmodules = [], webresources = [], dashboards = [] } = {}) {
   const IDENT = /^[A-Za-z0-9_{}-]+$/;
   const tag = (outer, inner, vals) => (vals.length ? `<${outer}>${vals.map((v) => {
     if (!IDENT.test(v)) throw new Error(`refusing to publish "${v}"`);
     return `<${inner}>${v}</${inner}>`;
   }).join('')}</${outer}>` : '');
-  const body = tag('entities', 'entity', entities) + tag('optionsets', 'optionset', optionsets)
+  const body = tag('entities', 'entity', entities) + tag('dashboards', 'dashboard', dashboards) + tag('optionsets', 'optionset', optionsets)
     + tag('sitemaps', 'sitemap', sitemaps) + tag('appmodules', 'appmodule', appmodules) + tag('webresources', 'webresource', webresources);
   if (!body) throw new Error('nothing to publish');
   return `<importexportxml>${body}</importexportxml>`;
