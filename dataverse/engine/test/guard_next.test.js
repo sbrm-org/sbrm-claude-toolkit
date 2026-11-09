@@ -244,6 +244,44 @@ test('fork 5 (ruled 10/13): plugin install and marketplace add ASK; disable stil
   assert.equal(next(sh(J('claude plugin dis', 'able sbrm-toolkit@sbrm-claude-toolkit'))).kind, 'block');
 });
 
+test('R-1231 (11/8/26): switching ANOTHER plugin off passes; the toolkit, an unnamed or an unreadable plugin still blocks', () => {
+  const D = J('claude plugin dis', 'able');
+  const U = J('claude plugin unin', 'stall');
+  // the recorded command, and its siblings, for a third-party plugin
+  for (const c of [
+    `${D} pbip@power-bi-agentic-development --scope local`,
+    `${D} --scope local pbip@power-bi-agentic-development`,
+    `${D} -s user pbip`,
+    `${U} pbip@power-bi-agentic-development`,
+    `claude plugin rm other-plugin@market`,
+    J('claude plugin market', 'place remove power-bi-agentic-development'),
+  ]) assert.equal(next(sh(c)).kind, 'allow', `${c}: ${next(sh(c)).why}`);
+  // the toolkit in any spelling, no name at all, every plugin at once, a name the guard cannot read, or a mixed list
+  for (const c of [
+    `${D} sbrm-toolkit`,
+    `${D} SBRM-Toolkit@sbrm-claude-toolkit --scope user`,
+    `${D} --scope local sbrm-toolkit@sbrm-claude-toolkit`,
+    `${D} sbrm-toolkit-dvtest`,
+    `${U} sbrm-toolkit@sbrm-claude-toolkit`,
+    `${D}`,
+    `${D} --scope local`,
+    `${D} --all`,
+    `${D} -a`,
+    `${D} "$P"`,
+    `${D} $(cat name.txt)`,
+    `${D} pbip@x sbrm-toolkit@sbrm-claude-toolkit`,
+    `${D} sbrm-toolkit pbip@x`,
+    `${D} SBRM-TOOLKIT`,
+    `${D} pbip "$P"`,
+    `${D} pbip --all`,
+    `${D} pbip --scope "$S"`,
+    `${D} 'sbrm-toolkit'@sbrm-claude-toolkit`,
+    J('claude plugin market', 'place remove sbrm-claude-toolkit'),
+    J('claude plugin market', 'place rm'),
+    J('claude plugin market', 'place remove "$M"'),
+  ]) assert.equal(next(sh(c)).kind, 'block', c);
+});
+
 test('approvals: the exact form still asks; the words in a running position are refused; as data they pass', () => {
   const own = (G._internals.ownEngine() || '').replace(/\\/g, '/');
   const A = (command) => ({ tool_name: 'Bash', tool_input: { command }, permission_mode: 'default' });
@@ -385,6 +423,28 @@ const RAW_BLOCK = [
     'import requests\nrequests.po', 'st("https://graph.microsoft.com/v1.0/me/sendMail", json={})\n',
     `url = "https://" + "sbrmrec" + ".crm.dyn` + 'amics.com/api/data/v9.2/contacts(1)"\nrequests.pat', 'ch(url, json={"lastname": "x"})\n'))],
 ];
+// H-1182 (Dylan 10/30, 1.11.26): a read-only script run with its own JSON-output flag, then a TDS read whose server
+// string names the Dataverse host, blocked as a raw write: curl's body flags were read as writing on ANY program. Now
+// they count only on a segment that runs an HTTP client (curl, wget, httpie, xh, curlie); curl itself still blocks.
+const JSONF = J('--js', 'on');
+for (const [label, input] of [
+  ['H-1182 a script with its own JSON output flag, then a TDS read naming the host', sh(J(
+    `python query.py ${JSONF} out.json "select name from contacts"; python -c "import pyodbc; `,
+    `pyodbc.connect('Server=${DVH2},5558;Database=x'); print(1)"`))],
+  ['H-1182 the same pair on one line with &&', sh(`python dv.py ${JSONF} saved.json && echo "${DVH2}"`)],
+]) {
+  test(`raw-HTTP rule passes: ${label}`, () => {
+    const r = next(input);
+    assert.equal(r.kind, 'allow', r.why);
+  });
+}
+RAW_BLOCK.push(
+  ['H-1182 control: curl with the JSON body flag at the host', sh(`curl ${JSONF} '{"lastname":"x"}' "https://${DVH2}/api/data/v9.2/contacts"`)],
+  ['H-1182 control: curl with the JSON body flag, its URL in a variable, the host named elsewhere',
+    sh(`U="https://${DVH2}/api/data/v9.2/contacts"; curl ${JSONF} '{"lastname":"x"}' "$U"`)],
+  ['H-1182 control: curl reached through xargs, data flag, host named elsewhere',
+    sh(`echo "${DVH2}" > /dev/null; cat urls.txt | xargs curl -d '{"lastname":"x"}'`)],
+);
 for (const [label, input] of RAW_BLOCK) {
   test(`raw-HTTP rule still blocks: ${label}`, () => {
     const r = next(input);
@@ -596,6 +656,36 @@ test('D-1388: a find of home by name may carry exclusions; an or-branch with no 
     'find ~ -iname "*.pdf" -not -path "*/x/*" | xargs cat',
     'find ~ \\( -iname "*.pdf" -not -path "*/x/*"',
     'find ~ -iname "*.pdf" -print -o ! \\( -type d -print \\)',
+  ]) assert.match(next(sh(c)).why || '', /home-sweep|home folder/, c);
+});
+
+// H-1155 (Dylan 10/29) and R-1203 (Dylan 11/3), 11/8/26: two more find shapes that can never print the key file.
+// (a) an ANDed directory-type test: the key is a regular file, so a listing of directories (or other non-file,
+//     non-link types) cannot name it; -type f, -type l, and a type list holding either stay neutral.
+// (b) -maxdepth 0 on every -maxdepth given: find prints its starting points and never descends.
+// Not in this change: a -path pattern judged against the key's real path (the card's fix (b)); the recorded block
+// carries -type d, so (a) clears it, and a bare -path find of home still sweeps.
+test('H-1155 / R-1203: a directory-type find and a no-descent find of home list no key', () => {
+  for (const c of [
+    `ls -d "${H}/SB Rescue Mission"*/ 2>/dev/null; find "${H}" -maxdepth 4 -type d -path "*Operations - General/PowerBI*" 2>/dev/null | head`,
+    `find "${H}" -maxdepth 4 -type d -path "*Operations*"`,
+    'find ~ -maxdepth 3 -type d',
+    'find ~ -type d,p -name "*x*"',
+    'find / -maxdepth 0',
+    'find ~ -maxdepth 0 -print',
+    'find / -maxdepth 0 -maxdepth 0',
+  ]) assert.equal(next(sh(c)).kind, 'allow', `${c}: ${next(sh(c)).why}`);
+  for (const c of [
+    'find ~ -maxdepth 4 -type f -path "*Operations*"',
+    'find ~ -maxdepth 4 -type l',
+    'find ~ -type d,f',
+    'find ~ -type d -o -iname "*.key"',
+    'find ~ -maxdepth 4 -path "*Operations*"',
+    'find ~ ! -type d',
+    'find / -maxdepth 1',
+    'find / -maxdepth 0 -maxdepth 3',
+    J('find ~ -maxdepth 0 -ex', 'ec cat {} \\;'),
+    'find ~ -maxdepth 0 | xargs ls -R',
   ]) assert.match(next(sh(c)).why || '', /home-sweep|home folder/, c);
 });
 

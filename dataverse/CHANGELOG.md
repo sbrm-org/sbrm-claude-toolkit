@@ -3,6 +3,25 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.29** (2026-11-09, guard loosening, its own PR; tasks #6hrwWxvc2vpXWVRr, #6hvcqw8x8G3RGxHJ, #6hxFWFcCh7j86QGJ) Four guard
+  false positives fixed, each red first in `guard_next.test.js`. **H-1182**: curl's body flags (`-d`, the data flags,
+  the JSON flag, upload, form, the combined short form) count as a write only on a segment that runs an HTTP client
+  (curl, wget, httpie, xh, curlie, wherever it sits in the segment: `xargs curl` still counts); a script's own JSON
+  output flag beside a TDS read naming the host no longer reads as "a raw writing HTTP call at Dataverse". **H-1155**:
+  an ANDed `-type` / `-xtype` admitting neither a regular file nor a link is key-proof in a find of home (the key is a
+  regular file), so a directory listing narrowed by `-path` passes; `-type f`, `-type l` and a list holding either
+  stay neutral. **R-1203**: `find` with `-maxdepth 0` on every `-maxdepth` given lists only its starting points and
+  passes; an action (`-exec`) or a downstream reader still blocks. Not in it: a `-path` pattern judged against the
+  key's real path (a bare `-path` find of home still blocks), and D-1823, whose exact recorded command must be
+  replayed first. **R-1231** (added 11/9/26, task #6hxFWFcCh7j86QGJ): `claude plugin disable|uninstall|remove|rm` (and
+  `marketplace remove|rm`) of a plugin that is NOT the toolkit passes; it still blocks when a named plugin or marketplace
+  carries "sbrm" (any case, a renamed dev copy too), when no plugin is named, on `--all`, or when any name or `--scope`
+  value is not a literal the guard can read. A passing name falls through to the rest of the `claude` checks
+  (`--settings`, `--plugin-dir`). Evidence for the whole PR (11/9): suite 929 (928 + 1 skip), self-test 247, store
+  unchanged; `mutate_1_11_29.js` 16 of 16 (the eight 11/8 mutants + eight R-1231); `replay_shadow.js --allowed` 0 of 307
+  newly stopped; the recorded H-1155 / H-1182 / R-1203 commands replay `allow` (`guard_replays\replay_staged_2026-11-08.js`)
+  and the recorded R-1231 command is a test case.
+
 - **1.11.28** (2026-11-06, task #6hwP6PqfgwVp7gWr) **Form scripts: a component job can change a text web
   resource (Dylan 11/5/26: "add script support to the toolkit").** New set `webresourceset`, mode `update` only, for
   JavaScript, HTML, CSS and XML web resources (an image, or a new or deleted web resource, stays the maker portal's).

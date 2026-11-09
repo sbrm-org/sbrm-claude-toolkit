@@ -86,7 +86,7 @@ function targetsDataverse(input, { shell = false } = {}) {
   // Dataverse PATCH through a variable pass.)
   let unknown = false;
   for (const line of String(text).split(/[\n;|&]/)) {
-    if (!MUTATING_HTTP.test(line)) continue;
+    if (!writesHttp(line)) continue;
     URL_RE.lastIndex = 0;
     const m = URL_RE.exec(line);
     if (m) {
@@ -257,7 +257,6 @@ const MUTATING_HTTP = new RegExp([
   '(?:-X|--request)\\s*["\']?(?:POST|PATCH|PUT|DELETE|MERGE)\\b',
   '-Me(?:t(?:h(?:o(?:d)?)?)?)?(?::|\\s+)["\']?(?:Post|Patch|Put|Delete|Merge)\\b',
   'method\\s*[:=]\\s*["\'`]?(?:POST|PATCH|PUT|DELETE|MERGE)\\b',
-  '(?:^|\\s)(?:-d|--data(?:-raw|-binary|-urlencode)?|--json|-T|--upload-file|-F|--form)(?:\\s|=)',
   '\\brequests?\\.(?:post|patch|put|delete|request)\\s*\\(',
   '\\b(?:axios|got|superagent|httpx)\\.(?:post|patch|put|delete)\\s*\\(',
   '-Body\\b|-InFile\\b',
@@ -268,12 +267,18 @@ const MUTATING_HTTP = new RegExp([
   '\\b(?:urlopen|Request)\\s*\\([^)]*\\bdata\\s*=',
   '\\bhttps?\\s+(?:POST|PATCH|PUT|DELETE)\\b',
   '--post-(?:data|file)\\b|--method[=\\s]+["\']?(?:POST|PATCH|PUT|DELETE|MERGE)\\b|\\bopen\\s*\\(\\s*[\'"`](?:POST|PATCH|PUT|DELETE)',
-  // final re-verify: combined curl flags (-sd, -sSd), .NET HttpClient, -CustomMethod, jQuery/axios `type:`
-  '(?:^|\\s)-[a-zA-Z]*d(?:\\s|=|[\'"])',
+  // final re-verify: .NET HttpClient, -CustomMethod, jQuery/axios `type:`
   '\\.(?:Post|Patch|Put|Delete|Send)Async\\s*\\(|\\bHttpMethod\\.(?:Post|Patch|Put|Delete)|new\\s+HttpMethod\\s*\\(\\s*[\'"](?:PATCH|MERGE)',
   '-CustomMethod\\s+["\']?(?:POST|PATCH|PUT|DELETE|MERGE)',
   '\\b(?:type|verb)\\s*:\\s*["\'`](?:POST|PATCH|PUT|DELETE|MERGE)["\'`]',
 ].join('|'), 'i');
+// H-1182 (11/8/26): curl's BODY flags (-d / --data*, --json, -T / --upload-file, -F / --form, and the combined short
+// form -sd / -sSd) mean "writes" only when the segment runs an HTTP client. On any other program they are that
+// program's own options (a script's --json output flag was read as a curl body, 10/30). The client may sit anywhere in
+// the segment (xargs curl, sudo curl, a full path to curl.exe), so this looks for the word, not the first word.
+const CURL_BODY_FLAG = /(?:^|\s)(?:-d|--data(?:-raw|-binary|-urlencode)?|--json|-T|--upload-file|-F|--form)(?:\s|=)|(?:^|\s)-[a-zA-Z]*d(?:\s|=|['"])/i;
+const HTTP_CLIENT_WORD = /(?:^|[\s"'`(\/\\])(?:curl|wget|https?|httpie|xh|xhs|curlie)(?:\.exe)?["'`]?(?=\s|$)/i;
+const writesHttp = (seg) => MUTATING_HTTP.test(seg) || (CURL_BODY_FLAG.test(seg) && HTTP_CLIENT_WORD.test(seg));
 
 // Other tools that write to Dataverse: the Xrm PowerShell module's record cmdlets and the Power Platform CLI.
 // (`pac auth ...` is a sign-in, not a write; final re-verify false positive.)
