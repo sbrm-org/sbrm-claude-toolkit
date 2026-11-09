@@ -250,9 +250,19 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
     // as it was BEFORE the save, for a few seconds. `publishLag: n` serves the pre-save row to the next n reads by id.
     publishLag: 0,
     lagged: new Map(),
+    // D-1240 (live 10/21/26): the CLI gives up on a request at its 100-120 s client timeout while Dataverse carries on.
+    // `timeoutOnWrite: 'after'` saves the write, then throws the timeout; 'before' throws it with nothing saved. A
+    // number n delays the save: the write lands only after n more reads of any kind (it lands late).
+    timeoutOnWrite: null,
+    pendingWrite: null,
+    // As the platform does (draftsFor's note, blind review 10/7): a PATCH of a view, form, sitemap or web resource
+    // lands in the UNPUBLISHED layer, and a plain read by id shows the published one until PublishXml. Off by default
+    // (the older tests model publish as instant); `unpublishedUntilPublish: true` turns it on.
+    unpublishedUntilPublish: false,
     touch(set, id, patch) { Object.assign(d[set][id], patch); bump(set, id); },
     get(p, opts = {}) {
       calls.push({ method: 'GET', path: p, formatted: !!opts.formatted });
+      if (dv.pendingWrite) { dv.pendingWrite.left -= 1; if (dv.pendingWrite.left < 0) { const w = dv.pendingWrite; dv.pendingWrite = null; w.run(); } }
       let m;
       if (p === 'WhoAmI') return { UserId: userId };
       if ((m = /^systemusers\(([0-9a-f-]{36})\)\?\$select=(.*)$/.exec(p))) {
@@ -311,6 +321,11 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
       const rec = d[set] && d[set][id];
       if (!rec) throw notFound();
       if (etag !== tag(set, id)) throw new DataverseError('version mismatch', { code: '0x80060882' });
+      if (dv.unpublishedUntilPublish && d.drafts[set]) {
+        d.drafts[set][id] = { ...(d.drafts[set][id] || {}), ...body };
+        bump(set, id);
+        return {};
+      }
       if (dv.publishLag) dv.lagged.set(`${set}/${id}`, { row: { ...rec }, left: dv.publishLag });
       // Live 10/31/26 (recovery flow 5be9e73d): the platform re-registered the trigger from the NEW definition, which
       // moved the version, then refused the definition write. `reRegisterThenConflict` models it.
@@ -371,9 +386,34 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
     publish(components) {
       calls.push({ method: 'POST', path: 'PublishXml', body: components });
       if (dv.publishFails) throw new DataverseError('PublishXml failed: a dependency is missing');
+      if (dv.unpublishedUntilPublish) {
+        // the drafts of what was named go live: a table's forms and views, a dashboard, sitemap or web resource by id
+        const ids = new Set([...(components.dashboards || []), ...(components.sitemaps || []), ...(components.webresources || [])].map((x) => String(x).replace(/[{}]/g, '').toLowerCase()));
+        const tables = new Set(components.entities || []);
+        for (const set of Object.keys(d.drafts)) {
+          for (const [id, patch] of Object.entries(d.drafts[set])) {
+            const rec = d[set][id];
+            const t = rec && (rec.objecttypecode || rec.returnedtypecode);
+            if (rec && (ids.has(id) || (t && tables.has(t)))) { Object.assign(rec, patch); delete d.drafts[set][id]; }
+          }
+        }
+      }
       return {};
     },
   };
+  // `timeoutOnWrite` (above): wraps the three writes. The text is the CLI's own (D-1240), which lib/cli.js isTimeout reads.
+  const timedOut = () => new DataverseError('The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing. (TaskCanceledException)');
+  for (const verb of ['update', 'create', 'remove']) {
+    const real = dv[verb];
+    dv[verb] = (...args) => {
+      const t = dv.timeoutOnWrite;
+      if (!t) return real(...args);
+      dv.timeoutOnWrite = null;
+      if (t === 'after') real(...args);
+      else if (typeof t === 'number') dv.pendingWrite = { left: t, run: () => real(...args) };
+      throw timedOut();
+    };
+  }
   return dv;
 }
 

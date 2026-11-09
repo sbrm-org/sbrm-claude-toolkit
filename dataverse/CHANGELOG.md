@@ -3,6 +3,28 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.30** (2026-11-09, pooled engine fixes; tasks #6hrx9hX48jvgWh9J,
+  #6hxFVrXF6M24mVJJ, #6hwXVXHPvrvGcp7r) **Rename an app component.** A flow, view or form update takes
+  `definition.name` (the new name; one line, 100 characters, a view 200, read live 11/9/26). It stays outside the hashed
+  definition, so every earlier snapshot and log entry still matches. The plan shows `Name: 'old' -> 'new'` as its own
+  section `name` (intent lists it), refuses a name another component of that kind already has on the same table (a form
+  also of the same type; an unreadable check refuses), and apply re-checks the live name and the clash. The read-back
+  compares the name; revert renames back only while it still has the name the plan gave; `proven_in` counts a dev
+  rename only with the same new name. **Dashboards** (a form with objecttypecode `none`, read live 11/9/26) now plan at
+  all: no table fields to check, no table-wide draft read, published by their own id (`publishXml` gains
+  `dashboards`). **A timed-out component write is reconciled** (1.11.28 review F3): as for records, the write is never
+  re-sent; it is re-read every 10 s for up to 2 minutes (a view, form, sitemap or web resource in its unpublished
+  layer, a create by its name, a state change by its state, a delete by its absence). Landed = published and read back
+  with a note; else failed (may still land) or not known, with no after-state logged, so revert refuses it. Tests
+  first: `component_rename.test.js` 17, `component_timeout.test.js` 11; the fake gained `timeoutOnWrite` and
+  `unpublishedUntilPublish`. **Review C1** (one Codex seat, run 20261109-085041-797262), six findings fixed test-first in
+  `component_review_1_11_30.test.js`: a pending (unpublished) rename now counts as a draft (F1); the rename's clash is
+  checked again after the approval (F2); edits saved on the table during a timeout's re-reads are not published along
+  (the change is left saved, unpublished, and said so, F3); reverting a rename-only change sends the name alone (F4); a
+  write that went through but could not be read back is `read-back failed`, never `failed` (F5); apply works out what to
+  publish itself, never from the plan file (F6). Suite 963 (962 + 1 skip), self-test 247 staged / 248 on the release
+  tree, store unchanged; `mutate_1_11_30.js` 41 of 41.
+
 - **1.11.29** (2026-11-09, guard loosening, its own PR; tasks #6hrwWxvc2vpXWVRr, #6hvcqw8x8G3RGxHJ, #6hxFWFcCh7j86QGJ) Four guard
   false positives fixed, each red first in `guard_next.test.js`. **H-1182**: curl's body flags (`-d`, the data flags,
   the JSON flag, upload, form, the combined short form) count as a write only on a segment that runs an HTTP client

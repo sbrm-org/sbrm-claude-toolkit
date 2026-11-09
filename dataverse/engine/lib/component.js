@@ -32,7 +32,7 @@ const { resolveAccess, TOOLKIT_SETS } = require('./access');
 const { ApplyRefused } = require('./apply');
 const { canonical } = require('./store');
 const { entryText } = require('./log');
-const { DataverseError } = require('./cli');
+const { DataverseError, isTimeout } = require('./cli');
 const { GUID } = require('./contract');
 const { atLeast } = require('./levels');
 const severity = require('./severity');
@@ -46,21 +46,24 @@ const SOLUTION_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/; // same rule as lib/write.js
 const IDENT = /^[a-z_][a-z0-9_]*$/;
 
 // One entry per component set. `fields` are what a snapshot covers and what the log keeps in full.
+// `nameMax` (1.11.30): the set can be RENAMED by a component update (`definition.name`), up to the name column's
+// length (read live 11/9/26: workflow 100, savedquery 200, systemform 100, all IsValidForUpdate). The name stays OUT
+// of `fields`, so the restore-point hash, and every snapshot and log entry made before 1.11.30, are unchanged.
 const SETS = {
   workflows: {
-    noun: 'flow', id: 'workflowid', name: 'name', fields: ['clientdata', 'description'], xml: {}, json: 'clientdata',
+    noun: 'flow', id: 'workflowid', name: 'name', fields: ['clientdata', 'description'], xml: {}, json: 'clientdata', nameMax: 100,
     select: 'workflowid,name,ismanaged,category,statecode,statuscode,_ownerid_value,description,clientdata',
-    sections: ['trigger', 'concurrency', 'actions', 'notes', 'connections', 'description', 'other'],
+    sections: ['name', 'trigger', 'concurrency', 'actions', 'notes', 'connections', 'description', 'other'],
   },
   savedqueries: {
-    noun: 'view', id: 'savedqueryid', name: 'name', fields: ['fetchxml', 'layoutxml', 'description'], xml: { fetchxml: 'fetch', layoutxml: 'grid' },
+    noun: 'view', id: 'savedqueryid', name: 'name', fields: ['fetchxml', 'layoutxml', 'description'], xml: { fetchxml: 'fetch', layoutxml: 'grid' }, nameMax: 200,
     table: 'returnedtypecode', select: 'savedqueryid,name,ismanaged,statecode,returnedtypecode,querytype,description,fetchxml,layoutxml',
-    sections: ['columns', 'filters', 'sort', 'description', 'other'],
+    sections: ['name', 'columns', 'filters', 'sort', 'description', 'other'],
   },
   systemforms: {
-    noun: 'form', id: 'formid', name: 'name', fields: ['formxml', 'description'], xml: { formxml: 'form' },
+    noun: 'form', id: 'formid', name: 'name', fields: ['formxml', 'description'], xml: { formxml: 'form' }, nameMax: 100,
     table: 'objecttypecode', select: 'formid,name,ismanaged,objecttypecode,type,description,formxml',
-    sections: ['tabs', 'sections', 'fields', 'events', 'description', 'other'],
+    sections: ['name', 'tabs', 'sections', 'fields', 'events', 'description', 'other'],
   },
   sitemaps: {
     noun: 'sitemap', id: 'sitemapid', name: 'sitemapname', fields: ['sitemapxml'], xml: { sitemapxml: 'SiteMap' },
@@ -1262,7 +1265,7 @@ function sectionContent(set, def, section) {
 // a flow, the dev change's own per-section diff equals this change's (trigger, action names and types,
 // connection reference keys), never the raw clientdata, whose connection references differ by environment.
 // true, or a short reason.
-function sameChange({ set, name, mode, sections, diff, after }, e) {
+function sameChange({ set, name, mode, sections, diff, after, rename = null }, e) {
   if (!e || e.mode !== 'component') return 'it was not an app component change';
   const c = e.component || {};
   if (c.set !== set) return `it changed a ${(SETS[c.set] || {}).noun || c.set}, not a ${SETS[set].noun}`;
@@ -1277,17 +1280,20 @@ function sameChange({ set, name, mode, sections, diff, after }, e) {
   const devAfter = row.after && row.after.definition;
   if (!devAfter || (set === 'workflows' && !devBefore)) return 'its log entry does not carry the definitions to compare';
   let differ;
+  // A rename (1.11.30) is the same change only when it gave the same new name.
+  const content = b.filter((s) => s !== 'name');
   try {
     if (set === 'workflows') {
       const dd = diffFlow(normField(set, 'clientdata', devBefore.clientdata), normField(set, 'clientdata', devAfter.clientdata),
         { oldDescription: devBefore.description || null, newDescription: devAfter.description || null });
-      differ = b.filter((s) => dd.shape[s] !== diff.shape[s]);
+      differ = content.filter((s) => dd.shape[s] !== diff.shape[s]);
     } else {
-      differ = b.filter((s) => sectionContent(set, devAfter, s) !== sectionContent(set, after, s));
+      differ = content.filter((s) => sectionContent(set, devAfter, s) !== sectionContent(set, after, s));
     }
   } catch (err) {
     return `its definitions could not be compared (${String(err.message).slice(0, 80)})`;
   }
+  if (b.includes('name') && String((row.after && row.after.name) || '').trim() !== String(rename || '').trim()) differ = ['name', ...differ];
   return differ.length ? `its ${differ.join(', ')} ${differ.length === 1 ? 'differs' : 'differ'} from this change's` : true;
 }
 
@@ -1366,12 +1372,14 @@ function validateComponentJob(raw, { envs }) {
 
   // The definition.
   let def = null;
+  let rename = null;
   const d = raw.definition;
   if (mode === 'create' || mode === 'update') {
     if (!obj(d) || !Object.keys(d).length) err('"definition" is required for a create or an update');
     else if (set) {
       const spec = SETS[set];
-      const extra = mode === 'create' ? { savedqueries: ['returnedtypecode', 'querytype'], systemforms: ['objecttypecode', 'type'] }[set] || [] : [];
+      const extra = mode === 'create' ? { savedqueries: ['returnedtypecode', 'querytype'], systemforms: ['objecttypecode', 'type'] }[set] || []
+        : spec.nameMax ? ['name'] : [];
       const allowed = [...spec.fields, ...extra];
       for (const k of Object.keys(d)) if (!allowed.includes(k)) err(`unknown key "definition.${k}" for a ${spec.noun} ${mode} (allowed: ${allowed.join(', ')})`);
       def = {};
@@ -1380,7 +1388,12 @@ function validateComponentJob(raw, { envs }) {
       if (mode === 'update' && !Object.keys(d).length) err('"definition" names nothing to change');
       for (const f of Object.keys(d).filter((k) => allowed.includes(k))) {
         const v = d[f];
-        if (f === spec.json) {
+        if (f === 'name') {
+          // A rename (1.11.30): kept apart from the hashed definition; `component.name` stays the CURRENT name.
+          if (typeof v !== 'string' || !v.trim() || /[\r\n]/.test(v)) err(`"definition.name" must be the ${spec.noun}'s new name, one line of text`);
+          else if (v.trim().length > spec.nameMax) err(`"definition.name" is ${v.trim().length} characters; a ${spec.noun}'s name is at most ${spec.nameMax} characters`);
+          else rename = v.trim();
+        } else if (f === spec.json) {
           let cd = v;
           if (typeof v === 'string') { try { cd = JSON.parse(v); } catch { err('"definition.clientdata" is not valid JSON'); continue; } }
           checkFlowDefinition(cd, err);
@@ -1444,7 +1457,7 @@ function validateComponentJob(raw, { envs }) {
     job: {
       contract: CONTRACT, kind: 'component', env: raw.env, mode,
       component: { set, id: mode === 'create' ? null : c.id.toLowerCase(), name: c.name.trim() },
-      definition: def, owner: raw.owner ? raw.owner.toLowerCase() : null, snapshot_hash: raw.snapshot_hash || null,
+      definition: def, rename, owner: raw.owner ? raw.owner.toLowerCase() : null, snapshot_hash: raw.snapshot_hash || null,
       solution: raw.solution || null, proven_in: raw.proven_in ? raw.proven_in.trim() : null,
       source: raw.source.trim(), reason: raw.reason.trim(), intent,
     },
@@ -1488,6 +1501,7 @@ function readComponent(dv, set, id) {
     statuscode: row.statuscode === undefined ? null : row.statuscode,
     owner: row._ownerid_value ? { id: String(row._ownerid_value).toLowerCase(), name: row['_ownerid_value@OData.Community.Display.V1.FormattedValue'] || row._ownerid_value } : null,
     table: spec.table ? row[spec.table] || null : null,
+    type: row.type === undefined ? null : row.type,
     restype: row.webresourcetype === undefined ? null : row.webresourcetype,
     etag: row['@odata.etag'] || null,
   };
@@ -1527,8 +1541,11 @@ function draftsFor(dv, set, { table = null, id = null }) {
     const uid = String(u[spec.id]).toLowerCase();
     const p = pub.get(uid);
     let differs = true;
+    // A pending RENAME is a draft too (1.11.30 review F1): the name is outside the hash, so it is compared on its own
+    // for every set that can be renamed.
+    const named = spec.nameMax ? [spec.name] : [];
     try {
-      differs = !p || snapshot(set, u).hash !== snapshot(set, p).hash || also.some((c) => (u[c] === undefined ? null : u[c]) !== (p[c] === undefined ? null : p[c]));
+      differs = !p || snapshot(set, u).hash !== snapshot(set, p).hash || [...also, ...named].some((c) => (u[c] === undefined ? null : u[c]) !== (p[c] === undefined ? null : p[c]));
     } catch { differs = true; } // unparseable = not provably the same
     if (differs) out.push({ id: uid, name: u[spec.name] || uid });
   }
@@ -1542,7 +1559,7 @@ function draftsFor(dv, set, { table = null, id = null }) {
 function draftState(dv, set, mode, id, table) {
   if (set === 'workflows') return { target: [], others: [] };
   const target = id && ['update', 'delete'].includes(mode) ? draftsFor(dv, set, { id }) : [];
-  const others = SETS[set].table && table && ['update', 'create'].includes(mode)
+  const others = SETS[set].table && table && !tableless(set, table) && ['update', 'create'].includes(mode)
     ? ['systemforms', 'savedqueries'].flatMap((s) => draftsFor(dv, s, { table }).filter((d) => d.id !== id).map((d) => ({ ...d, name: `the ${SETS[s].noun} '${d.name}'` })))
     : [];
   return { target, others };
@@ -1611,6 +1628,39 @@ function callersOf(dv, id) {
     if (e instanceof DataverseError) return null;
     throw e;
   }
+}
+
+// A form with no table (1.11.30): a dashboard reads objecttypecode "none" (read live 11/9/26, Donor App 'Board
+// Dashboard', type 103). It has no table fields to check, publishes by its own id, and shares no table with anything.
+function tableless(set, table) {
+  return set === 'systemforms' && (blank(table) || String(table).toLowerCase() === 'none');
+}
+
+// A rename's clash (1.11.30): OTHER components of the set already carrying the new name (case-blind, as Dataverse
+// compares it) on the same table; a form also of the same type, a flow also a cloud flow. [{ name }], or null when
+// it could not be read (then the change is refused, never assumed clear).
+function nameTaken(dv, set, name, live) {
+  const spec = SETS[set];
+  const cols = [spec.id, spec.name, spec.table, set === 'systemforms' ? 'type' : null, set === 'workflows' ? 'category' : null].filter(Boolean).join(',');
+  let rows;
+  try {
+    rows = dv.get(filterPath(set, cols, `${spec.name} eq '${q(name)}'`)).value || [];
+  } catch (e) {
+    if (e instanceof DataverseError) return null;
+    throw e;
+  }
+  return rows.filter((r) => String(r[spec.id]).toLowerCase() !== live.id
+    && (!spec.table || String(r[spec.table] || '').toLowerCase() === String(live.table || '').toLowerCase())
+    && (set !== 'systemforms' || r.type === live.type)
+    && (set !== 'workflows' || r.category === 5)).map((r) => ({ name: r[spec.name] }));
+}
+
+function nameClash(set, name, live, taken) {
+  const spec = SETS[set];
+  if (taken === null) return `could not check whether another ${spec.noun} is already named '${name}'; nothing was changed. Try again.`;
+  if (!taken.length) return null;
+  const on = spec.table && !tableless(set, live.table) ? ` on ${live.table}` : '';
+  return `there is already a ${spec.noun} named '${taken[0].name}'${on}; two with one name cannot be told apart in the app. Pick another name.`;
 }
 
 function existingByName(dv, set, name, table) {
@@ -1697,12 +1747,14 @@ function severityFor(f, warnRows) {
 //   live      readComponent(...) or null (create)
 //   written   the definition the write leaves (update: live + the body; create: the new definition) or null
 // Returns { facts, diff, flow, typed }. READS ONLY.
-function describe(dv, { mode, set, name, table, id, live, written, unproven, carried = null, extra = {}, me = null }) {
+function describe(dv, { mode, set, name, table, id, live, written, unproven, carried = null, extra = {}, me = null, rename = null }) {
   const spec = SETS[set];
   let diff = { sections: [], lines: [], detail: [] };
   if (mode === 'update') diff = diffComponent(set, live.definition, written);
   else if (mode === 'create') diff = { sections: [], lines: createLines(set, written, createBody(set, name, written, extra || {})), detail: [] };
   diff.lines = [...diff.lines];
+  // A rename (1.11.30) is its own section, first, so the person reads it before anything else.
+  if (mode === 'update' && rename) diff = { ...diff, sections: ['name', ...diff.sections], lines: [`Name: '${rename.from}' -> '${rename.to}'`, ...diff.lines] };
   const power = [];
   if (set !== 'workflows' && (mode === 'update' || mode === 'create')) {
     const m = markupPower(set, live ? live.definition : null, written);
@@ -1793,6 +1845,7 @@ function publishFor(set, id, table) {
   if (set === 'workflows') return null;
   if (set === 'sitemaps') return { sitemaps: [`{${id}}`] };
   if (set === 'webresourceset') return { webresources: [`{${id}}`] };
+  if (tableless(set, table)) return { dashboards: [`{${id}}`] };
   return { entities: [table] };
 }
 
@@ -1844,6 +1897,7 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
   let table = null;
   let after = null;
   let carried = null;
+  let rename = null;
   if (job.mode === 'create') {
     const s = readSolution(dv, envInfo, job.solution);
     if (s.why) throw new PlanRefused([s.why], s.code);
@@ -1884,10 +1938,16 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
         carried = carryConcurrency(JSON.parse(live.definition.clientdata), cd);
         if (carried) after.clientdata = JSON.stringify(cd);
       }
-      if (sameDef(set, live.definition, after)) {
+      // A rename to the name it already has (exactly) is no rename; a change of case alone is one.
+      if (job.rename && job.rename !== String(live.name || '').trim()) rename = { from: live.name, to: job.rename };
+      if (sameDef(set, live.definition, after) && !rename) {
         throw new PlanRefused([carried
           ? `the only difference is trigger concurrency, which the platform never lets anyone remove once set (a live finding), so '${live.name}' cannot go back further than it is now`
-          : `'${live.name}' already has this definition (nothing to change)`], 'every_row_refused');
+          : job.rename ? `'${live.name}' already has this definition and this name (nothing to change)` : `'${live.name}' already has this definition (nothing to change)`], 'every_row_refused');
+      }
+      if (rename) {
+        const clash = nameClash(set, rename.to, live, nameTaken(dv, set, rename.to, live));
+        if (clash) throw new PlanRefused([clash], 'invalid_job');
       }
     }
   }
@@ -1915,8 +1975,9 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
     ownerTo = { id: job.owner, name: u.fullname };
   }
 
-  // A form's fields must exist on its table, so the publish cannot fail on a missing column (DESIGN.md §10b).
-  if (set === 'systemforms' && after) {
+  // A form's fields must exist on its table, so the publish cannot fail on a missing column (DESIGN.md §10b). A
+  // dashboard has no table (1.11.30).
+  if (set === 'systemforms' && after && !tableless(set, table)) {
     const have = tableFields(dv, table);
     if (!have) throw new PlanRefused([`there is no table "${table}" in the ${envInfo.name}`], 'table_missing');
     const missing = formFields(after.formxml).filter((f) => !have.has(f));
@@ -1944,7 +2005,7 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
   const createExtra = job.mode === 'create' ? Object.fromEntries(Object.entries(job.definition).filter(([k]) => !spec.fields.includes(k))) : null;
   const { facts, diff, flow } = describe(dv, {
     mode: job.mode, set, name: live ? live.name : job.component.name, table, id: live ? live.id : null, live, written: after, carried, extra: createExtra,
-    me: identity.systemuserid,
+    me: identity.systemuserid, rename,
   });
   if (facts.target_drafts.length) throw new PlanRefused([draftRefusal(live.name)], 'invalid_job');
 
@@ -1970,7 +2031,7 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
 
   // Tried in the dev copy first? Only if the cited plan was THIS change (blind review 10/7: any applied plan
   // id used to silence the line): same kind of component, same name, same mode, the same sections changed.
-  const matches = (e) => sameChange({ set, name: job.component.name, mode: job.mode, sections: diff.sections, diff, after }, e);
+  const matches = (e) => sameChange({ set, name: job.component.name, mode: job.mode, sections: diff.sections, diff, after, rename: rename ? rename.to : null }, e);
   facts.unproven = job.mode === 'create' ? null : unprovenPhrase({ env: job.env, envs, provenIn: job.proven_in, readEnv, matches });
   const need = needFor(facts);
   if (!atLeast(acc.level, need.level)) {
@@ -1987,6 +2048,7 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
     facts, need: need.level, need_why: need.why,
     before: stateOf(live), before_hash: live ? job.snapshot_hash : null,
     after_definition: after, sent_fields: job.mode === 'update' ? Object.keys(job.definition).concat(carried && !job.definition.clientdata ? ['clientdata'] : []) : null,
+    rename,
     create_extra: createExtra,
     solution, owner_to: ownerTo, diff, flow,
     publish: ['update', 'create'].includes(job.mode) ? publishFor(set, live ? live.id : null, table) : null,
@@ -2041,7 +2103,7 @@ function componentSummary(plan) {
     const ra = plan.flow && plan.flow.trigger_runas;
     out.push(`  A flow acts as its owner: from now on it acts as ${plan.owner_to.name}${ra && ra.length ? ` (its trigger subscription: runas ${[...new Set(ra)].join(', ')})` : ' (it has no trigger subscription now)'}.`);
   }
-  if (plan.publish) out.push(`  Published after the change (${plan.publish.entities ? `the ${plan.component.table} table only` : plan.publish.webresources ? 'this web resource only' : 'this sitemap only'}).`);
+  if (plan.publish) out.push(`  Published after the change (${plan.publish.entities ? `the ${plan.component.table} table only` : plan.publish.webresources ? 'this web resource only' : plan.publish.dashboards ? 'this dashboard only' : 'this sitemap only'}).`);
   out.push('', `  ${undoLine(plan)}`, '', `Reason given: ${plan.reason}`);
   return out.join('\n');
 }
@@ -2088,14 +2150,21 @@ function planShapeProblems(plan) {
   const set = c.set;
   const fields = SETS[set].fields;
   const bad = [];
+  // A rename (1.11.30): only on an update of a set that can be renamed, a one-line name within the column.
+  const rn = plan.rename;
+  if (rn !== null && rn !== undefined) {
+    const max = SETS[set].nameMax;
+    if (plan.mode !== 'update' || !max) bad.push('a new name');
+    else if (!obj(rn) || typeof rn.to !== 'string' || !rn.to.trim() || rn.to !== rn.to.trim() || /[\r\n]/.test(rn.to) || rn.to.length > max || typeof rn.from !== 'string') bad.push('a new name that is not one line of text');
+  }
   if (plan.mode === 'update') {
-    if (!Array.isArray(plan.sent_fields) || !plan.sent_fields.length) bad.push('no field at all');
+    if (!Array.isArray(plan.sent_fields) || (!plan.sent_fields.length && !rn)) bad.push('no field at all');
     else for (const f of plan.sent_fields) if (!fields.includes(f)) bad.push(`the field "${f}"`);
   }
   for (const k of Object.keys(plan.after_definition || {})) if (!fields.includes(k)) bad.push(`the definition key "${k}"`);
   if (plan.mode === 'create') for (const k of Object.keys(plan.create_extra || {})) if (!(CREATE_EXTRAS[set] || []).includes(k)) bad.push(`the create field "${k}"`);
   if (!bad.length && (plan.mode === 'update' || plan.mode === 'create')) {
-    const allowed = new Set([...fields, ...(plan.mode === 'create' ? ['name', ...(CREATE_EXTRAS[set] || []), ...(set === 'workflows' ? FLOW_CREATE_FIXED : [])] : [])]);
+    const allowed = new Set([...fields, ...(plan.mode === 'create' ? ['name', ...(CREATE_EXTRAS[set] || []), ...(set === 'workflows' ? FLOW_CREATE_FIXED : [])] : rn ? ['name'] : [])]);
     for (const k of Object.keys(bodyFor(plan))) if (!allowed.has(k)) bad.push(`the body key "${k}"`);
   }
   return [...new Set(bad)];
@@ -2104,7 +2173,11 @@ function planShapeProblems(plan) {
 // The body of the one write.
 function bodyFor(plan) {
   const set = plan.component.set;
-  if (plan.mode === 'update') return Object.fromEntries(plan.sent_fields.map((f) => [f, plan.after_definition[f]]));
+  if (plan.mode === 'update') {
+    const body = Object.fromEntries(plan.sent_fields.map((f) => [f, plan.after_definition[f]]));
+    if (plan.rename) body.name = plan.rename.to;
+    return body;
+  }
   if (plan.mode === 'create') return createBody(set, plan.component.name, plan.after_definition, plan.create_extra || {});
   if (plan.mode === 'on') return { statecode: 1, statuscode: 2 };
   if (plan.mode === 'off') return { statecode: 0, statuscode: 1 };
@@ -2220,7 +2293,8 @@ function readBack(dv, plan, rid, sleep) {
   if (!now) return { after: null, bad: ['it could not be read back'], notes };
   if (plan.mode === 'update' || plan.mode === 'create') {
     const fields = plan.mode === 'update' ? plan.sent_fields : SETS[set].fields.filter((f) => !blank(plan.after_definition[f]));
-    const offIn = (c) => fields.filter((f) => canonical(readBackField(set, f, c.definition[f], rid)) !== canonical(readBackField(set, f, plan.after_definition[f], rid)));
+    const offIn = (c) => fields.filter((f) => canonical(readBackField(set, f, c.definition[f], rid)) !== canonical(readBackField(set, f, plan.after_definition[f], rid)))
+      .concat(plan.mode === 'update' && plan.rename && String(c.name || '') !== plan.rename.to ? ['name'] : []);
     let off = offIn(now);
     // F-1171 / F-1173 (live 11/5/26): a published view, form or sitemap reads back as it was BEFORE the save for a few
     // seconds after PublishXml (metadata reads lag a publish), so a change that landed was logged "not written" and its
@@ -2260,8 +2334,61 @@ function readBack(dv, plan, rid, sleep) {
   return { after: stateOf(now), bad, notes };
 }
 
+// A write this computer gave up on (1.11.30, task #6hwXVXHPvrvGcp7r, 1.11.28 review F3): the CLI's client timeout
+// (D-1240) can fire while Dataverse saves the change. As the records path does (CONTRACT.md section 5, lib/apply.js
+// landedAfterTimeout), the component is re-read every 10 s for up to 2 minutes and the write is NEVER sent again.
+// A view, form, sitemap or web resource is read in its UNPUBLISHED layer (a PATCH lands there; a plain GET shows the
+// published one until the publish). A create is looked for by its name (the apply checked none existed). Returns
+// { rid, note } when the change is there, else { outcome }: not there (may still land) or not readable (not known).
+const TIMEOUT_POLL_MS = 10000;
+const TIMEOUT_RECHECK_MS = 120000;
+function landedNow(dv, plan, rid, table) {
+  const set = plan.component.set;
+  const spec = SETS[set];
+  if (plan.mode === 'create') {
+    const found = existingByName(dv, set, plan.component.name, table);
+    return found.length ? String(found[0][spec.id]).toLowerCase() : null;
+  }
+  if (plan.mode === 'delete') return readComponent(dv, set, rid) ? null : rid;
+  let now = readComponent(dv, set, rid);
+  if (!now) throw new Error('it no longer exists');
+  if (plan.mode === 'on') return now.statecode === 1 ? rid : null;
+  if (plan.mode === 'off') return now.statecode === 0 ? rid : null;
+  if (plan.mode === 'own') return now.owner && now.owner.id === plan.owner_to.id ? rid : null;
+  if (set !== 'workflows') {
+    const sel = `${spec.id},${spec.name},${spec.fields.join(',')}`;
+    const un = (dv.get(`${set}/Microsoft.Dynamics.CRM.RetrieveUnpublishedMultiple()?$select=${sel}&$filter=${encodeURIComponent(`${spec.id} eq ${rid}`)}`).value || [])[0];
+    if (un) now = { ...now, name: un[spec.name] === undefined ? now.name : un[spec.name], definition: Object.fromEntries(spec.fields.map((f) => [f, blank(un[f]) ? null : un[f]])) };
+  }
+  const same = plan.sent_fields.every((f) => canonical(readBackField(set, f, now.definition[f], rid)) === canonical(readBackField(set, f, plan.after_definition[f], rid)));
+  const named = !plan.rename || String(now.name || '') === plan.rename.to;
+  return same && named ? rid : null;
+}
+
+function landedAfterTimeout(dv, plan, rid, table, e, sleep, clock) {
+  const why = String(e.message).slice(0, 300);
+  const noun = plan.component.noun;
+  let last = null; // { rid } | { err }
+  const start = clock();
+  let final = false;
+  for (let waited = 0; ; waited += TIMEOUT_POLL_MS) {
+    try { last = { rid: landedNow(dv, plan, rid, table) }; } catch (x) { last = { err: x }; }
+    if (last.rid) return { rid: last.rid, note: 'the request timed out on this computer, but the change landed (re-read after the timeout)' };
+    if (final || waited >= TIMEOUT_RECHECK_MS) break;
+    sleep(TIMEOUT_POLL_MS);
+    if (clock() - start >= TIMEOUT_RECHECK_MS) final = true;
+  }
+  if (last.err) {
+    return { outcome: `failed: the request timed out on this computer and '${plan.component.name}' could not be re-read (${String(last.err.message).slice(0, 160)}), so whether the change landed is not known: read it before planning again (${why})` };
+  }
+  if (plan.mode === 'create') {
+    return { outcome: `failed: the request timed out on this computer and no ${noun} named '${plan.component.name}' had appeared after 2 minutes. It may still land: look for it before planning again (${why})` };
+  }
+  return { outcome: `failed: the request timed out on this computer and the change was not on '${plan.component.name}' after 2 minutes. It may still land: read it before planning again (${why})` };
+}
+
 async function applyComponent(plan, deps, { id, file, fs }) {
-  const { access, connect, confirm, now = new Date(), sleep = defaultSleep } = deps;
+  const { access, connect, confirm, now = new Date(), sleep = defaultSleep, clock = Date.now } = deps;
   if (now - new Date(plan.created) > MAX_AGE_MS) throw new ApplyRefused('this plan is more than 24 hours old. Make a new plan.', 'stale_plan');
   const dv = connect(plan.host);
   const me = whoAmI(dv);
@@ -2294,6 +2421,15 @@ async function applyComponent(plan, deps, { id, file, fs }) {
     }
     etag = live.etag;
     if (!etag) throw new ApplyRefused('no version tag came back, so the write could not be protected. Nothing was written.', 'snapshot_moved');
+    // A rename (1.11.30): the name is outside the hashed definition, so it is re-checked on its own, and the new
+    // name must still be free.
+    if (plan.rename) {
+      if (String(live.name || '').trim() !== String(plan.rename.from || '').trim()) {
+        throw new ApplyRefused(`'${plan.component.name}' was renamed since the plan (it is now '${live.name}'). Nothing was written; make a new plan.`, 'snapshot_moved');
+      }
+      const clash = nameClash(set, plan.rename.to, live, nameTaken(dv, set, plan.rename.to, live));
+      if (clash) throw new ApplyRefused(`${clash} Nothing was written.`, 'snapshot_moved');
+    }
   }
 
   // Everything the person approves is worked out AGAIN here, from the live re-read and the definition this
@@ -2301,7 +2437,9 @@ async function applyComponent(plan, deps, { id, file, fs }) {
   // runs as, the drafts it touches, the level it needs, and the warnings. Only the
   // dev-copy line is carried from the plan (apply has no connection to the dev copy).
   const body = bodyFor(plan);
-  const written = plan.mode === 'update' ? { ...live.definition, ...body } : plan.mode === 'create' ? plan.after_definition : null;
+  const defBody = Object.fromEntries(Object.entries(body || {}).filter(([k]) => !(plan.rename && k === 'name')));
+  const written = plan.mode === 'update' ? { ...live.definition, ...defBody } : plan.mode === 'create' ? plan.after_definition : null;
+  const renameNow = plan.rename ? { from: live.name, to: plan.rename.to } : null;
   if (set === 'workflows') {
     const where = secretsIn(live ? live.definition : null, written);
     if (where.length) throw new ApplyRefused(secretRefusal(where), 'invalid_job');
@@ -2309,10 +2447,10 @@ async function applyComponent(plan, deps, { id, file, fs }) {
   const d = describe(dv, {
     mode: plan.mode, set, name: live ? live.name : plan.component.name, table: live ? live.table : plan.component.table,
     id: live ? live.id : null, live, written, unproven: plan.facts && plan.facts.unproven, carried: plan.flow ? plan.flow.concurrency_carried : null, extra: plan.create_extra || {},
-    me: me.systemuserid,
+    me: me.systemuserid, rename: renameNow,
   });
   if (d.facts.target_drafts.length) throw new ApplyRefused(`${draftRefusal(live.name)}. Nothing was written.`, 'snapshot_moved');
-  if (set === 'systemforms' && written) {
+  if (set === 'systemforms' && written && !tableless(set, d.facts.table)) {
     const have = tableFields(dv, d.facts.table);
     const missing = have ? formFields(written.formxml).filter((f) => !have.has(f)) : ['(the table could not be read)'];
     if (missing.length) throw new ApplyRefused(`the form names field(s) that ${d.facts.table} does not have: ${missing.join(', ')}. Nothing was written.`, 'snapshot_moved');
@@ -2352,6 +2490,11 @@ async function applyComponent(plan, deps, { id, file, fs }) {
   if (newDrafts.length) {
     throw new ApplyRefused(`unpublished edits were saved while the approval was waiting, and publishing ${d.facts.table} now would publish them too: ${names(newDrafts)}. Nothing was written; make a new plan.`, 'severity_grew');
   }
+  // A rename's clash, again (1.11.30 review F2): another component may have taken the name while the prompt was open.
+  if (plan.rename) {
+    const clash = nameClash(set, plan.rename.to, live, nameTaken(dv, set, plan.rename.to, live));
+    if (clash) throw new ApplyRefused(`${clash} (taken while the approval was waiting). Nothing was written.`, 'snapshot_moved');
+  }
 
   // The one write, then publish (views, forms, sitemaps), then the read-back.
   const row = { name: view.component.name, id: plan.component.id, set, action: plan.mode, changes: changesFor(view), before: stateOf(live), after: null, notes: [] };
@@ -2359,30 +2502,37 @@ async function applyComponent(plan, deps, { id, file, fs }) {
   let wrote = false;
   const flowUpdate = set === 'workflows' && plan.mode === 'update';
   const subBefore = flowUpdate ? subscriptionStamp(dv, rid) : null;
+  let timedOut = null; // the outcome of a timed-out write that never showed up (1.11.30)
+  let reconciled = false; // a timed-out write that was found by re-reading (1.11.30)
   try {
-    if (plan.mode === 'create') {
-      const res = dv.create(set, body, { solution: plan.solution.uniquename });
-      rid = String(res[SETS[set].id] || '').toLowerCase();
-      if (!rid) throw new Error('the new component id did not come back');
-      row.id = rid;
-    } else if (plan.mode === 'delete') {
-      dv.remove(set, rid, etag);
-    } else {
-      dv.update(set, rid, body, etag);
-    }
-    wrote = true;
-    if (plan.publish) {
-      const pub = publishFor(set, rid, d.facts.table);
-      try { dv.publish(pub); } catch (e) {
-        row.notes.push(`saved but NOT published: ${e.message}. Nobody sees the change until it is published.`);
-        row.publish_failed = true;
+    try {
+      if (plan.mode === 'create') {
+        const res = dv.create(set, body, { solution: plan.solution.uniquename });
+        rid = String(res[SETS[set].id] || '').toLowerCase();
+        if (!rid) throw new Error('the new component id did not come back');
+        row.id = rid;
+      } else if (plan.mode === 'delete') {
+        dv.remove(set, rid, etag);
+      } else {
+        dv.update(set, rid, body, etag);
       }
+    } catch (e) {
+      if (!isTimeout(e)) throw e;
+      const l = landedAfterTimeout(dv, plan, rid, d.facts.table, e, sleep, clock);
+      if (l.rid) {
+        rid = l.rid;
+        reconciled = true;
+        if (plan.mode === 'create') row.id = rid;
+        row.notes.push(l.note);
+      } else timedOut = l.outcome;
     }
-    const rb = readBack(dv, { ...plan, after_definition: written || plan.after_definition, live_before: stateOf(live) }, rid, sleep);
-    row.after = rb.after;
-    row.notes.push(...rb.notes);
-    const problems = [...rb.bad, ...(row.publish_failed ? ['not published'] : [])];
-    row.outcome = problems.length ? `read-back mismatch: ${problems.join('; ')}` : 'written';
+    if (timedOut) {
+      row.outcome = timedOut;
+      row.after = null; // not known: never the before-state, which would read as "nothing changed" (F3)
+    } else {
+      wrote = true;
+      finishWrite();
+    }
   } catch (e) {
     if (!wrote && isConnectionRefusal(e)) row.outcome = `refused: ${connectionRefusalText(view)}`;
     else if (!wrote && e && e.code === '0x80060882' && flowUpdate) {
@@ -2393,6 +2543,8 @@ async function applyComponent(plan, deps, { id, file, fs }) {
         row.outcome = 'failed: PARTLY WRITTEN: the live trigger changed, the saved definition did not (the platform re-registered the trigger, then refused the definition write). Turn the flow off, re-plan the update on the off flow, then turn it on';
       } else row.outcome = 'failed: the component changed between the check and the write; nothing was written to it';
     } else if (!wrote && e && e.code === '0x80060882') row.outcome = 'failed: the component changed between the check and the write; nothing was written to it';
+    // The write went through and only what came after it failed (1.11.30 review F5): never "failed", as for records.
+    else if (wrote) row.outcome = `read-back failed: the write went through but '${view.component.name}' could not be read back: ${e.message}. Read it before doing anything else`;
     else row.outcome = `failed: ${e.message}`;
     try { row.after = wrote ? stateOf(readComponent(dv, set, rid)) : stateOf(live); } catch { row.after = null; }
   }
@@ -2400,6 +2552,35 @@ async function applyComponent(plan, deps, { id, file, fs }) {
   const ok = row.outcome === 'written';
   const outcome = ok ? 'applied' : 'applied with problems';
   return { entry: { ...base, outcome, rows: [row] }, outcome, person: me, dv, written: ok ? 1 : 0, rows: [row], left_out: [] };
+
+  // Publish (views, forms, sitemaps, web resources, dashboards), then the read-back. Hoisted; runs inside the try above.
+  // WHAT is published is worked out here from the set and the live table, never taken from the plan file (1.11.30 review
+  // F6: a plan edited to drop `publish` left a saved change unpublished).
+  function finishWrite() {
+    const pub = ['update', 'create'].includes(plan.mode) ? publishFor(set, rid, d.facts.table) : null;
+    // After a timeout's re-reads (up to 2 minutes), edits saved on the table meanwhile were never shown for approval
+    // (1.11.30 review F3): then the change is left saved but unpublished, and said so.
+    let held = null;
+    if (pub && pub.entities && reconciled) {
+      // `rid` keeps the target out of `others`: its own landed change sits in its unpublished layer until the publish
+      const now = draftState(dv, set, plan.mode, rid, d.facts.table).others.map((x) => x.name).filter((x) => !d.facts.other_drafts.includes(x));
+      if (now.length) held = now;
+    }
+    if (held) {
+      row.notes.push(`saved but NOT published: unpublished edits were saved on ${d.facts.table} while this change was being re-read after the timeout, and publishing it would publish them too: ${names(held)}. Publish it in the maker portal once those are checked.`);
+      row.publish_failed = true;
+    } else if (pub) {
+      try { dv.publish(pub); } catch (e) {
+        row.notes.push(`saved but NOT published: ${e.message}. Nobody sees the change until it is published.`);
+        row.publish_failed = true;
+      }
+    }
+    const rb = readBack(dv, { ...plan, publish: pub, after_definition: written || plan.after_definition, live_before: stateOf(live) }, rid, sleep);
+    row.after = rb.after;
+    row.notes.push(...rb.notes);
+    const problems = [...rb.bad, ...(row.publish_failed ? ['not published'] : [])];
+    row.outcome = problems.length ? `read-back mismatch: ${problems.join('; ')}` : 'written';
+  }
 }
 
 // ---------- revert ----------
@@ -2451,6 +2632,17 @@ async function planComponentRevert(dv, entry, ctx) {
     job.mode = 'update';
     job.snapshot_hash = hashDef(set, row.id, row.after.definition);
     job.definition = Object.fromEntries(spec.fields.map((f) => [f, row.before.definition[f] === undefined ? null : row.before.definition[f]]));
+    // A rename (1.11.30) goes back too, only if the name is still the one that plan gave it. An entry from before
+    // 1.11.30 carries the same name before and after, so nothing is renamed.
+    const was = row.before && typeof row.before.name === 'string' ? row.before.name.trim() : null;
+    const became = row.after && typeof row.after.name === 'string' ? row.after.name.trim() : null;
+    if (spec.nameMax && was && became && was !== became) {
+      if (String(live.name || '').trim() !== became) throw new PlanRefused([`${what} was renamed again since (it is now '${live.name}'); nothing to undo`], 'nothing_to_undo');
+      job.rename = was;
+      // A change that was ONLY a rename is undone by the name alone (1.11.30 review F4): its logged after-definition may
+      // hold someone else's edit read back in the same moment, and restoring every field would undo theirs.
+      if (Array.isArray(entry.sections) && entry.sections.length === 1 && entry.sections[0] === 'name') job.definition = {};
+    }
   } else if (entry.action === 'create') {
     if (set !== 'workflows') throw new PlanRefused([`${what} stays: revert does not delete what it created; only an admin delete removes it`], 'nothing_to_undo');
     if (live.statecode !== 1) throw new PlanRefused([`${what} is already off; it stays (only an admin delete removes it)`], 'nothing_to_undo');
@@ -2478,5 +2670,5 @@ module.exports = {
   validateComponentJob, planComponent, componentSummary, componentDetail, componentHeadline, applyComponent, planComponentRevert, snapshot,
   readSnapshot, parseXml, formFields, diffFlow, diffView, diffForm, diffSitemap, diffComponent, carryConcurrency, flowConnections,
   needFor, severityFor, SETS, MAX_ENTRY, sameChange, sectionContent, createBody, TOOLKIT_TABLES,
-  flowSecrets, actionFacts, stepPower, triggerPower, viewHooks, formHooks, markupPower, planShapeProblems,
+  flowSecrets, actionFacts, stepPower, triggerPower, viewHooks, formHooks, markupPower, planShapeProblems, bodyFor,
 };
