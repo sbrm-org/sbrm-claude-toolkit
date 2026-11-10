@@ -2497,7 +2497,10 @@ async function applyComponent(plan, deps, { id, file, fs }) {
   }
 
   // The one write, then publish (views, forms, sitemaps), then the read-back.
-  const row = { name: view.component.name, id: plan.component.id, set, action: plan.mode, changes: changesFor(view), before: stateOf(live), after: null, notes: [] };
+  // `sent_fields` (1.11.31, the 1.11.30 review's F4 in general): the fields this update actually sent, so a later revert
+  // restores those alone. `after` is the WHOLE re-read definition and may carry another writer's edit of an unsent
+  // field read back in the same moment; restoring every field from `before` would undo theirs.
+  const row = { name: view.component.name, id: plan.component.id, set, action: plan.mode, changes: changesFor(view), before: stateOf(live), after: null, notes: [], ...(plan.mode === 'update' && Array.isArray(plan.sent_fields) ? { sent_fields: [...plan.sent_fields] } : {}) };
   let rid = plan.component.id;
   let wrote = false;
   const flowUpdate = set === 'workflows' && plan.mode === 'update';
@@ -2631,7 +2634,12 @@ async function planComponentRevert(dv, entry, ctx) {
     // overwrite someone's later change.
     job.mode = 'update';
     job.snapshot_hash = hashDef(set, row.id, row.after.definition);
-    job.definition = Object.fromEntries(spec.fields.map((f) => [f, row.before.definition[f] === undefined ? null : row.before.definition[f]]));
+    // Only the fields that plan SENT go back (1.11.31, the 1.11.30 review's F4 in general): `after` is the whole re-read
+    // definition and may hold another writer's edit of an unsent field, read back in the same moment, which the
+    // whole-definition hash above still matches. An entry logged before 1.11.31 has no `sent_fields` and restores every
+    // field, as before. A field the set does not have (a forged or damaged entry) is never sent.
+    const sent = Array.isArray(row.sent_fields) ? spec.fields.filter((f) => row.sent_fields.includes(f)) : spec.fields;
+    job.definition = Object.fromEntries(sent.map((f) => [f, row.before.definition[f] === undefined ? null : row.before.definition[f]]));
     // A rename (1.11.30) goes back too, only if the name is still the one that plan gave it. An entry from before
     // 1.11.30 carries the same name before and after, so nothing is renamed.
     const was = row.before && typeof row.before.name === 'string' ? row.before.name.trim() : null;

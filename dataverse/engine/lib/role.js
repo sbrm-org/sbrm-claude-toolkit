@@ -33,7 +33,12 @@ const CONTRACT = 'sbrm-dv-job/1';
 const MAX_AGE_MS = 24 * 3600 * 1000;
 const MAX_ROWS = 25;
 const TOP_KEYS = new Set(['contract', 'kind', 'env', 'rows', 'source', 'reason', 'intent']);
-const ROW_KEYS = new Set(['user', 'role', 'action']);
+// A row names a person by `user` (their work email) OR an application user by `app_user` (its Entra client id,
+// 1.11.31: the roles a server job signs in with; kind "appuser" makes the user, "securityrole" the role).
+const ROW_KEYS = new Set(['user', 'app_user', 'role', 'action']);
+const NIL = '00000000-0000-0000-0000-000000000000';
+const APP_ACCESS = 4; // systemusers.accessmode: an application user
+const who4 = (u) => u.email || `application user ${u.client_id}`;
 const EMAIL = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
 const ACTIONS = new Set(['add', 'remove']);
 // Given only by hand in the admin center (ruled 10/19/26): each gives full control of the app.
@@ -78,16 +83,24 @@ function validateRoleJob(raw, { envs }) {
       const at = `row ${i + 1}`;
       if (!obj(r)) { err(`${at}: must be an object {user, role, action}`); return; }
       for (const k of Object.keys(r)) if (!ROW_KEYS.has(k)) err(`${at}: unknown key "${k}"`);
-      const user = typeof r.user === 'string' ? r.user.trim().toLowerCase() : '';
-      if (!EMAIL.test(user)) err(`${at}: "user" must be the person's work email (their sign-in, e.g. name@sbrm.org)`);
+      const isApp = has(r, 'app_user');
+      if (isApp && has(r, 'user')) err(`${at}: name the person by "user" or the application user by "app_user", not both`);
+      const user = !isApp && typeof r.user === 'string' ? r.user.trim().toLowerCase() : '';
+      const app = isApp && typeof r.app_user === 'string' ? r.app_user.trim().toLowerCase() : '';
+      const okWho = isApp ? GUID.test(app) && app !== NIL : EMAIL.test(user);
+      if (isApp && !okWho) err(`${at}: "app_user" must be the application user's Entra Application (client) ID, a GUID`);
+      if (!isApp && !okWho) err(`${at}: "user" must be the person's work email (their sign-in, e.g. name@sbrm.org)`);
       if (!roleName(r.role)) err(`${at}: "role" must be the role's name exactly as Dataverse shows it (one line, at most 100 characters)`);
       if (!ACTIONS.has(r.action)) err(`${at}: "action" must be "add" or "remove"`);
-      if (EMAIL.test(user) && roleName(r.role)) {
-        const key = `${user}|${low(r.role.trim())}`;
-        if (seen.has(key)) err(`${at}: ${user} and ${r.role.trim()} appear more than once`);
+      const id = isApp ? `app:${app}` : user;
+      if (okWho && roleName(r.role)) {
+        const key = `${id}|${low(r.role.trim())}`;
+        if (seen.has(key)) err(`${at}: ${isApp ? `application user ${app}` : user} and ${r.role.trim()} appear more than once`);
         seen.add(key);
       }
-      rows.push({ user, role: typeof r.role === 'string' ? r.role.trim() : r.role, action: r.action });
+      const out = { role: typeof r.role === 'string' ? r.role.trim() : r.role, action: r.action };
+      if (isApp) out.app_user = app; else out.user = user;
+      rows.push(out);
     });
   }
 
@@ -117,9 +130,13 @@ function usersWithEmail(dv, email) {
   return dv.get(`systemusers?$select=${USER_COLS}&$filter=${enc(`domainname eq '${q(email)}'`)}`).value || [];
 }
 
+function usersWithApp(dv, clientId) {
+  return dv.get(`systemusers?$select=${USER_COLS},applicationid&$filter=${enc(`applicationid eq ${clientId}`)}`).value || [];
+}
+
 function readUser(dv, id) {
   try {
-    return dv.get(`systemusers(${id})?$select=${USER_COLS}`);
+    return dv.get(`systemusers(${id})?$select=${USER_COLS},applicationid`);
   } catch (e) {
     if (e instanceof DataverseError && /0x80040217|does not exist/i.test(`${e.code} ${e.message}`)) return null;
     throw e;
@@ -208,13 +225,17 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
   const once = (map, key, read) => (map.has(key) ? map.get(key) : (map.set(key, read()), map.get(key)));
 
   job.rows.forEach((jr, i) => {
-    const leave = (why) => refused.push({ row: i + 1, user: jr.user, role: jr.role, action: jr.action, why });
-    const found = once(cache.users, jr.user, () => usersWithEmail(dv, jr.user));
-    if (!found.length) return leave(`there is no user with the work email ${jr.user} in the ${app}`);
-    if (found.length > 1) return leave(`${found.length} users have the work email ${jr.user} in the ${app}; Ask Dylan`);
+    const isApp = Boolean(jr.app_user);
+    const idKey = isApp ? `app:${jr.app_user}` : jr.user;
+    const tag = isApp ? `application user ${jr.app_user}` : jr.user;
+    const leave = (why) => refused.push({ row: i + 1, user: tag, role: jr.role, action: jr.action, why });
+    const found = once(cache.users, idKey, () => (isApp ? usersWithApp(dv, jr.app_user) : usersWithEmail(dv, jr.user)));
+    if (!found.length) return leave(isApp ? `the Entra app ${jr.app_user} has no application user in the ${app} (make one with kind "appuser")` : `there is no user with the work email ${jr.user} in the ${app}`);
+    if (found.length > 1) return leave(isApp ? `${found.length} users carry the Entra app ${jr.app_user} in the ${app}; Ask Dylan` : `${found.length} users have the work email ${jr.user} in the ${app}; Ask Dylan`);
     const u = found[0];
+    if (isApp && u.accessmode !== APP_ACCESS) return leave(`${String(u.fullname || tag)} is not an application user (access mode ${u.accessmode}); name a person by "user"`);
     const uid = low(u.systemuserid);
-    const who = String(u.fullname || jr.user);
+    const who = String(u.fullname || tag);
     if (uid === low(identity.systemuserid)) return leave('your own roles are never changed here (another admin changes them)');
 
     const copies = rolesNamed(dv, jr.role);
@@ -239,7 +260,7 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
     const via = viaFor(teams, root);
 
     if (revertOf) {
-      const want = expect.get(`${jr.user}|${low(jr.role)}`);
+      const want = expect.get(`${idKey}|${low(jr.role)}`);
       if (want !== held) return leave(`'${name}' for ${who} changed since plan ${revertOf} (it is ${held ? '' : 'not '}held directly now), so a revert would overwrite someone's later change`);
     }
 
@@ -262,7 +283,7 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
     const before = names(direct.map((r) => String(r.name)));
     const after = jr.action === 'add' ? names([...before, name]) : before.filter((n) => low(n) !== low(name));
     rows.push({
-      user: { id: uid, email: jr.user, fullname: who, bu: low(u._businessunitid_value), disabled: Boolean(u.isdisabled) },
+      user: { id: uid, email: isApp ? null : jr.user, client_id: isApp ? jr.app_user : null, fullname: who, bu: low(u._businessunitid_value), disabled: Boolean(u.isdisabled) },
       role: { name, root, id: low(copy.roleid), bu: low(copy._businessunitid_value), managed },
       action: jr.action, before: { held }, after: { held: !held },
       roles_before: before, roles_after: after, via,
@@ -284,7 +305,7 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
 // ---------- the pop-up ----------
 
 function rowLines(r, app) {
-  const out = [`  ${r.action === 'add' ? 'Add' : 'Remove'} '${r.role.name}' ${r.action === 'add' ? 'to' : 'from'} ${r.user.fullname} (${r.user.email})${r.user.disabled ? ', a disabled account' : ''}`];
+  const out = [`  ${r.action === 'add' ? 'Add' : 'Remove'} '${r.role.name}' ${r.action === 'add' ? 'to' : 'from'} ${r.user.fullname} (${who4(r.user)})${r.user.disabled ? ', a disabled account' : ''}`];
   out.push(`    Roles held directly: ${r.roles_before.join(', ') || '(none)'} -> ${r.roles_after.join(', ') || '(none)'}`);
   if (r.action === 'remove') {
     out.push(r.via.length
@@ -337,7 +358,8 @@ function planShapeProblems(plan) {
     if (!GUID.test(String(r.role.id)) || !GUID.test(String(r.role.root))) bad.push(`${at}: a role that is not a GUID`);
     if (!ACTIONS.has(r.action)) bad.push(`${at}: the action "${r.action}"`);
     if (typeof r.before.held !== 'boolean') bad.push(`${at}: no before state`);
-    if (typeof r.user.email !== 'string' || typeof r.role.name !== 'string') bad.push(`${at}: no names`);
+    const named = typeof r.user.email === 'string' ? !r.user.client_id : (GUID.test(String(r.user.client_id)) && r.user.client_id !== NIL);
+    if (!named || typeof r.role.name !== 'string') bad.push(`${at}: no names`);
   });
   return bad;
 }
@@ -361,10 +383,14 @@ async function applyRole(plan, deps, { id, file, fs }) {
     if (low(r.user.id) === low(me.systemuserid)) refuse('this plan changes your own roles, which are never changed here.', 'not_permitted');
     const u = readUser(dv, r.user.id);
     if (!u || !same(u._businessunitid_value, r.user.bu) || Boolean(u.isdisabled) !== Boolean(r.user.disabled)) refuse(`${r.user.fullname} changed since the plan (gone, moved to another business unit, or the account switched on or off).`, 'snapshot_moved');
+    // An application user is still the one the prompt names: the same client id, still an application user (review F1 11/9).
+    if (r.user.client_id && (!same(u.applicationid, r.user.client_id) || u.accessmode !== APP_ACCESS)) refuse(`${r.user.fullname} changed since the plan (no longer the application user for ${r.user.client_id}).`, 'snapshot_moved');
     const role = readRole(dv, r.role.id);
     if (!role || low(role._parentrootroleid_value || role.roleid) !== low(r.role.root) || !same(role._businessunitid_value, u._businessunitid_value)) {
       refuse(`'${r.role.name}' is gone, or is not ${r.user.fullname}'s business unit's copy of the role, since the plan.`, 'snapshot_moved');
     }
+    // The prompt and the log name the role as planned, so a rename since is a move (review F2 11/9).
+    if (!same(role.name, r.role.name)) refuse(`'${r.role.name}' is now named '${role.name}' since the plan.`, 'snapshot_moved');
     if (r.action === 'add') {
       if (NEVER_GIVEN.has(low(role.name))) throw new ApplyRefused(`${role.name} is never given through the toolkit; an admin gives it by hand in the Power Platform admin center. Nothing was written.`, 'not_permitted');
       if (role.ismanaged) throw new ApplyRefused(`'${role.name}' is a Microsoft (managed) role; only SBRM's own roles are given here. Nothing was written.`, 'not_permitted');
@@ -399,7 +425,7 @@ async function applyRole(plan, deps, { id, file, fs }) {
   const out = live.map((r) => {
     const want = !r.before.held;
     const row = {
-      name: `${r.user.email}: '${r.role.name}'`, id: r.user.id, action: r.action, user: r.user, role: r.role,
+      name: `${who4(r.user)}: '${r.role.name}'`, id: r.user.id, action: r.action, user: r.user, role: r.role,
       changes: [{ label: r.role.name, old_text: r.before.held ? 'held' : 'not held', new_text: want ? 'held' : 'not held' }],
       before: { held: r.before.held }, after: null, via: r.via, ends_access: r.ends_access,
     };
@@ -445,12 +471,16 @@ async function planRoleRevert(dv, entry, ctx) {
   const expect = new Map();
   for (const r of landed) {
     const email = obj(r.user) && typeof r.user.email === 'string' ? r.user.email.trim().toLowerCase() : '';
-    if (!EMAIL.test(email) || !obj(r.role) || !roleName(r.role.name) || !ACTIONS.has(r.action) || typeof r.after.held !== 'boolean') {
+    const app = obj(r.user) && typeof r.user.client_id === 'string' ? r.user.client_id.trim().toLowerCase() : '';
+    const okWho = email ? EMAIL.test(email) && !app : GUID.test(app) && app !== NIL;
+    if (!okWho || !obj(r.role) || !roleName(r.role.name) || !ACTIONS.has(r.action) || typeof r.after.held !== 'boolean') {
       throw new PlanRefused(['that log entry has no valid user, role or action on a row'], 'invalid_job');
     }
     const name = r.role.name.trim();
-    rows.push({ user: email, role: name, action: r.action === 'add' ? 'remove' : 'add' });
-    expect.set(`${email}|${low(name)}`, r.after.held);
+    const back = { role: name, action: r.action === 'add' ? 'remove' : 'add' };
+    if (email) back.user = email; else back.app_user = app;
+    rows.push(back);
+    expect.set(`${email || `app:${app}`}|${low(name)}`, r.after.held);
   }
   const adds = rows.filter((r) => r.action === 'add').length;
   const job = {

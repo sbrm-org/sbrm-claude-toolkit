@@ -294,3 +294,62 @@ test('snapshot never saves a flow that holds a plain-text secret (1.10.1)', asyn
   const jobs = path.join(process.env.SBRM_DV_HOME, 'jobs');
   assert.ok(!fs.existsSync(jobs) || !fs.readdirSync(jobs).some((f) => f.includes(K.IDS.secretflow)), 'no file written');
 });
+
+test('kinds appuser and securityrole through the CLI: check, plan, show, the prompt, apply, logged, revert (1.11.31)', async () => {
+  const T = require('./fake_identity');
+  writeConfig(T.ENVS);
+  const dv = withToolkitTables(T.fakeIdentityDv(), T.ACCESS, 'hgs');
+  // 1. the application user
+  const uj = file({
+    contract: 'sbrm-dv-job/1', kind: 'appuser', env: 'hgs', action: 'create', client_id: T.IDS.newClient, source: 'claude-session',
+    reason: 'The test job signs in as its own Entra app.', intent: { verb: 'appuser', action: 'create', client_id: T.IDS.newClient },
+  });
+  const checked = await go(['check', uj], deps(dv));
+  assert.equal(checked.code, 0, checked.out);
+  assert.match(checked.out, /an application user change in the HGS apps/);
+  const planned = await go(['plan', uj], deps(dv));
+  assert.equal(planned.code, 0, planned.out);
+  assert.match(planned.out, /Lasting: a new application user for the Entra app d4000000/);
+  const { approvalText } = require('../../guard/guard');
+  assert.match(approvalText({ verb: 'apply', keys: [planned.run.planId] }), /^Create an application user for the Entra app d4000000-0000-0000-0000-000000000001 \(business unit SBRM Homeless\) in the HGS apps/);
+  const shown = await go(['show', planned.run.planId], deps(dv));
+  assert.equal(shown.code, 0, shown.out);
+  const applied = await go(['apply', planned.run.planId], deps(dv));
+  assert.equal(applied.code, 0, applied.out);
+  assert.ok(dv.data.systemusers.some((u) => u.applicationid === T.IDS.newClient));
+  assert.equal(dv.logs[0].sbrm_mode, 'appuser');
+  const undoUser = await go(['revert', planned.run.planId, 'hgs'], deps(dv));
+  assert.equal(undoUser.code, 0, undoUser.out);
+  assert.match(undoUser.out, /Switch off the application user # New Entra App/);
+
+  // 2. the role
+  const rj = file({
+    contract: 'sbrm-dv-job/1', kind: 'securityrole', env: 'hgs', name: '#_ sbrmapps Test Job (read)', source: 'claude-session',
+    reason: 'The test job reads guests.', privileges: [{ table: 'sbrm_guest', access: ['read'], depth: 'organization' }],
+    intent: { verb: 'securityrole', name: '#_ sbrmapps Test Job (read)', privileges: 1, writes: false },
+  });
+  const rp = await go(['plan', rj], deps(dv));
+  assert.equal(rp.code, 0, rp.out);
+  assert.match(approvalText({ verb: 'apply', keys: [rp.run.planId] }), /read sbrm_guest \(organization\)/);
+  const ra = await go(['apply', rp.run.planId], deps(dv));
+  assert.equal(ra.code, 0, ra.out);
+  assert.ok(dv.data.roles.some((r) => r.name === '#_ sbrmapps Test Job (read)'));
+  assert.equal(dv.logs[dv.logs.length - 1].sbrm_mode, 'securityrole');
+  const undoRole = await go(['revert', rp.run.planId, 'hgs'], deps(dv));
+  assert.equal(undoRole.code, 0, undoRole.out);
+  assert.match(undoRole.out, /Delete the security role '#_ sbrmapps Test Job \(read\)'/);
+});
+
+test('kind securityrole through the CLI: a write without "writes": true is refused at check, nothing planned', async () => {
+  const T = require('./fake_identity');
+  writeConfig(T.ENVS);
+  const dv = withToolkitTables(T.fakeIdentityDv(), T.ACCESS, 'hgs');
+  const rj = file({
+    contract: 'sbrm-dv-job/1', kind: 'securityrole', env: 'hgs', name: '#_ x', source: 'claude-session', reason: 'x.',
+    privileges: [{ table: 'contact', access: ['write'], depth: 'user' }], intent: { verb: 'securityrole', name: '#_ x', privileges: 1, writes: true },
+  });
+  const r = await go(['plan', rj], deps(dv));
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /needs "writes": true/);
+  assert.deepEqual(dv.calls.filter((c) => c.method !== 'GET'), []);
+});

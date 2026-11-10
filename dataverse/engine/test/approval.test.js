@@ -158,3 +158,20 @@ test('the prompt for a batch resolve names every item it closes (1.11.10)', () =
   assert.equal(approvalText({ verb: 'resolve', keys: ['resolve-D-1082', 'resolve-D-1083', 'resolve-D-1084'] }),
     'Close 3 items: D-1082, D-1083, D-1084');
 });
+
+test('the prompt names an application user change and a new security role with every privilege (1.11.31)', () => {
+  const { approvalText } = require('../../guard/guard');
+  const store = require('../lib/store');
+  const put = (id, rec) => fs.writeFileSync(path.join(store.dir('plans'), `${id}.json`), JSON.stringify(rec));
+  put('20261109-150001-aaaaaaa1', { kind: 'appuser', app: 'HGS apps', action: 'create', client_id: 'd4000000-0000-0000-0000-000000000001', unit: { name: 'SBRM Homeless' }, severity: { lines: ['Lasting: x.'] } });
+  put('20261109-150002-aaaaaaa2', { kind: 'appuser', app: 'HGS apps', action: 'disable', client_id: 'd4000000-0000-0000-0000-000000000001', user: { fullname: '# Job' }, severity: { lines: [] } });
+  put('20261109-150003-aaaaaaa3', { kind: 'securityrole', app: 'HGS apps', action: 'create', name: '#_ sbrmapps Job (read)', writes: false,
+    privileges: [{ access: 'read', table: 'sbrm_guest', depth_word: 'organization' }, { access: 'read', table: 'sbrm_bednight', depth_word: 'organization' }], severity: { lines: [] } });
+  put('20261109-150004-aaaaaaa4', { kind: 'securityrole', app: 'HGS apps', action: 'delete', name: '#_ sbrmapps Job (read)', reverts_plan_id: 'x', severity: { lines: [] } });
+  put('20261109-150005-aaaaaaa5', { kind: 'role', app: 'HGS apps', rows: [{ action: 'add', role: { name: '#_ sbrmapps Job (read)' }, user: { fullname: '# Job', email: null, client_id: 'd4000000-0000-0000-0000-000000000001' } }], severity: { lines: [] } });
+  assert.equal(approvalText({ verb: 'apply', keys: ['20261109-150001-aaaaaaa1'] }), 'Create an application user for the Entra app d4000000-0000-0000-0000-000000000001 (business unit SBRM Homeless) in the HGS apps. Lasting: x.');
+  assert.equal(approvalText({ verb: 'apply', keys: ['20261109-150002-aaaaaaa2'] }), 'Switch off the application user # Job (Entra app d4000000-0000-0000-0000-000000000001) in the HGS apps');
+  assert.equal(approvalText({ verb: 'apply', keys: ['20261109-150003-aaaaaaa3'] }), "Create the security role '#_ sbrmapps Job (read)' in the HGS apps (read only): read sbrm_guest (organization), read sbrm_bednight (organization); plus the baseline Dataverse gives every role (Read on plug-ins, Read, Create and Write on SharePoint data)");
+  assert.equal(approvalText({ verb: 'apply', keys: ['20261109-150004-aaaaaaa4'] }), "Delete the security role '#_ sbrmapps Job (read)' in the HGS apps (an undo)");
+  assert.equal(approvalText({ verb: 'apply', keys: ['20261109-150005-aaaaaaa5'] }), "Add '#_ sbrmapps Job (read)' to # Job (application user d4000000-0000-0000-0000-000000000001) in the HGS apps");
+});

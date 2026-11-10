@@ -13,7 +13,9 @@ description: >
 
 SBRM's staff knowledge base runs on **BookStack**, an open-source wiki, at **https://wiki.sbrmapps.com**. It replaced Perfect Wiki. Everything staff need to know about how SBRM works, department by department, lives here, and it is meant to be read and written by people *and* by their AI agents.
 
-This skill is for staff and their agents *using* the wiki. Server administration (upgrades, theme, SSO configuration, roles, creating departments) is not covered; route those to the administrator (Tim).
+This skill is for staff and their agents *using* the wiki. Server administration (upgrades, theme, SSO configuration, roles, permissions, creating departments) is not covered here. SBRM administers its own wiki: the wiki administrators are **Dylan Gross and Daian Martinez** (Finance / Data). Route those asks to them, not to IT.
+
+How access works: each department role (Finance, Sober Living, Men's Program, and so on) is tied to one or more Teams teams (in BookStack terms, the role's `external_auth_id` holds the Entra group ids), and a person receives the role on their first Microsoft sign-in. Someone with no wiki account has simply never signed in; there is no invite step. If a person cannot see their department's notebooks, check which Teams teams they belong to before asking an administrator.
 
 ## How the wiki is organized
 
@@ -30,15 +32,15 @@ The nine departments: All Staff, HR, Finance, Shelter Programs, Treatment, Sober
 
 House rules your agent must follow when it writes:
 
-- **Never duplicate a notebook to make it show up in two departments.** Departments are labels; ask the administrator to cross-list it.
+- **Never duplicate a notebook to make it show up in two departments.** Departments are labels; ask a wiki administrator (Dylan or Daian) to cross-list it.
 - **New pages go inside a section**, not loose in a notebook. If no section fits, create one, or ask the notebook's owner.
-- **New departments and new notebooks are a decision for the department lead and the administrator**, not something an agent creates on its own. Pages and sections are yours.
+- **New departments and new notebooks are a decision for the department lead and a wiki administrator (Dylan or Daian)**, not something an agent creates on its own. Pages and sections are yours.
 - **Edit in place; do not clone.** If a page exists on the topic, update it (BookStack keeps full revision history, so nothing is lost).
 - The staff-facing version of all this is on the wiki itself: All Staff → **SBRM Wiki Guide**.
 
 ## Logging in
 
-Go to https://wiki.sbrmapps.com. It sends you straight to Microsoft sign-in; use your `@sbrm.org` account. There is no separate wiki password. The first login creates your account automatically. If you can read the wiki but not edit or create anything, you have the Viewer role; ask the administrator for Editor.
+Go to https://wiki.sbrmapps.com. It sends you straight to Microsoft sign-in; use your `@sbrm.org` account. There is no separate wiki password. The first login creates your account automatically. If you can read the wiki but not edit or create anything, you have the Viewer role; ask a wiki administrator (Dylan or Daian) for Editor.
 
 The wiki is also pinned as a tab in Teams. That tab is fine for reading; do token and API work in a normal browser.
 
@@ -46,7 +48,7 @@ The wiki is also pinned as a tab in Teams. That tab is fine for reading; do toke
 
 Everyone creates and holds their own token. Tokens are personal and are never shared between people, and an agent acting for you uses *your* token, so the wiki's activity feed shows the change under your name. That is deliberate: the wiki should always show who changed what.
 
-You need the **Editor** (or Admin) role. Viewers cannot create tokens; ask the administrator first.
+You need the **Editor** (or Admin) role. Viewers cannot create tokens; ask a wiki administrator (Dylan or Daian) first.
 
 1. Log in at https://wiki.sbrmapps.com.
 2. Click your name or avatar in the top-right corner → **My Account**.
@@ -115,7 +117,7 @@ Useful filters inside the query string: `{type:page}`, `{type:book}`, `{in_name:
 | Update a page | `PUT /pages/{id}` with the fields to change (`name`, `html` or `markdown`, `chapter_id` to move it) |
 | Create a section | `POST /chapters` with `{"book_id": <notebook id>, "name": "...", "description": "..."}` |
 | Upload an image for a page | `POST /image-gallery` (multipart: `type=gallery`, `uploaded_to=<page id>`, `image=@file.png`) → use the returned `url` in an `<img>` |
-| Delete a page | `DELETE /pages/{id}` (goes to the recycle bin; the administrator can restore it) |
+| Delete a page | `DELETE /pages/{id}` (goes to the recycle bin; a wiki administrator can restore it) |
 
 Writing rules for agents:
 
@@ -158,7 +160,7 @@ Rules that keep this from rotting:
 - **A people-first page needs no label.** If it sits in a book that is mostly agent pages, open its callout with "Written for people."
 - **When you edit a page, re-read its summary callout and fix it in the same edit.** The summary drifting from the body is the main way this pattern fails.
 - **Anything a person may have to do by hand when no agent is available** (an outage, a lockout) stays step-by-step readable, even on an agent-first page.
-- **Agent-first pages full of system detail belong in a restricted notebook**, not a department notebook everyone reads. Ask the administrator if you are unsure where that is.
+- **Agent-first pages full of system detail belong in a restricted notebook**, not a department notebook everyone reads. Ask a wiki administrator (Dylan or Daian) if you are unsure where that is.
 
 ### Worked example: agent adds a how-to to a department notebook
 
@@ -174,11 +176,11 @@ Rules that keep this from rotting:
 | Symptom | Likely cause |
 |---|---|
 | `401` on every call | Header not `Token id:secret`, or the token expired / was deleted. Make a new one. |
-| `403` on a write | Your user is a Viewer, or the notebook's permissions exclude your department. Ask the administrator. |
+| `403` on a write | Your user is a Viewer, or the notebook's permissions exclude your department. Ask a wiki administrator (Dylan or Daian). |
 | `404` for a page you can see in the browser | Wrong id (page ids and notebook ids are separate sequences), or the page is in the recycle bin. |
 | Content you sent is missing after save | The wiki's HTML filter removed it (scripts, iframes, SVG, form elements). Use plain HTML. The read-back below catches it. |
 | Search finds nothing for an exact title | Add `{in_name:...}` or quote the phrase; search also honours your permissions, so you cannot find what you cannot read. |
-| Cannot find "API Tokens" on My Account | You have the Viewer role. Ask the administrator for Editor. |
+| Cannot find "API Tokens" on My Account | You have the Viewer role. Ask a wiki administrator (Dylan or Daian) for Editor. |
 
 ## Boundaries
 

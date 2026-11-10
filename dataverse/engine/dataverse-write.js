@@ -66,6 +66,16 @@ const APP_KINDS = {
     const m = require('./lib/role');
     return { label: 'security role change', validate: m.validateRoleJob, plan: m.planRole, summary: m.roleSummary, detail: m.roleDetail, apply: m.applyRole, revert: m.planRoleRevert };
   },
+  // An application user for a server job's Entra app (1.11.31, Dylan 10/21/26), admin only.
+  appuser: () => {
+    const m = require('./lib/appuser');
+    return { label: 'application user change', validate: m.validateAppUserJob, plan: m.planAppUser, summary: m.appUserSummary, detail: m.appUserDetail, apply: m.applyAppUser, revert: m.planAppUserRevert };
+  },
+  // A new SBRM security role from an explicit privilege list (1.11.31, Dylan 10/21/26), admin only.
+  securityrole: () => {
+    const m = require('./lib/securityrole');
+    return { label: 'new security role', validate: m.validateSecurityRoleJob, plan: m.planSecurityRole, summary: m.securityRoleSummary, detail: m.securityRoleDetail, apply: m.applySecurityRole, revert: m.planSecurityRoleRevert };
+  },
 };
 const appKind = (kind) => (Object.prototype.hasOwnProperty.call(APP_KINDS, kind) ? APP_KINDS[kind]() : null);
 
@@ -203,7 +213,8 @@ function loadJob(file, envs) {
   } catch (e) {
     return { errors: [`cannot read ${file} as JSON: ${e.message}`] };
   }
-  // Six kinds: rows (CONTRACT.md §2a), merge (DESIGN.md §8c), schema and component (§10e), setting (1.11.12), role (1.11.13).
+  // Eight kinds: rows (CONTRACT.md §2a), merge (DESIGN.md §8c), schema and component (§10e), setting (1.11.12), role (1.11.13),
+  // appuser and securityrole (1.11.31).
   if (raw && raw.kind === 'merge') return merge.validateMergeJob(raw, { envs });
   const app = raw && appKind(raw.kind);
   return app ? app.validate(raw, { envs }) : validateJob(raw, { envs });
