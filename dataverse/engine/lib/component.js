@@ -2637,19 +2637,25 @@ async function planComponentRevert(dv, entry, ctx) {
     // Only the fields that plan SENT go back (1.11.31, the 1.11.30 review's F4 in general): `after` is the whole re-read
     // definition and may hold another writer's edit of an unsent field, read back in the same moment, which the
     // whole-definition hash above still matches. An entry logged before 1.11.31 has no `sent_fields` and restores every
-    // field, as before. A field the set does not have (a forged or damaged entry) is never sent.
-    const sent = Array.isArray(row.sent_fields) ? spec.fields.filter((f) => row.sent_fields.includes(f)) : spec.fields;
+    // field, as before. A field the set does not have (a forged or damaged entry) is never sent. A `sent_fields` that is
+    // there but not a list is a damaged entry, refused (1.11.31 review F2): never read as the legacy full restore.
+    const hasSent = Object.prototype.hasOwnProperty.call(row, 'sent_fields');
+    if (hasSent && !Array.isArray(row.sent_fields)) throw new PlanRefused(['that log entry\'s sent_fields is not a list of fields, so what the change sent cannot be told; nothing is undone'], 'invalid_job');
+    const sent = hasSent ? spec.fields.filter((f) => row.sent_fields.includes(f)) : spec.fields;
     job.definition = Object.fromEntries(sent.map((f) => [f, row.before.definition[f] === undefined ? null : row.before.definition[f]]));
-    // A rename (1.11.30) goes back too, only if the name is still the one that plan gave it. An entry from before
-    // 1.11.30 carries the same name before and after, so nothing is renamed.
+    // A rename (1.11.30) goes back too, only if that plan RENAMED (its sections name it, as every rename's diff does) and
+    // the name is still the one it gave. Names that differ in the log without a rename are another writer's, read back in
+    // the same moment, and are left alone (1.11.31 review F1). An entry from before 1.11.30 has no 'name' section.
+    const renamed = Array.isArray(entry.sections) && entry.sections.includes('name');
     const was = row.before && typeof row.before.name === 'string' ? row.before.name.trim() : null;
     const became = row.after && typeof row.after.name === 'string' ? row.after.name.trim() : null;
-    if (spec.nameMax && was && became && was !== became) {
+    if (spec.nameMax && renamed && was && became && was !== became) {
       if (String(live.name || '').trim() !== became) throw new PlanRefused([`${what} was renamed again since (it is now '${live.name}'); nothing to undo`], 'nothing_to_undo');
       job.rename = was;
-      // A change that was ONLY a rename is undone by the name alone (1.11.30 review F4): its logged after-definition may
-      // hold someone else's edit read back in the same moment, and restoring every field would undo theirs.
-      if (Array.isArray(entry.sections) && entry.sections.length === 1 && entry.sections[0] === 'name') job.definition = {};
+      // An entry with no sent_fields (1.11.30) that was ONLY a rename is undone by the name alone (1.11.30 review F4).
+      // With sent_fields the filter above already sends exactly what the plan sent, so logged sections never shrink it
+      // (1.11.31 review F3: a log edited to read "name" only cannot drop a recorded field).
+      if (!hasSent && entry.sections.length === 1 && entry.sections[0] === 'name') job.definition = {};
     }
   } else if (entry.action === 'create') {
     if (set !== 'workflows') throw new PlanRefused([`${what} stays: revert does not delete what it created; only an admin delete removes it`], 'nothing_to_undo');

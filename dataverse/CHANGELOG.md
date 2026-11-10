@@ -33,8 +33,12 @@ One line per release from 1.11.5. Earlier releases are described in their pull r
   pre-existing for every component set): a component update's log row now carries `sent_fields`, and reverting it puts
   back those fields alone, so an unsent field another writer saved between the publish and the read-back (which sits in
   `row.after`, and which the whole-definition hash still matches) is kept; an entry logged before 1.11.31 has no
-  `sent_fields` and restores every field as before; a field the set does not have is never sent. Test-first,
-  `component_revert_fields.test.js` 6 (3 red first); `mutate_1_11_31b.js` 6 of 6. **The bookstack skill names the wiki's
+  `sent_fields` and restores every field as before; a field the set does not have is never sent. **Review C1** (one
+  Codex seat, run 20261110-102244-2e8356, receipt `reviews/2026-11-10_toolkit_1_11_31_f4/`): 4 findings, 3 fixed
+  test-first (a name goes back only when the change RENAMED, never on log evidence alone; a `sent_fields` that is there
+  but not a list is refused, never read as the legacy full restore; logged sections cannot shrink a recorded restore), 1
+  refuted by ruling (app-part deletes are admin). Test-first, `component_revert_fields.test.js` 11 (3 + 3 red first);
+  `mutate_1_11_31b.js` 10 of 10. **The bookstack skill names the wiki's
   administrators** (task #6hwc9wWg4RmF7J3J; Dylan 11/6/26: "we administer the wiki"): server administration, roles,
   permissions and new departments or notebooks route to Dylan Gross and Daian Martinez, not to Tim, and the skill says how
   department access is wired (a department role is tied to Teams teams by Entra group id and granted on first sign-in).

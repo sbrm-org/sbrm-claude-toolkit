@@ -97,6 +97,69 @@ test('a flow switch logs no sent_fields: only an update sends fields', async () 
   assert.equal(Object.prototype.hasOwnProperty.call(row, 'sent_fields'), false, 'no sent_fields key on a switch');
 });
 
+// 1.11.31 C1 review (Codex run 20261110-102244-2e8356; receipt reviews/2026-11-10_toolkit_1_11_31_f4): F1-F3, red first.
+const renameLayout = (dv, to) => valid({ ...base, component: { set: 'savedqueries', id: IDS.view, name: 'Active Donors' }, mode: 'update', definition: { name: to, layoutxml: SWAPPED }, snapshot_hash: snap(dv, 'savedqueries', IDS.view).hash, intent: { verb: 'update', component: 'view', name: 'Active Donors', changed: ['name', 'columns'] } });
+
+test('review F1: a name another writer gave the component during the read-back is not renamed back (the plan never sent a name)', async () => {
+  const dv = dvAs();
+  const p = await C.planComponent(dv, layout(dv), ctx);
+  const { res } = await applied(p, dv);
+  const entry = revertable(res);
+  dv.data.savedqueries[IDS.view].name = 'Their Name';
+  entry.rows[0].after.name = 'Their Name';
+  const r = await C.planComponentRevert(dv, entry, ctx);
+  assert.ok(!r.rename, 'no rename in the revert');
+  assert.equal(Object.prototype.hasOwnProperty.call(C.bodyFor(r), 'name'), false);
+  assert.deepEqual(Object.keys(C.bodyFor(r)), ['layoutxml']);
+});
+
+test('review F2: a sent_fields that is present but not a list is refused, never read as the legacy full restore', async () => {
+  for (const bad of [null, 'layoutxml', { layoutxml: true }, 7]) {
+    const dv = dvAs();
+    const p = await C.planComponent(dv, layout(dv), ctx);
+    const { res } = await applied(p, dv);
+    const entry = revertable(res);
+    entry.rows[0].sent_fields = bad;
+    await assert.rejects(C.planComponentRevert(dv, entry, ctx), /sent_fields/, JSON.stringify(bad));
+  }
+});
+
+test('review F3: a rename with a layout change reverts both, even if the logged sections were edited to read "name" only', async () => {
+  const dv = dvAs();
+  const p = await C.planComponent(dv, renameLayout(dv, 'Donors (active)'), ctx);
+  const { res, row } = await applied(p, dv);
+  assert.equal(row.outcome, 'written');
+  const entry = revertable(res);
+  entry.sections = ['name'];
+  const r = await C.planComponentRevert(dv, entry, ctx);
+  const body = C.bodyFor(r);
+  assert.equal(body.name, 'Active Donors');
+  assert.equal(body.layoutxml, LAYOUT);
+});
+
+test('a rename-only entry logged by 1.11.30 (no sent_fields) is still undone by the name alone', async () => {
+  const dv = dvAs();
+  const p = await C.planComponent(dv, valid({ ...base, component: { set: 'savedqueries', id: IDS.view, name: 'Active Donors' }, mode: 'update', definition: { name: 'Donors (active)' }, snapshot_hash: snap(dv, 'savedqueries', IDS.view).hash, intent: { verb: 'update', component: 'view', name: 'Active Donors', changed: ['name'] } }), ctx);
+  const { res } = await applied(p, dv);
+  const entry = revertable(res);
+  delete entry.rows[0].sent_fields;
+  dv.data.savedqueries[IDS.view].layoutxml = SWAPPED;
+  entry.rows[0].after.definition.layoutxml = SWAPPED;
+  const r = await C.planComponentRevert(dv, entry, ctx);
+  assert.deepEqual(C.bodyFor(r), { name: 'Active Donors' });
+});
+
+test('a real rename with a layout change reverts the name and the layout (no edit to the entry)', async () => {
+  const dv = dvAs();
+  const p = await C.planComponent(dv, renameLayout(dv, 'Donors (active)'), ctx);
+  const { res } = await applied(p, dv);
+  const r = await C.planComponentRevert(dv, revertable(res), ctx);
+  const body = C.bodyFor(r);
+  assert.equal(body.name, 'Active Donors');
+  assert.equal(body.layoutxml, LAYOUT);
+  assert.equal(Object.prototype.hasOwnProperty.call(body, 'description'), false);
+});
+
 test('a forged sent_fields naming a field the set does not have is ignored, never sent', async () => {
   const dv = dvAs();
   const p = await C.planComponent(dv, layout(dv), ctx);
