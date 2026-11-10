@@ -689,6 +689,67 @@ test('H-1155 / R-1203: a directory-type find and a no-descent find of home list 
   ]) assert.match(next(sh(c)).why || '', /home-sweep|home folder/, c);
 });
 
+// 11/10/26 loosening (replays in guard_replays\2026-11-10_review): D-1823 (Kayleen 11/3), H-1271 (Kayleen 11/9), R-1239
+// (Dylan 11/9). Each recorded command blocked on installed 1.11.30 and was bisected before the fix.
+test('D-1823: a key-proof find of home may feed a command that only reports on each path', () => {
+  for (const c of [
+    'cd ~/ClaudeScripts/board-packets && cat extract_pages.py agenda_rev.py; find ~ -maxdepth 6 \\( -name "Development.pdf" -o -name "Bayou 2026 Results*" -o -name "Development Dashboard*" -o -name "*Year*End*" \\) -not -path "*/Library/*" 2>/dev/null | xargs -I{} ls -l "{}"',
+    'find ~ -maxdepth 6 -name "*.pdf" | xargs -I{} ls -l "{}"',
+    'find ~ -name "*.pdf" -print0 | xargs -0 stat -f "%z %N"',
+    'find ~ -iname "*.xlsx" | xargs wc -c',
+    'find ~ -name "*.pdf" | xargs -n 1 file',
+  ]) assert.equal(next(sh(c)).kind, 'allow', `${c}: ${next(sh(c)).why}`);
+  for (const c of [
+    'find ~ -name "*.pdf" | xargs cat',
+    'find ~ -name "*.pdf" | xargs -I{} ls -R "{}"',
+    'find ~ -name "*.pdf" | xargs ls --recursive',
+    'find ~ | xargs ls -l',
+    'find ~ -name "*" | xargs ls -l',
+    'find ~ -name "*.pdf" | xargs -I{} cp "{}" /tmp/x',
+    'find ~ -name "*.pdf" | xargs -I{} grep -l key "{}"',
+    'find ~ -name "*.pdf" -exec ls -l {} \\;',
+    'find ~ -name "*.pdf" | xargs $CMD',
+    'find ~ -name "*.pdf" | xargs ls $FLAGS',
+    'find ~ -name "*.pdf" | xargs sudo ls -l',
+    'find ~ -maxdepth 0 | xargs ls -R',
+  ]) assert.match(next(sh(c)).why || '', /home-sweep|home folder/, c);
+});
+
+test('H-1271: a BSD in-place sed with an empty suffix is read like the GNU form', () => {
+  const MIN = `${H}/.claude/skills/committee-minutes`;
+  for (const c of [
+    `cd "${MIN}" && sed -i '' 's/remote/virtual/' SKILL.md`,
+    `cd "${MIN}" && sed -i '' 's/\`(remote)\` not \`(virtual)\`/\`(virtual)\` - never \`(remote)\` (Kayleen 11\\/9\\/26: uniform across agendas, packets, all minutes)/' SKILL.md && sed -i '' 's/\`(remote)\` after a name for virtual/\`(virtual)\` after a name for virtual attendance - never \`(remote)\` (Kayleen 11\\/9\\/26)/' reference/board-format.md && grep -n "never" SKILL.md reference/board-format.md`,
+    `sed -i '' '3,9s/old text/new text/g' "${SKILL}/SKILL.md"`,
+    // the empty suffix is skipped for the WRITE TARGET too: the script word is not a file sed writes (read from the
+    // plugin folder, a script word taken as a target would resolve inside it and block)
+    `cd "${PLUG}" && sed -i '' 's/x/y/' /tmp/notes.md`,
+  ]) assert.equal(next(sh(c)).kind, 'allow', `${c}: ${next(sh(c)).why}`);
+  for (const c of [
+    `sed -i '' 's/^name: x$/hooks:/' "${SKILL}/SKILL.md"`,
+    `sed -i '' -e 's/a/b/' "${SKILL}/SKILL.md"`,
+    `sed -i '' 'y/abc/xyz/' "${SKILL}/SKILL.md"`,
+    `sed -i '' 's/a/b/e' "${SKILL}/SKILL.md"`,
+  ]) assert.match(next(sh(c)).why || '', /prompt-answerer/, c);
+});
+
+test('R-1239: a copy the guard cannot read into a skill file asks; other unreadable writes into one still block', () => {
+  for (const c of [
+    `cp "$TEMP/triage_bak.md" "${SKILL}/SKILL.md"`,
+    `mv /tmp/new.md "${SKILL}/SKILL.md"`,
+    `cp "${H}/.claude/skills/triage/SKILL.md" "$TEMP/triage_bak.md" && sed -i 's/~10 substantive planned a day/~8 substantive planned a day/' "${H}/.claude/skills/triage/SKILL.md" && cp "$TEMP/triage_bak.md" "${H}/.claude/skills/triage/SKILL.md"`,
+  ]) {
+    const r = next(sh(c));
+    assert.equal(r.kind, 'ask', `${c}: ${r.kind} ${r.why}`);
+    assert.match(String(r.why), /skill file/);
+  }
+  for (const c of [
+    `cp "$TEMP/s.json" "${H}/.claude/settings.json"`,
+    `cat /tmp/x > "${SKILL}/SKILL.md"`,
+    `cp "$TEMP/h.json" "${H}/.claude/plugins/marketplaces/other/plugins/x/hooks/hooks.json"`,
+  ]) assert.equal(next(sh(c)).kind, 'block', `${c}: ${next(sh(c)).why}`);
+});
+
 // Inline-code review (inline_code_review\GATE_2.md G4, ruled 10/29/26): the reader follows a name bound once and a path
 // joined from known parts, stops reading a list's or a string's method as a file call, and an untraceable write target
 // on code that names the store or the plugin ASKS (Dylan: "ask") instead of blocking. A literal or resolved write into

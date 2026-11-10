@@ -3,6 +3,24 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.32** (2026-11-10, guard loosening, its own PR; task #6hxGVRG4fchwX7Xr, review items H-1271, R-1238, R-1239)
+  Three guard false positives fixed in `guard_next.js`, each red first in `guard_next.test.js`, each recorded command
+  replayed through the installed 1.11.30 guard and bisected first (`guard_replays/2026-11-10_review/`). **D-1823**
+  (Kayleen 11/3): a find of home whose every printed name passed a key-proof test (the recorded line: four `-name` tests
+  in an OR, `-not -path`) may feed, through xargs or parallel, a command that only REPORTS on each path and prints no
+  content (ls without -R, stat, file, wc, du, basename, dirname, realpath, readlink); the names it gets cannot be the
+  key. A content reader (cat, grep, cp), a recursive ls, a word the guard cannot read, `-exec`, or a find that is not
+  key-proof still block. **H-1271** (Kayleen 11/9, and the same shape twice in her line): BSD sed's in-place form puts an
+  empty backup suffix before the script (`sed -i '' 's/a/b/' SKILL.md`); the guard read that empty word as the script and
+  blocked a plain-word edit of her own skill file as a prompt-answering hook. The empty suffix is now skipped (the GNU
+  form was already read right), for the safety check and for the write target alike; every unsafe sed shape (a hook
+  word, `-e`, `y`, the e flag) still blocks. **R-1239** (Dylan 11/9; R-1238 is its shadow row): his two seds passed; the
+  block was `cp` of a backup he had just made back over a skill file, content the guard cannot read. A copy or move
+  (cp, mv, copy-item, move-item, install) of unreadable content into a skill file now ASKS, naming the file (the
+  inline-code ruling of 10/29: an untraceable write asks); a redirect of unreadable content into one, and any copy into
+  settings or a hooks file, still block. Not in it: H-1258 / H-1266 (a variable-named redirect on a line naming the
+  plugin, pooled as #6hxVMF5f3wVv6wGJ).
+
 - **1.11.31** (2026-11-10, pooled release; tasks #6hpqgr7QP88Pj9gr, #6hxFqHHhxvR2MCcr, #6hwc9wWg4RmF7J3J; Dylan 10/21/26: "Why cant we just do this through the toolkit?") **A server
   job's Dataverse identity through the write path.** Two new admin kinds, so the application user and the narrow role
   a job on the SBRM server signs in with land in the Write Log (on 10/21 the Mail Sorting Guide's were made by hand in

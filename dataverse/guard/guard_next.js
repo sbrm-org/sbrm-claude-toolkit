@@ -399,7 +399,7 @@ function writeTargets(c) {
   } else if (name === 'sed' || name === 'gsed') {
     if (flagHas(flags, /^-[a-zA-Z]*i|^--in-place/)) {
       const scriptGiven = flagHas(flags, /^-[a-zA-Z]*[ef]$|^--(?:expression|file)/);
-      for (const w of scriptGiven ? pos : pos.slice(1)) out.push({ w, removal: false });
+      for (const w of scriptGiven ? pos : pos.slice(1 + bsdSuffixSkipped(pos, flags))) out.push({ w, removal: false });
     }
   } else if (name === 'perl') {
     if (flagHas(flags, /^-[a-zA-Z]*i/)) {
@@ -1171,11 +1171,19 @@ function sedSubsOnly(script) {
   }
   return parts.length ? parts : null;
 }
+// BSD sed (macOS) takes the in-place backup suffix as the word AFTER a bare -i (`sed -i '' 's/a/b/' file`), so an empty
+// word there is that suffix and the script is the word after it (H-1271, Kayleen 11/9/26: a plain-word edit of her own
+// skill file blocked because the empty suffix was read as the script). GNU sed attaches the suffix (-i.bak), so after
+// a bare -i the script comes first. Returns how many leading positional words to skip.
+const bsdSuffixSkipped = (pos, flags) => (flagHas(flags, /^-i$|^--in-place$/) && pos.length > 1 && literal(pos[0]) === '' ? 1 : 0);
+// Commands that copy or move a file into place: their content is the SOURCE file's, which the guard cannot read, so a
+// copy into a skill file ASKS (R-1239, Dylan 11/9/26; G4: an untraceable write asks) instead of blocking.
+const FILE_COPIERS = new Set(['cp', 'copy', 'copy-item', 'cpi', 'mv', 'move', 'move-item', 'mi', 'install']);
 function sedEditSafe(c) {
   if (c.name !== 'sed' && c.name !== 'gsed') return false;
   const { pos, flags } = argsOf(c);
   if (flagHas(flags, /^-[a-zA-Z]*[ef]$|^--(?:expression|file)/) || !pos.length) return false;
-  const subs = sedSubsOnly(literal(pos[0]) ?? '');
+  const subs = sedSubsOnly(literal(pos[bsdSuffixSkipped(pos, flags)]) ?? '');
   return !!subs && subs.every(([pat, rep]) => !/hook|permission|request/i.test(pat + rep)
     && !/\\[0-9xuodc]/i.test(pat + rep) && !/(?:^|[^\\])&/.test(rep));
 }
@@ -1196,7 +1204,10 @@ function targetVerdict(t, c, ctx, env) {
     if (lk === 'settings' || lk === 'hooksjson') return MSG.loading;
     if (lk === 'skillmd') {
       const content = writtenContent(c, t);
-      if (content === null ? !sedEditSafe(c) : /Permission[R]equest|\\u[0-9a-f]{4}|\\x[0-9a-f]{2}/i.test(content)) return MSG.answerer;
+      if (content === null) {
+        if (FILE_COPIERS.has(c.name)) return { ask: `SBRM Dataverse guard: copying a file the guard cannot read into the skill file ${text(t.w)}. A skill file is loaded into Claude Code, and only the person may put a hook that answers approval prompts in one. Yes runs it; No stops it.` };
+        if (!sedEditSafe(c)) return MSG.answerer;
+      } else if (/Permission[R]equest|\\u[0-9a-f]{4}|\\x[0-9a-f]{2}/i.test(content)) return MSG.answerer;
     }
     if (isProfile(p.path)) {
       const content = writtenContent(c, t);
@@ -1409,8 +1420,24 @@ function findListsNamesOnly(lits) {
   if (depths.length && depths.every((d) => d === '0')) return true;
   return findPrints(e) ? findPrintsNamed(e, false) : findNamed(e);
 }
+// D-1823 (Kayleen 11/3; 11/10/26): a find of home whose every printed name passed a key-proof test may feed, through
+// xargs or parallel, a command that only REPORTS on each path and prints no content (ls without -R, stat, file, wc, du,
+// basename, dirname, realpath, readlink): the names it gets cannot be the key. A reader of content, a recursive ls, a
+// word the guard cannot read, or a consumer that is not xargs / parallel still counts as a downstream read.
+// The parser unwraps xargs / parallel: the pipe element is the INNER command (name, args), `wrappers` names the wrapper
+// and `fromStdin` is set (probed 11/10/26, guard_replays/2026-11-10_review/probe_xargs_pipe.js).
+const PATH_REPORTERS = new Set(['ls', 'stat', 'file', 'wc', 'du', 'basename', 'dirname', 'realpath', 'readlink']);
+function reportsPathsOnly(x) {
+  const wr = x.wrappers || [];
+  if (!x.fromStdin || !wr.length || !wr.every((w) => w === 'xargs' || w === 'parallel')) return false;
+  if (!PATH_REPORTERS.has(x.name)) return false;
+  const lits = (x.args || []).map(literal);
+  if (lits.some((l) => l === null)) return false;
+  if (x.name === 'ls' && lits.some((a) => /^-[a-zA-Z]*R/.test(a) || a === '--recursive')) return false;
+  return true;
+}
 function extensionFiltered(c, pipe) {
-  const downstreamReads = pipe.some((x) => x.pos > c.pos && (PIPE_READERS.has(x.name) || x.fromStdin));
+  const downstreamReads = pipe.some((x) => x.pos > c.pos && (PIPE_READERS.has(x.name) || x.fromStdin) && !(c.name === 'find' && reportsPathsOnly(x)));
   if (c.name === 'find') {
     const lits = (c.args || []).map(literal);
     if (lits.some((l) => l === null)) return false;
