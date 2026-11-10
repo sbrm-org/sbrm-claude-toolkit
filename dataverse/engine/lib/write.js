@@ -11,6 +11,9 @@
 //   publish                    PublishXml for the named components only; there is no PublishAllXml
 //   grantRole / revokeRole     one security role given to or taken from one user (kind "role", 1.11.13): the
 //                              association $ref on systemuserroles_association, both ids checked as GUIDs
+//   createAppUser / setUserDisabled / createRole / addRolePrivileges / deleteRole
+//                              application users and SBRM security roles (kinds "appuser", "securityrole", 1.11.31):
+//                              fixed paths, bodies built from checked values only (identityCall)
 //
 // Every PATCH or DELETE of a record carries If-Match with the version tag read at apply, so Dataverse itself
 // refuses the write (412) if anyone changed the record between the apply-time check and the write.
@@ -83,6 +86,42 @@ function roleCall(verb, userId, roleId, host) {
   }
   if (verb === 'revoke') return { method: 'DELETE', path: `systemusers(${userId})/systemuserroles_association(${roleId})/$ref`, body: undefined };
   throw new Error(`refusing role verb ${verb}`);
+}
+
+// Application users and SBRM security roles (kinds "appuser" and "securityrole", 1.11.31). Each verb has one fixed
+// path and a body built here from checked values, so nothing a plan carries can reach another endpoint or column.
+const DEPTHS = new Set(['Basic', 'Local', 'Deep', 'Global']);
+const ROLE_NAME = (s) => typeof s === 'string' && s.trim().length > 0 && s.length <= 100 && !/[\x00-\x1f\x7f]/.test(s);
+function identityCall(verb, a = {}) {
+  const guid = (v, what) => { if (!GUID_ONLY.test(String(v))) throw new Error(`refusing ${verb}: ${what} is not a GUID`); return String(v).toLowerCase(); };
+  if (verb === 'createAppUser') {
+    return { method: 'POST', path: 'systemusers', body: { applicationid: guid(a.clientId, 'the client id'), 'businessunitid@odata.bind': `/businessunits(${guid(a.unitId, 'the business unit')})` }, headers: ['Prefer: return=representation'] };
+  }
+  if (verb === 'setUserDisabled') {
+    if (typeof a.disabled !== 'boolean') throw new Error('refusing setUserDisabled: disabled must be true or false');
+    if (!a.etag) throw new Error('refusing to PATCH without a version tag (If-Match)');
+    return { method: 'PATCH', path: `systemusers(${guid(a.userId, 'the user')})`, body: { isdisabled: a.disabled }, headers: [`If-Match: ${a.etag}`] };
+  }
+  if (verb === 'createRole') {
+    if (!ROLE_NAME(a.name)) throw new Error('refusing createRole: the name must be one line, at most 100 characters');
+    if (a.description !== undefined && a.description !== null && (typeof a.description !== 'string' || a.description.length > 2000)) throw new Error('refusing createRole: the description must be text, at most 2000 characters');
+    const body = { name: a.name, 'businessunitid@odata.bind': `/businessunits(${guid(a.unitId, 'the business unit')})` };
+    if (a.description) body.description = a.description;
+    return { method: 'POST', path: 'roles', body, headers: ['Prefer: return=representation'] };
+  }
+  if (verb === 'addRolePrivileges') {
+    if (!Array.isArray(a.privileges) || !a.privileges.length || a.privileges.length > 400) throw new Error('refusing addRolePrivileges: 1 to 400 privileges');
+    const Privileges = a.privileges.map((p) => {
+      if (!DEPTHS.has(p.Depth)) throw new Error(`refusing addRolePrivileges: depth "${p.Depth}"`);
+      return { PrivilegeId: guid(p.PrivilegeId, 'a privilege'), Depth: p.Depth, BusinessUnitId: guid(p.BusinessUnitId, 'the business unit') };
+    });
+    return { method: 'POST', path: `roles(${guid(a.roleId, 'the role')})/Microsoft.Dynamics.CRM.AddPrivilegesRole`, body: { Privileges }, headers: [] };
+  }
+  if (verb === 'deleteRole') {
+    if (!a.etag) throw new Error('refusing to DELETE without a version tag (If-Match)');
+    return { method: 'DELETE', path: `roles(${guid(a.roleId, 'the role')})`, body: undefined, headers: [`If-Match: ${a.etag}`] };
+  }
+  throw new Error(`refusing identity verb ${verb}`);
 }
 
 // The approval, checked HERE on every write this connection sends (1.11.10, guard_review/DESIGN.md §2a, ruled
@@ -158,10 +197,31 @@ function writeConnection(host, cli = resolveCli(), { approval = null } = {}) {
       const c = roleCall('revoke', userId, roleId, host);
       return send(c.method, c.path, c.body, []);
     },
+    // Application users and SBRM security roles (1.11.31). Admin level; the caller checks it.
+    createAppUser(clientId, unitId) {
+      const c = identityCall('createAppUser', { clientId, unitId });
+      return send(c.method, c.path, c.body, c.headers);
+    },
+    setUserDisabled(userId, disabled, etag) {
+      const c = identityCall('setUserDisabled', { userId, disabled, etag });
+      return send(c.method, c.path, c.body, c.headers);
+    },
+    createRole(name, unitId, description) {
+      const c = identityCall('createRole', { name, unitId, description });
+      return send(c.method, c.path, c.body, c.headers);
+    },
+    addRolePrivileges(roleId, privileges) {
+      const c = identityCall('addRolePrivileges', { roleId, privileges });
+      return send(c.method, c.path, c.body, c.headers);
+    },
+    deleteRole(roleId, etag) {
+      const c = identityCall('deleteRole', { roleId, etag });
+      return send(c.method, c.path, c.body, c.headers);
+    },
     getMany(paths, concurrency) {
       return getMany(cli, host, paths, concurrency);
     },
   };
 }
 
-module.exports = { writeConnection, checkMeta, publishXml, roleCall, META_ACTIONS };
+module.exports = { writeConnection, checkMeta, publishXml, roleCall, identityCall, META_ACTIONS };

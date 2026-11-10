@@ -88,7 +88,8 @@ Verify the path on first use and say it in full whenever you hand the person a c
    name and id, the body, a one-sentence `reason` in plain words, and an `intent` that states exactly what
    you are changing. App changes: `kind: "schema"` (tables, columns, relationships, keys, choices),
    `kind: "component"` (a view, form, sitemap, flow or web resource), `kind: "setting"` (an environment variable's
-   value) or `kind: "role"` (who holds a security role), see below. Save it in `~/.sbrm-dataverse/jobs/`,
+   value), `kind: "role"` (who holds a security role), `kind: "appuser"` (an application user for a server job's
+   Entra app) or `kind: "securityrole"` (a new SBRM security role), see below. Save it in `~/.sbrm-dataverse/jobs/`,
    never in a git folder (Recovery job files there are refused), with your file-writing tool, not a
    shell command: the guard blocks a shell line that writes into that folder, so `plan` goes in a
    command of its own.
@@ -166,7 +167,15 @@ on its own. Never ask the person to run or paste a command.
   the role's name. For every removal the plan says whether a team still gives them the role or that this
   ENDS their access: read that line to the person, by name, before they approve. System Administrator,
   System Customizer and Microsoft's own roles are never given here (an admin does that by hand), and nobody
-  changes their own roles. Team membership comes from Entra and is not changed here.
+  changes their own roles. Team membership comes from Entra and is not changed here. An application user is named
+  by `app_user` (its Entra client id) instead of `user`.
+- **A server job's identity** (admin; each job on the SBRM server signs in as its OWN Entra app with its OWN narrow
+  role): `kind: "securityrole"` makes the role from an explicit list (table, access, depth; Read unless the job says
+  `"writes": true`; never Create/Write/Delete/Assign/Share at organization depth; the security and code tables are
+  read-only; the name starts `#_ `), `kind: "appuser"` makes the application user from the Entra client id (or
+  switches one off or on), then `kind: "role"` with `app_user` gives it the role. Three plans, three prompts; say
+  which privileges the role gets, in words, before the person approves. Undo: revert deletes the role (while nobody
+  holds it) and switches the application user off (never deleted).
 - A column's type cannot be changed (that is delete and recreate). Managed components (Microsoft's own
   `msnfp_` tables, forms and views) are not changed; add your own beside them.
 

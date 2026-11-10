@@ -407,3 +407,81 @@ test('revert: refuses an entry of another kind, a cancelled one, a damaged one, 
   await refused(R.planRoleRevert(dv, { ...entry, env: 'nowhere' }, ctx()), /names an environment the toolkit does not know/, 'invalid_job');
   await refused(R.planRoleRevert(dv, { ...entry, env: 'recovery' }, ctx()), /was made in the Recovery app/, 'invalid_job');
 });
+
+// ---------- an application user named by its client id (1.11.31) ----------
+
+const appRow = (client, roleName, action) => ({ app_user: client, role: roleName, action });
+
+test('app_user: validate takes a client id instead of an email; both, neither, a bad id or a duplicate are refused', () => {
+  const j = valid(job([appRow(` ${IDS.jobClient.toUpperCase()} `, '#_ SBRM Normal', 'add')]));
+  assert.deepEqual(j.rows[0], { app_user: IDS.jobClient, role: '#_ SBRM Normal', action: 'add' });
+  const cases = [
+    [[{ user: 'tim@example.org', app_user: IDS.jobClient, role: '#_ SBRM Normal', action: 'add' }], /row 1: name the person by "user" or the application user by "app_user", not both/],
+    [[appRow('not-a-guid', '#_ SBRM Normal', 'add')], /row 1: "app_user" must be the application user's Entra Application \(client\) ID/],
+    [[appRow('00000000-0000-0000-0000-000000000000', '#_ SBRM Normal', 'add')], /row 1: "app_user" must be/],
+    [[{ role: '#_ SBRM Normal', action: 'add' }], /row 1: "user" must be the person's work email/],
+    [[appRow(IDS.jobClient, '#_ SBRM Normal', 'add'), appRow(IDS.jobClient.toUpperCase(), '#_ sbrm normal', 'remove')], /row 2: application user e1000000-0000-0000-0000-000000000010 and #_ sbrm normal appear more than once/],
+  ];
+  for (const [rows, re] of cases) {
+    const r = R.validateRoleJob(job(rows), { envs: ENVS });
+    assert.ok(r.errors.some((e) => re.test(e)), `${JSON.stringify(rows).slice(0, 80)}: ${r.errors.join(' | ')}`);
+  }
+});
+
+test('app_user: plan finds the application user by client id, says so everywhere, and applies, reads back and reverts', async () => {
+  const dv = dvAs('admin');
+  const plan = await R.planRole(dv, valid(job([appRow(IDS.jobClient, '#_ SBRM Normal', 'add')])), ctx());
+  assert.deepEqual(nonGets(dv), []);
+  const r = plan.rows[0];
+  assert.deepEqual({ id: r.user.id, email: r.user.email, client_id: r.user.client_id, fullname: r.user.fullname },
+    { id: IDS.jobApp, email: null, client_id: IDS.jobClient, fullname: '# sbrmapps - Test Job' });
+  assert.match(R.roleSummary(plan), /Add '#_ SBRM Normal' to # sbrmapps - Test Job \(application user e1000000-0000-0000-0000-000000000010\)/);
+  const { res } = await applied(plan, dv);
+  assert.equal(res.outcome, 'applied');
+  assert.ok(holds(dv, IDS.jobApp, IDS.normal));
+  assert.equal(res.entry.rows[0].name, "application user e1000000-0000-0000-0000-000000000010: '#_ SBRM Normal'");
+  const undo = await R.planRoleRevert(dv, JSON.parse(JSON.stringify(res.entry)), ctx());
+  assert.deepEqual({ client: undo.rows[0].user.client_id, action: undo.rows[0].action }, { client: IDS.jobClient, action: 'remove' });
+  await applied(undo, dv);
+  assert.ok(!holds(dv, IDS.jobApp, IDS.normal));
+});
+
+test('app_user: an unknown client id, a client id on a person, and the never-given rules still refuse', async () => {
+  let plan;
+  await refused(R.planRole(dvAs('admin'), valid(job([appRow('e1000000-0000-0000-0000-0000000000ff', '#_ SBRM Normal', 'add')])), ctx()),
+    /has no application user in the HGS apps \(make one with kind "appuser"\)/, 'every_row_refused');
+  const dv = dvAs('admin');
+  dv.data.systemusers.find((u) => u.systemuserid === IDS.tim).applicationid = 'e1000000-0000-0000-0000-0000000000aa';
+  await refused(R.planRole(dv, valid(job([appRow('e1000000-0000-0000-0000-0000000000aa', '#_ SBRM Normal', 'add')])), ctx()),
+    /Tim Molloy is not an application user \(access mode 0\); name a person by "user"/, 'every_row_refused');
+  await refused(R.planRole(dvAs('admin'), valid(job([appRow(IDS.jobClient, 'System Administrator', 'add')])), ctx()), /never given through the toolkit/, 'every_row_refused');
+  // Mixed rows: a person and an application user in one job.
+  plan = await R.planRole(dvAs('admin'), valid(job([row('daian@example.org', '#_ SBRM Clerical', 'add'), appRow(IDS.jobClient, '#_ SBRM Clerical', 'add')])), ctx());
+  assert.equal(plan.rows.length, 2);
+  // A tampered plan that names neither a person nor a GUID client id is refused at apply.
+  plan = await R.planRole(dvAs('admin'), valid(job([appRow(IDS.jobClient, '#_ SBRM Normal', 'add')])), ctx());
+  const bad = { ...plan, rows: [{ ...plan.rows[0], user: { ...plan.rows[0].user, client_id: 'x' } }] };
+  await applyRefused(applied(bad, dvAs('admin')), /no names/, 'plan_tampered');
+  const both = { ...plan, rows: [{ ...plan.rows[0], user: { ...plan.rows[0].user, email: 'a@example.org' } }] };
+  await applyRefused(applied(both, dvAs('admin')), /no names/, 'plan_tampered');
+});
+
+// ---------- review C1 (11/9, run 20261109-121738-2cdbf1): written red first ----------
+
+test('review F1: an application user whose client id or access mode changed since the plan is refused at apply', async () => {
+  for (const move of [(u) => { u.applicationid = 'e1000000-0000-0000-0000-0000000000cc'; }, (u) => { u.accessmode = 0; }]) {
+    const dv = dvAs('admin');
+    const plan = await R.planRole(dv, valid(job([appRow(IDS.jobClient, '#_ SBRM Normal', 'add')])), ctx());
+    move(dv.data.systemusers.find((u) => u.systemuserid === IDS.jobApp));
+    await applyRefused(applied(plan, dv), /changed since the plan/, 'snapshot_moved');
+    assert.deepEqual(nonGets(dv), []);
+  }
+});
+
+test('review F2: a role renamed since the plan is refused at apply (the prompt and the log would name the old role)', async () => {
+  const dv = dvAs('admin');
+  const plan = await R.planRole(dv, valid(job([row('daian@example.org', '#_ SBRM Clerical', 'add')])), ctx());
+  dv.data.roles.find((r) => r.roleid === IDS.clerical).name = '#_ Different Role';
+  await applyRefused(applied(plan, dv), /is now named '#_ Different Role'/, 'snapshot_moved');
+  assert.deepEqual(nonGets(dv), []);
+});

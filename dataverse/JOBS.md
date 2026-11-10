@@ -228,6 +228,59 @@ work email (their sign-in) and the role by its name exactly as Dataverse shows i
   so check the Entra group before relying on a team. Entra team membership is out of scope here.
 - Undo: `revert` makes the opposite change, only while each grant still is what the plan left. Undoing the
   removal of System Administrator or a Microsoft role is refused like any such add: an admin gives it back.
+- **An application user** (from 1.11.31) is named by its Entra client id instead of an email:
+  `{ "app_user": "<client id>", "role": "#_ sbrmapps Mail Guide (read)", "action": "add" }`. The row must find
+  exactly one application user (access mode 4) carrying that id; a person's account is never named this way.
+
+## Application users: `kind: "appuser"` (admin, from 1.11.31)
+
+Each job on the SBRM server signs in as its OWN Entra app (ruled per-consumer 10/19 + 10/21/26), and Dataverse lets the
+app in only through an application user. This makes one, or switches one off or back on.
+
+```json
+{ "contract": "sbrm-dv-job/1", "kind": "appuser", "env": "hgs", "action": "create",
+  "client_id": "<Entra Application (client) ID>",
+  "source": "claude-session", "reason": "The Mail Sorting Guide job signs in as its own Entra app.",
+  "intent": { "verb": "appuser", "action": "create", "client_id": "<the same id>" } }
+```
+
+- `action`: `create`, `disable` (switch off) or `enable` (switch on). `business_unit` (create only, optional): the unit's
+  name exactly; left out, the root business unit.
+- Create is refused if any user already carries the client id. Dataverse names the user after the Entra app (`# <name>`);
+  whether the client id is a real app in the tenant is Dataverse's answer at apply (a failed create writes nothing).
+- Never switched off here: an application user holding a Microsoft (managed) role (a Microsoft or vendor integration).
+  Disable warns **Ends access**; create warns **Lasting**.
+- Undo: a create is undone by switching the user OFF (an application user is never deleted here); a switch by the
+  opposite switch, only while it is still in the state the plan left.
+
+## New SBRM security roles: `kind: "securityrole"` (admin, from 1.11.31)
+
+One new role from an explicit privilege list: the narrow role a server job's application user holds.
+
+```json
+{ "contract": "sbrm-dv-job/1", "kind": "securityrole", "env": "hgs", "name": "#_ sbrmapps Mail Guide (read)",
+  "description": "Read-only role for the Mail Sorting Guide job.",
+  "privileges": [ { "table": "sbrm_guest", "access": ["read"], "depth": "organization" },
+                  { "table": "sbrm_bednight", "access": ["read"], "depth": "organization" } ],
+  "source": "claude-session", "reason": "The Mail Sorting Guide job reads guests and bed nights.",
+  "intent": { "verb": "securityrole", "name": "#_ sbrmapps Mail Guide (read)", "privileges": 2, "writes": false } }
+```
+
+- `name` starts with `#_ ` (SBRM's own roles), at most 100 characters, and no role of that name may exist.
+- `privileges`: one entry per table (logical name), `access` from read, create, write, delete, append, appendto, assign,
+  share; `depth` from user, businessunit, parentchild, organization. The plan resolves each from the table's metadata and
+  refuses a depth the table cannot take (an organization-owned table takes organization only).
+- **Read unless the job says `"writes": true`** (and `"writes": true` with only reads is refused). Never here: create,
+  write, delete, assign or share at organization depth; anything but read on the security and code tables (roles, users,
+  teams, business units, field security, solutions, flows, plug-ins, web resources, environment variables, connection
+  references, the Write Log).
+- `intent.privileges` counts every access on every table (2 tables with read = 2).
+- The role is made in the root business unit (Dataverse copies it to every unit). Dataverse also gives every new role a
+  baseline (read on plug-ins and SDK messages, read/create/write on SharePoint data, 9 privileges as read live 11/9/26);
+  the read-back allows exactly the asked-for privileges at their depth plus that baseline, and lists both in the log.
+- Undo: `revert` deletes the role, only while nobody holds it (any person, application user or team, through any
+  unit's copy) and its privileges are what the apply left. A delete is not undone; re-create it with a new job.
+- Giving the role: `kind: "role"` with `app_user`. A server job's identity is three jobs: securityrole, appuser, role.
 
 ## What the plan prints first
 

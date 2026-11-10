@@ -23,6 +23,9 @@ const IDS = {
   gone: 'a1000000-0000-0000-0000-000000000004',     // disabled
   admin2: 'a1000000-0000-0000-0000-000000000005',   // the other person who is a System Administrator
   appUser: 'a1000000-0000-0000-0000-000000000006',  // an app user holding System Administrator
+  appClient: 'e1000000-0000-0000-0000-000000000006', // its Entra client id
+  jobApp: 'a1000000-0000-0000-0000-000000000010',   // an SBRM server job's application user, no roles yet (1.11.31)
+  jobClient: 'e1000000-0000-0000-0000-000000000010',
   twin1: 'a1000000-0000-0000-0000-000000000007',
   twin2: 'a1000000-0000-0000-0000-000000000008',
   normal: '95d443f4-0000-0000-0000-000000000001',   // '#_ SBRM Normal', root copy
@@ -40,8 +43,8 @@ const IDS = {
   clericalTeam: 'c1000000-0000-0000-0000-000000000004', // owner team in the Men's BU, carries Clerical
 };
 
-function user(id, fullname, email, { bu = IDS.rootBu, isdisabled = false, accessmode = 0 } = {}) {
-  return { systemuserid: id, fullname, domainname: email, internalemailaddress: email, isdisabled, accessmode, _businessunitid_value: bu };
+function user(id, fullname, email, { bu = IDS.rootBu, isdisabled = false, accessmode = 0, applicationid = null } = {}) {
+  return { systemuserid: id, fullname, domainname: email, internalemailaddress: email, isdisabled, accessmode, _businessunitid_value: bu, applicationid };
 }
 function role(id, name, root, bu, ismanaged = false) {
   return { roleid: id, name, _parentrootroleid_value: root, _businessunitid_value: bu, ismanaged };
@@ -56,7 +59,8 @@ function data() {
       user(IDS.lb, 'Larry Chandler', 'lb@example.org', { bu: IDS.mensBu }),
       user(IDS.gone, 'Gone Person', 'gone@example.org', { isdisabled: true }),
       user(IDS.admin2, 'Other Admin', 'admin2@example.org'),
-      user(IDS.appUser, '# Some App', 'app@example.org', { accessmode: 4 }),
+      user(IDS.appUser, '# Some App', 'app@example.org', { accessmode: 4, applicationid: IDS.appClient }),
+      user(IDS.jobApp, '# sbrmapps - Test Job', null, { accessmode: 4, applicationid: IDS.jobClient }),
       user(IDS.twin1, 'Twin One', 'twin@example.org'),
       user(IDS.twin2, 'Twin Two', 'twin@example.org'),
     ],

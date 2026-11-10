@@ -3,6 +3,47 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.31** (2026-11-10, pooled release; tasks #6hpqgr7QP88Pj9gr, #6hxFqHHhxvR2MCcr, #6hwc9wWg4RmF7J3J; Dylan 10/21/26: "Why cant we just do this through the toolkit?") **A server
+  job's Dataverse identity through the write path.** Two new admin kinds, so the application user and the narrow role
+  a job on the SBRM server signs in with land in the Write Log (on 10/21 the Mail Sorting Guide's were made by hand in
+  the admin center). `kind: "appuser"` creates an application user from an Entra client id (root business unit unless
+  one is named), or switches one off or on; never switched off here: one holding a Microsoft (managed) role; undo of a
+  create switches it off, nothing is deleted. `kind: "securityrole"` creates a `#_ ` role from an explicit list (table,
+  access, depth), each privilege resolved from the table's metadata with its depth checked; Read unless the job says
+  `"writes": true`; never create/write/delete/assign/share at organization depth, never anything but read on the
+  security and code tables (roles, users, teams, business units, field security, solutions, flows, plug-ins, web
+  resources, environment variables, connection references, the Write Log); the read-back allows exactly the asked-for
+  privileges plus the baseline Dataverse gives every new role (read before the add); undo deletes the role while nobody
+  holds it (any copy, any person, application user or team) and its privileges are unchanged. `kind: "role"` rows may
+  name an application user by `app_user` (its client id). Write connection: `createAppUser`, `setUserDisabled`,
+  `createRole`, `addRolePrivileges`, `deleteRole`, each on a fixed path with a body built from checked values
+  (`identityCall`). The approval prompt names the client id and business unit, or the role and every privilege. Facts
+  read live 11/9/26 (`probe_appuser_role.py`, HGS, the 10/21 reference): the app user row's shape, the unbound
+  `RetrieveRolePrivilegesRole(RoleId=)` (the bound form 404s), the 9-privilege baseline. Not yet seen live: an
+  application user created through the API (the first apply is that test). **Review C1** (one Codex seat, run
+  20261109-121738-2cdbf1, receipt `reviews/2026-11-09_toolkit_1_11_31/`): 12 findings, 9 fixed test-first (apply re-checks
+  an app user's client id and a role's name; revert only undoes a switch that landed, and only on the user it made;
+  Microsoft roles through teams protect too; holders, Microsoft roles and a taken name are read again AFTER the Yes;
+  a fresh role's baseline must be in the known list, read live 11/9; a create whose answer is lost is found by name and
+  logged), 2 refuted (a role is an app definition, not a record; an edited plan file never reaches the module), and F9
+  RULED by Dylan 11/9: keep Dataverse's SharePoint Create/Write baseline and disclose it (plan summary and prompt).
+  Tests: `appuser.test.js` 20, `securityrole.test.js` 20, role.test.js +5, approval.test.js +1, cli_app.test.js +2;
+  fake `fake_identity.js`. Suite 1009 (1008 + 1 skip); `mutate_1_11_31.js` 85 of 85. **Also in this pool (11/10/26):**
+  **Revert restores only the fields the plan sent** (task #6hxFqHHhxvR2MCcr, the 1.11.30 review's F4 in general,
+  pre-existing for every component set): a component update's log row now carries `sent_fields`, and reverting it puts
+  back those fields alone, so an unsent field another writer saved between the publish and the read-back (which sits in
+  `row.after`, and which the whole-definition hash still matches) is kept; an entry logged before 1.11.31 has no
+  `sent_fields` and restores every field as before; a field the set does not have is never sent. **Review C1** (one
+  Codex seat, run 20261110-102244-2e8356, receipt `reviews/2026-11-10_toolkit_1_11_31_f4/`): 4 findings, 3 fixed
+  test-first (a name goes back only when the change RENAMED, never on log evidence alone; a `sent_fields` that is there
+  but not a list is refused, never read as the legacy full restore; logged sections cannot shrink a recorded restore), 1
+  refuted by ruling (app-part deletes are admin). Test-first, `component_revert_fields.test.js` 11 (3 + 3 red first);
+  `mutate_1_11_31b.js` 10 of 10. **The bookstack skill names the wiki's
+  administrators** (task #6hwc9wWg4RmF7J3J; Dylan 11/6/26: "we administer the wiki"): server administration, roles,
+  permissions and new departments or notebooks route to Dylan Gross and Daian Martinez, not to Tim, and the skill says how
+  department access is wired (a department role is tied to Teams teams by Entra group id and granted on first sign-in).
+  Release clone: suite 1015 (1014 + 1 skip), guard self-test 248, store unchanged.
+
 - **1.11.30** (2026-11-09, pooled engine fixes; tasks #6hrx9hX48jvgWh9J,
   #6hxFVrXF6M24mVJJ, #6hwXVXHPvrvGcp7r) **Rename an app component.** A flow, view or form update takes
   `definition.name` (the new name; one line, 100 characters, a view 200, read live 11/9/26). It stays outside the hashed

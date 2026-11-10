@@ -210,7 +210,7 @@ function planJob(dv, job, { envs, access, warnRows }) {
       : '';
     // So does a person's security roles (1.11.13).
     const roleHint = /^(?:systemusers|roles|teams)$/.test(job.table)
-      ? ' A person\'s security roles are given or taken with kind "role", which takes admin access.'
+      ? ' A person\'s security roles are given or taken with kind "role", which takes admin access. An application user is made or switched off with kind "appuser", and a new SBRM role with kind "securityrole" (both admin).'
       : '';
     throw new PlanRefused([`${job.table} holds the app's own definitions, not records. Change a view, form, sitemap or flow with an app change (kind "component"; tables and columns are kind "schema"), which takes develop access.${settingHint}${roleHint} Other access settings, and users themselves, are changed in the admin portal.`], 'not_permitted');
   }

@@ -921,10 +921,22 @@ function describePlan(id) {
     }
     else if (rec.kind === 'role') {
       // Who holds a security role (1.11.13): the prompt names each person, the role, and add or remove.
-      const one = (r) => `${r.action === 'add' ? 'Add' : 'Remove'} '${(r.role || {}).name}' ${r.action === 'add' ? 'to' : 'from'} ${(r.user || {}).fullname} (${(r.user || {}).email})`;
+      const one = (r) => `${r.action === 'add' ? 'Add' : 'Remove'} '${(r.role || {}).name}' ${r.action === 'add' ? 'to' : 'from'} ${(r.user || {}).fullname} (${(r.user || {}).email || `application user ${(r.user || {}).client_id}`})`;
       const rows = Array.isArray(rec.rows) ? rec.rows : [];
       head = rows.length === 1 ? `${one(rows[0])} in the ${app}`
         : `${rows.length} security role changes in the ${app}: ${rows.slice(0, 4).map(one).join('; ')}${rows.length > 4 ? `; and ${rows.length - 4} more` : ''}`;
+    }
+    else if (rec.kind === 'appuser') {
+      // An application user (1.11.31): the prompt names the switch and the Entra app.
+      const u = rec.user || {};
+      head = rec.action === 'create' ? `Create an application user for the Entra app ${rec.client_id} (business unit ${(rec.unit || {}).name}) in the ${app}`
+        : `${rec.action === 'disable' ? 'Switch off' : 'Switch on'} the application user ${u.fullname} (Entra app ${rec.client_id}) in the ${app}`;
+    }
+    else if (rec.kind === 'securityrole') {
+      // A new SBRM security role (1.11.31): the prompt names the role and every privilege it gets.
+      const ps = Array.isArray(rec.privileges) ? rec.privileges : [];
+      head = rec.action === 'delete' ? `Delete the security role '${rec.name}' in the ${app}`
+        : `Create the security role '${rec.name}' in the ${app}${rec.writes ? ' (WRITES)' : ' (read only)'}: ${ps.map((p) => `${p.access} ${p.table} (${p.depth_word})`).join(', ')}; plus the baseline Dataverse gives every role (Read on plug-ins, Read, Create and Write on SharePoint data)`;
     }
     else head = `A change in the ${app}`;
     const warn = (rec.severity && Array.isArray(rec.severity.lines)) ? rec.severity.lines : [];
