@@ -1188,11 +1188,20 @@ function sedEditSafe(c) {
     && !/\\[0-9xuodc]/i.test(pat + rep) && !/(?:^|[^\\])&/.test(rep));
 }
 
+// A redirect target that spells any piece of the store or the plugin, even after a part the guard cannot read.
+const REDIRECT_PROTECTED_TEXT = /\.sbrm-dataverse|sbrm-claude-toolkit|sbrm-toolkit|[\\/]dataverse[\\/]+(?:guard|engine|config)\b|\.claude[\\/]+plugins/i;
+
 function targetVerdict(t, c, ctx, env) {
   if (!t.w) return env.protectedNamed ? tag(env.namesPlugin ? MSG.plugin : MSG.store, 'unknown-target', 'a redirect with no target') : null;
   const pl = places(t.w, ctx, c.shell);
   if (pl.unknown) {
-    // C2: a target the guard cannot read, on a line that names the store or the plugin
+    // C2: a target the guard cannot read, on a line that names the store or the plugin. A REDIRECT whose own text
+    // names neither ASKS (H-1258/H-1266, 11/11/26: G4's "an untraceable write asks" applied to the shell; a plan
+    // loop's > "$S/plan_$f.txt"). A target whose text names the store or the plugin, or any other write verb, still
+    // blocks: an unreadable prefix in front of a protected name is not an honest mistake.
+    if (env.protectedNamed && t.redirect && !REDIRECT_PROTECTED_TEXT.test(text(t.w))) {
+      return { ask: `SBRM Dataverse guard: this line names ${env.namesStore ? "the engine's own store" : "the toolkit plugin's files"} and redirects output to ${text(t.w)}, but the guard could not tell where that is. Check the target before you say Yes; Yes runs it, No stops it. [rule: unknown-target; matched: "${text(t.w)}"]` };
+    }
     if (env.protectedNamed) return tag(env.namesStore ? MSG.store : MSG.plugin, 'unknown-target', text(t.w));
     return null;
   }

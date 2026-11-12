@@ -73,10 +73,15 @@ test('the named flips really flip (a flip that stops flipping is a changed desig
 for (const [label, input] of FP.PASS) {
   test(`parity, passes: ${label}`, () => assert.equal(next(input).kind, 'allow', next(input).why));
 }
+// Deliberate block -> ASK changes, each with its ruling: the person decides instead of a hard stop.
+const ASK_FLIPS = new Map([
+  ['a redirect to an unknown target on a line naming the plugin', 'H-1258/H-1266 (11/11/26): G4 "an untraceable write asks" applied to a shell redirect whose target text names neither store nor plugin'],
+]);
 for (const [label, input, message] of FP.BLOCK) {
-  test(`parity, ${FLIPS.has(label) ? 'FLIP to allow' : 'blocks'}: ${label}`, () => {
+  test(`parity, ${FLIPS.has(label) ? 'FLIP to allow' : ASK_FLIPS.has(label) ? 'FLIP to ask' : 'blocks'}: ${label}`, () => {
     const r = next(input);
     if (FLIPS.has(label)) { assert.equal(r.kind, 'allow', r.why); return; }
+    if (ASK_FLIPS.has(label)) { assert.equal(r.kind, 'ask', r.why); assert.match(r.why, message); return; }
     assert.equal(r.kind, 'block');
     assert.match(r.why, message);
   });
@@ -799,6 +804,30 @@ test('inline review G4: a name bound once and a joined path are followed into th
   assert.equal(next(sh(J(`python -c "import os,json;p=os.path.expanduser('~/.claude/settings.json');json.dump({},open(p,'w'))"`))).kind, 'block');
   // the absolute later part wins the other way too: out of the store, nothing protected is written
   assert.equal(next(sh(J(`python -c "import os;p=os.path.join('~/.sbrm-dataverse','C:/temp/x.json');open(p,'w').wri`, `te('x')"`))).kind, 'allow');
+});
+
+// H-1258 / H-1266 (Dylan 11/9/26, toolkit 1.11.28; replays guard_replays\2026-11-10_review, still blocked on installed
+// 1.11.32): a plan loop saving each plan's output to a variable-named file, on a line that names the plugin, blocked as
+// unknown-target. G4 (10/29: an untraceable write in code naming the store or plugin ASKS) now covers a shell redirect
+// too, UNLESS the target's own text names the store or the plugin: that stays a block.
+test('H-1258/H-1266: a redirect to a target the guard cannot read asks, unless the target itself names the store or plugin', () => {
+  for (const c of [
+    `cd ${PLUG}/dataverse/engine && for f in a b; do echo "## $f"; node dataverse-write.js plan "${H}/.sbrm-dataverse/jobs/$f.json" > "$TEMP/plan_$f.txt" 2>&1; head -20 "$TEMP/plan_$f.txt"; done`,
+    `E="${ENG}"; S="C:/Users/x/AppData/Local/Temp/claude/scratch"; for f in a b; do node "$E" plan "${H}/.sbrm-dataverse/jobs/$f.json" > "$S/plan_$f.txt" 2>&1; done`,
+    `node "${ENG}" review > "$SOME_DIR/review.txt"`,
+  ]) {
+    const r = next(sh(c));
+    assert.equal(r.kind, 'ask', `${c}\n${r.why}`);
+    assert.match(r.why, /could not tell where/);
+    assert.match(r.why, /unknown-target/);
+  }
+  for (const c of [
+    `node "${ENG}" review > "$X/c/Users/x/.sbrm-dataverse/plans/x.json"`,
+    `node "${ENG}" review > "$X/.claude/plugins/cache/sbrm-claude-toolkit/sbrm-toolkit/1.11.9/dataverse/guard/guard.js"`,
+    `node "${ENG}" review > "$X/sbrm-toolkit/dataverse/guard/guard.js"`,
+    `node "${ENG}" review > "$X/.claude/plugins/installed_plugins.json"`,
+    `node "${ENG}" review >`,
+  ]) assert.equal(next(sh(c)).kind, 'block', c);
 });
 
 test('inline review G4: an untraceable write target on code naming the store or plugin asks, and never hides a block', () => {

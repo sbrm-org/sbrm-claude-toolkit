@@ -13,6 +13,16 @@ One line per release from 1.11.5. Earlier releases are described in their pull r
   exact tag. A revert that turns a flow back off or on goes the same way. The fake gains `offBumpsVersion` (red first:
   the off failed exactly as live); `component.test.js` +2 tests; suite 1,025 pass / 0 fail, real store unchanged;
   mutation pass `mutate_2026_11_11_flow_off.js` 4/4 killed.
+- **1.11.34** (2026-11-11, guard loosening, its own PR; task #6hxVMF5f3wVv6wGJ, review items H-1258, H-1266)
+  A shell redirect to a target the guard cannot read (a variable it cannot resolve, e.g. `> "$TEMP/plan_$f.txt"` in a
+  plan loop), on a line that names the toolkit plugin or the engine's store, now ASKS instead of blocking: the inline-code
+  ruling of 10/29 (an untraceable write asks) applied to the shell. It still BLOCKS when the target's own text names any
+  piece of the store or the plugin (`.sbrm-dataverse`, `sbrm-toolkit`, `.claude/plugins`, `dataverse/guard|engine|config`)
+  after the unreadable part, for any other write verb (cp, mv, tee) with an unreadable target, and for a redirect with no
+  target. Both recorded commands (Dylan 11/9, installed 1.11.28) blocked on installed 1.11.32 and ask on staging; the
+  parity row "a redirect to an unknown target on a line naming the plugin" is a named block-to-ask flip (`ASK_FLIPS`).
+  `guard_next.test.js` +1 test (red first), suite 1,023 pass / 0 fail, guard self-test 247/247, real store unchanged;
+  `replay_shadow --allowed`: 0 of 337 newly stopped; mutation pass `mutate_2026_11_11_redirect_ask.js` 6/6 killed.
 - **1.11.32** (2026-11-10, guard loosening, its own PR; task #6hxGVRG4fchwX7Xr, review items H-1271, R-1238, R-1239)
   Three guard false positives fixed in `guard_next.js`, each red first in `guard_next.test.js`, each recorded command
   replayed through the installed 1.11.30 guard and bisected first (`guard_replays/2026-11-10_review/`). **D-1823**
