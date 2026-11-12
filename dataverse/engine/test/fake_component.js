@@ -320,7 +320,11 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
       calls.push({ method: 'PATCH', path: `${set}(${id})`, body, etag });
       const rec = d[set] && d[set][id];
       if (!rec) throw notFound();
-      if (etag !== tag(set, id)) throw new DataverseError('version mismatch', { code: '0x80060882' });
+      // Live 11/9/26 (R-1253, recovery flow 5be9e73d): turning an ON flow off re-registers its trigger subscription,
+      // which moves the flow's version before the version check, so an If-Match carrying the tag read at apply is
+      // refused and the flow stays on. `offBumpsVersion` models it; `If-Match: *` (exists, any version) is not refused.
+      if (set === 'workflows' && dv.offBumpsVersion && body.statecode === 0) bump(set, id);
+      if (etag !== '*' && etag !== tag(set, id)) throw new DataverseError('version mismatch', { code: '0x80060882' });
       if (dv.unpublishedUntilPublish && d.drafts[set]) {
         d.drafts[set][id] = { ...(d.drafts[set][id] || {}), ...body };
         bump(set, id);

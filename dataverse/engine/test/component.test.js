@@ -694,6 +694,54 @@ test('10/31 backstop: a subscription changed just before the write is not blamed
   assert.doesNotMatch(out, /nothing was written/);
 });
 
+// R-1253 (Dylan 11/9/26, recovery flow 5be9e73d, plans 20261109-122421-8f962b9c and 20261109-122823-415ceda4): every
+// turn-off of an ON flow came back 0x80060882 and the flow stayed on, because the platform's own off re-registers the
+// trigger subscription and moves the version before the If-Match check. A state change (on / off) is idempotent and
+// its definition + state were re-checked a moment before, so it goes with If-Match: * (the row must exist, any
+// version). A definition update keeps the exact tag.
+test('R-1253: turning an ON flow off lands although the off moves the flow version; the state write carries If-Match *', async () => {
+  const dv = dvAs('admin');
+  const plan = await C.planComponent(dv, valid(stateJob(dv, 'off')), ctx());
+  dv.offBumpsVersion = true;
+  const { res } = await applied(plan, dv);
+  assert.equal(res.outcome, 'applied', JSON.stringify(res.rows[0]));
+  assert.equal(res.rows[0].outcome, 'written');
+  assert.equal(dv.data.workflows[IDS.flow].statecode, 0, 'the flow is off');
+  const patch = nonGets(dv).find((c) => c.method === 'PATCH');
+  assert.equal(patch.etag, '*');
+  assert.deepEqual(patch.body, { statecode: 0, statuscode: 1 });
+  // turning on goes the same way
+  const on = dvAs('dev');
+  const p2 = await C.planComponent(on, valid(stateJob(on, 'on', { id: IDS.offflow, name: 'Sync Letters' })), ctx());
+  await applied(p2, on);
+  assert.equal(nonGets(on).find((c) => c.method === 'PATCH').etag, '*');
+  // a definition update still carries the exact tag read at apply, never *
+  const u = dvAs('admin');
+  const cd = flowCd();
+  cd.properties.definition.actions.Compose_total.inputs = 'changed';
+  const p3 = await C.planComponent(u, valid(flowJob(u, cd, { changed: ['actions'] })), ctx());
+  await applied(p3, u);
+  assert.match(nonGets(u).find((c) => c.method === 'PATCH').etag, /^W\/"\d+"$/);
+  // a hand-over (own) is not idempotent across owners: it keeps the exact tag too
+  const o = dvAs('admin');
+  const p4 = await C.planComponent(o, valid(stateJob(o, 'own', { owner: IDS.dev2 })), ctx());
+  await applied(p4, o);
+  assert.match(nonGets(o).find((c) => c.method === 'PATCH').etag, /^W\/"\d+"$/);
+});
+
+test('R-1253: If-Match * never skips the re-checks: a flow changed or deleted since the plan is still refused before any write', async () => {
+  const dv = dvAs('admin');
+  const plan = await C.planComponent(dv, valid(stateJob(dv, 'off')), ctx());
+  dv.touch('workflows', IDS.flow, { statecode: 0, statuscode: 1 });       // someone turned it off meanwhile
+  await assert.rejects(applied(plan, dv), (e) => e.code === 'snapshot_moved');
+  assert.equal(nonGets(dv).length, 0, 'nothing written');
+  const gone = dvAs('admin');
+  const p2 = await C.planComponent(gone, valid(stateJob(gone, 'off')), ctx());
+  delete gone.data.workflows[IDS.flow];
+  await assert.rejects(applied(p2, gone), (e) => e.code === 'snapshot_moved');
+  assert.equal(nonGets(gone).length, 0, 'nothing written');
+});
+
 test('turning a flow on: a 403 ConnectionAuthorizationFailed comes back as who has to turn it on', async () => {
   const dv = dvAs('dev');
   const plan = await C.planComponent(dv, valid(stateJob(dv, 'on', { id: IDS.offflow, name: 'Sync Letters' })), ctx());

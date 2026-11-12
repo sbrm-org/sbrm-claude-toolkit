@@ -2517,7 +2517,11 @@ async function applyComponent(plan, deps, { id, file, fs }) {
       } else if (plan.mode === 'delete') {
         dv.remove(set, rid, etag);
       } else {
-        dv.update(set, rid, body, etag);
+        // R-1253 (11/11/26): the platform's own turn-off re-registers the trigger subscription and moves the flow's
+        // version before the If-Match check, so every off of an ON flow was refused and the flow stayed on. A state
+        // change (on / off) is idempotent and its definition, state and owner were re-checked just above, so it goes
+        // with If-Match: * (the row must still exist, any version). Every other write keeps the exact tag.
+        dv.update(set, rid, body, plan.mode === 'on' || plan.mode === 'off' ? '*' : etag);
       }
     } catch (e) {
       if (!isTimeout(e)) throw e;

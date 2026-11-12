@@ -3,6 +3,16 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.33** (2026-11-11, task #6hxVMCcX9GMJP37J, review item R-1253)
+  Turning an ON flow off no longer fails every time. The platform's own turn-off re-registers the flow's trigger
+  subscription and moves its version before the version check, so the If-Match write came back 0x80060882 and the flow
+  stayed on (Dylan 11/9, recovery flow 5be9e73d, plans 20261109-122421-8f962b9c and 20261109-122823-415ceda4), which also
+  blocked the three-job trigger-change recipe (off, update, on). A state change (on / off) now writes with
+  `If-Match: *` (the row must still exist, any version): it is idempotent, and its definition, state and owner are
+  re-checked against the plan immediately before, as before. Definition updates, deletes and hand-overs (own) keep the
+  exact tag. A revert that turns a flow back off or on goes the same way. The fake gains `offBumpsVersion` (red first:
+  the off failed exactly as live); `component.test.js` +2 tests; suite 1,025 pass / 0 fail, real store unchanged;
+  mutation pass `mutate_2026_11_11_flow_off.js` 4/4 killed.
 - **1.11.32** (2026-11-10, guard loosening, its own PR; task #6hxGVRG4fchwX7Xr, review items H-1271, R-1238, R-1239)
   Three guard false positives fixed in `guard_next.js`, each red first in `guard_next.test.js`, each recorded command
   replayed through the installed 1.11.30 guard and bisected first (`guard_replays/2026-11-10_review/`). **D-1823**
