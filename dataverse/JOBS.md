@@ -5,7 +5,7 @@ reads everything live, and refuses (never repairs) anything not exactly right. S
 `~/.sbrm-dataverse/jobs/`, never in a git folder. Every job has:
 
 - `contract`: `"sbrm-dv-job/1"`
-- `kind`: `rows`, `merge`, `schema`, `component`, `setting` or `role`
+- `kind`: `rows`, `merge`, `schema`, `component`, `setting`, `role`, `appuser`, `securityrole` or `duperule`
 - `env`: the app's key (`donorapp`, `fedev` = Donor App Dev, `hgs`, `recovery`, `soberliving`)
 - `source`: `"claude-session"` (or the script that made it)
 - `reason`: one plain sentence on why, one line, at most 500 characters
@@ -281,6 +281,44 @@ One new role from an explicit privilege list: the narrow role a server job's app
 - Undo: `revert` deletes the role, only while nobody holds it (any person, application user or team, through any
   unit's copy) and its privileges are what the apply left. A delete is not undone; re-create it with a new job.
 - Giving the role: `kind: "role"` with `app_user`. A server job's identity is three jobs: securityrole, appuser, role.
+
+## Duplicate rules: `kind: "duperule"` (admin, from 11/16/26)
+
+A duplicate-detection rule (Settings > Data management > Duplicate detection rules). Read the rule and its conditions
+first (`read_query` on `duplicaterule` joined to `duplicaterulecondition` on `regardingobjectid`).
+
+```json
+{ "contract": "sbrm-dv-job/1", "kind": "duperule", "env": "fedev", "mode": "update",
+  "rule": { "id": "<duplicaterule guid>", "name": "Contacts with the same first name and last name" },
+  "definition": { "conditions": [
+    { "attribute": "firstname", "operatorcode": 0, "ignoreblankvalues": true },
+    { "attribute": "lastname", "operatorcode": 0, "ignoreblankvalues": true },
+    { "attribute": "address1_postalcode", "operatorcode": 1, "operatorparam": 5, "ignoreblankvalues": true } ] },
+  "source": "claude-session", "reason": "Match same-name donors only when the ZIP matches too (Fundraise Up go-live).",
+  "intent": { "verb": "update", "rule": "Contacts with the same first name and last name", "changed": ["conditions"] } }
+```
+
+- `mode`: `update`, `create` (`rule` = `{name, table}` with the table's singular logical name, e.g. `contact`; the
+  new rule is published), `off` (unpublish) or `on` (publish). `off` and `on` take no `definition`. A rule is never
+  deleted: undo of a create turns it off.
+- `definition` (update: only what changes): `name`, `description`, `iscasesensitive`, `excludeinactiverecords`
+  (true = inactive records are ignored), `conditions`. **`conditions` is the WHOLE list** and replaces the rule's.
+- A condition: `attribute` (one column, same table on both sides), `operatorcode` 0 Exact Match, 1 Same First
+  Characters, 2 Same Last Characters (both need `operatorparam`, 1 to 100 characters), 3 Same Date, 4 Same Date and
+  Time, 5 / 6 Exact Match (Pick List Label / Value); `ignoreblankvalues` true means a blank never counts as a match.
+  The plan checks the column exists and the match type fits its type.
+- `intent.changed` (update only): `name`, `description`, `case`, `inactive`, `conditions`; the engine works out the
+  same list and refuses on any difference.
+- Apply unpublishes the rule (if it is published), changes it, replaces the conditions and publishes it again, then
+  reads everything back. Publishing rebuilds the rule's match codes over the whole table (minutes on contacts);
+  a publish still running after 10 minutes is reported as "still publishing", and the platform finishes it. While a
+  rule is unpublished nobody gets its warning, and in the donor app the Fundraise Up connector does not match on it:
+  say so. A failure part-way says the rule is UNPUBLISHED; `revert` puts the before back. **Run the apply in the
+  background**: with the publish wait it can take over 10 minutes, longer than a foreground command may run.
+  A rule that reads "publishing" is refused at plan and apply; plan again in a few minutes.
+- Refused: a managed rule, a rule matching one table against another, a name another rule has, and no change.
+- Undo: `revert` puts back the logged before (conditions, settings, on or off), only while the rule still reads what
+  the apply left.
 
 ## What the plan prints first
 

@@ -159,6 +159,20 @@ test('the prompt for a batch resolve names every item it closes (1.11.10)', () =
     'Close 3 items: D-1082, D-1083, D-1084');
 });
 
+test('the prompt names a duplicate rule and every condition it ends with (1.11.36)', () => {
+  const { approvalText } = require('../../guard/guard');
+  const store = require('../lib/store');
+  const put = (id, rec) => fs.writeFileSync(path.join(store.dir('plans'), `${id}.json`), JSON.stringify(rec));
+  const conds = [{ attribute: 'address1_postalcode', operatorcode: 1, operatorparam: 5, ignoreblankvalues: true }, { attribute: 'firstname', operatorcode: 0, ignoreblankvalues: true },
+    { attribute: 'telephone1', operatorcode: 2, operatorparam: 7, ignoreblankvalues: false }];
+  put('20261116-160001-aaaaaaa1', { kind: 'duperule', app: 'Donor App Dev', mode: 'update', rule: { name: 'Contacts same name' }, after: { published: true, conditions: conds }, severity: { lines: [] } });
+  put('20261116-160002-aaaaaaa2', { kind: 'duperule', app: 'Donor App Dev', mode: 'off', rule: { name: 'Contacts same name' }, after: { published: false, conditions: conds }, reverts_plan_id: 'x', severity: { lines: [] } });
+  put('20261116-160003-aaaaaaa3', { kind: 'duperule', app: 'Donor App Dev', mode: 'create', rule: { name: 'Mobile' }, after: { published: true, conditions: [conds[1]] }, severity: { lines: ['Lasting: a new duplicate rule.'] } });
+  assert.equal(approvalText({ verb: 'apply', keys: ['20261116-160001-aaaaaaa1'] }), "Change the duplicate rule 'Contacts same name' in the Donor App Dev: address1_postalcode first 5 chars (blanks ignored) + firstname exact (blanks ignored) + telephone1 last 7 chars");
+  assert.equal(approvalText({ verb: 'apply', keys: ['20261116-160002-aaaaaaa2'] }), "Turn off the duplicate rule 'Contacts same name' in the Donor App Dev (an undo)");
+  assert.equal(approvalText({ verb: 'apply', keys: ['20261116-160003-aaaaaaa3'] }), "Create the duplicate rule 'Mobile' in the Donor App Dev: firstname exact (blanks ignored). Lasting: a new duplicate rule.");
+});
+
 test('the prompt names an application user change and a new security role with every privilege (1.11.31)', () => {
   const { approvalText } = require('../../guard/guard');
   const store = require('../lib/store');

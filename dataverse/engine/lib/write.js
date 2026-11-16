@@ -218,10 +218,28 @@ function writeConnection(host, cli = resolveCli(), { approval = null } = {}) {
       const c = identityCall('deleteRole', { roleId, etag });
       return send(c.method, c.path, c.body, c.headers);
     },
+    // Duplicate-detection rules (kind "duperule", 11/16/26). Admin level; the caller checks it. Unpublish is an
+    // UNBOUND action (the bound form answers "Resource not found", 10/7); Publish is bound to the rule.
+    unpublishDuplicateRule(ruleId) {
+      const c = dupRuleCall('unpublish', ruleId);
+      return send(c.method, c.path, c.body, []);
+    },
+    publishDuplicateRule(ruleId) {
+      const c = dupRuleCall('publish', ruleId);
+      return send(c.method, c.path, c.body, []);
+    },
     getMany(paths, concurrency) {
       return getMany(cli, host, paths, concurrency);
     },
   };
 }
 
-module.exports = { writeConnection, checkMeta, publishXml, roleCall, identityCall, META_ACTIONS };
+function dupRuleCall(verb, ruleId) {
+  if (!GUID_ONLY.test(String(ruleId))) throw new Error(`refusing ${verb} of a duplicate rule: the rule is not a GUID`);
+  const id = String(ruleId).toLowerCase();
+  if (verb === 'unpublish') return { method: 'POST', path: 'UnpublishDuplicateRule', body: { DuplicateRuleId: id } };
+  if (verb === 'publish') return { method: 'POST', path: `duplicaterules(${id})/Microsoft.Dynamics.CRM.PublishDuplicateRule`, body: {} };
+  throw new Error(`refusing duplicate rule verb ${verb}`);
+}
+
+module.exports = { writeConnection, checkMeta, publishXml, roleCall, identityCall, dupRuleCall, META_ACTIONS };

@@ -11,7 +11,8 @@ description: >
   Triggers on "update the donor app", "change this contact", "fix the record", "add a gift",
   "write to Dataverse", "mark inactive", "deactivate", "delete these records", "add a column", "new table", "change
   the view", "edit the form", "fix the flow", "turn the flow off", "environment variable", "turn the
-  setting on", "give her the role", "remove his security role", "take away access", "undo that change", "revert", "the
+  setting on", "give her the role", "remove his security role", "take away access", "duplicate rule", "duplicate
+  detection", "undo that change", "revert", "the
   Dataverse tools aren't working", "is my Dataverse set up right", "report a problem with the donor app tools".
   Also covers READING MANY ROWS into a file with the engine's read-only `query` (hundreds or thousands of
   records): "pull every donor who", "export the list of", "all gifts in batch", "read hundreds of rows",
@@ -66,7 +67,7 @@ Each person has a level in each app, on that app's Dataverse Write Access list (
 | read | look only (anyone without a row) |
 | write | change records; merge only with a separate "may merge" yes |
 | develop | everything in write, plus change the app: tables, columns, choices, views, forms, sitemaps, flows |
-| admin | everything in develop, plus deleting app parts (a column, table, view, form, flow...), alternate keys, making a column required on a table that has rows, flow steps that reach beyond their connection (HTTP, child flows, a run-time table, someone else's connection, a changed trigger on a live flow), script or web content in views and forms, handing a flow to a new owner, changing an app setting (an environment variable's value), giving or taking a person's security role, the toolkit's own lists, and closing reported items |
+| admin | everything in develop, plus deleting app parts (a column, table, view, form, flow...), alternate keys, making a column required on a table that has rows, flow steps that reach beyond their connection (HTTP, child flows, a run-time table, someone else's connection, a changed trigger on a live flow), script or web content in views and forms, handing a flow to a new owner, changing an app setting (an environment variable's value), changing a duplicate-detection rule, giving or taking a person's security role, the toolkit's own lists, and closing reported items |
 
 There is no limit on how much one change may touch. Instead the engine flags a big or serious change
 (below), and the person decides knowing it. The level is the toolkit's; the person's own Dataverse role
@@ -89,7 +90,8 @@ Verify the path on first use and say it in full whenever you hand the person a c
    you are changing. App changes: `kind: "schema"` (tables, columns, relationships, keys, choices),
    `kind: "component"` (a view, form, sitemap, flow or web resource), `kind: "setting"` (an environment variable's
    value), `kind: "role"` (who holds a security role), `kind: "appuser"` (an application user for a server job's
-   Entra app) or `kind: "securityrole"` (a new SBRM security role), see below. Save it in `~/.sbrm-dataverse/jobs/`,
+   Entra app), `kind: "securityrole"` (a new SBRM security role) or `kind: "duperule"` (a duplicate-detection rule),
+   see below. Save it in `~/.sbrm-dataverse/jobs/`,
    never in a git folder (Recovery job files there are refused), with your file-writing tool, not a
    shell command: the guard blocks a shell line that writes into that folder, so `plan` goes in a
    command of its own.
@@ -163,6 +165,11 @@ on its own. Never ask the person to run or paste a command.
   Yes/No setting takes "yes" or "no"). The plan names the flows that read it: tell the person which are on,
   since they act on the new value straight away. If it lists solutions that carry the value, say that
   importing one of them again can set it back.
+- **Duplicate rules** (`kind: "duperule"`, admin): change a duplicate-detection rule's conditions or settings, make
+  a new rule, or turn one off or on; a rule is never deleted. The engine unpublishes the rule, changes it and
+  publishes it again, so tell the person that nobody gets that rule's duplicate warning for those minutes, and in the
+  donor app that the Fundraise Up connector matches donors through its contact and account rules. Run its apply in
+  the background (the publish wait can pass 10 minutes). Try a change in Donor App Dev first.
 - **Roles** (`kind: "role"`, admin): give or take one security role for one person, by their work email and
   the role's name. For every removal the plan says whether a team still gives them the role or that this
   ENDS their access: read that line to the person, by name, before they approve. System Administrator,

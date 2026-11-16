@@ -71,6 +71,11 @@ const APP_KINDS = {
     const m = require('./lib/appuser');
     return { label: 'application user change', validate: m.validateAppUserJob, plan: m.planAppUser, summary: m.appUserSummary, detail: m.appUserDetail, apply: m.applyAppUser, revert: m.planAppUserRevert };
   },
+  // Duplicate-detection rules (Dylan 11/16/26, the Fundraise Up name rule), admin only.
+  duperule: () => {
+    const m = require('./lib/duperule');
+    return { label: 'duplicate detection rule', validate: m.validateDupeRuleJob, plan: m.planDupeRule, summary: m.dupeRuleSummary, detail: m.dupeRuleDetail, apply: m.applyDupeRule, revert: m.planDupeRuleRevert };
+  },
   // A new SBRM security role from an explicit privilege list (1.11.31, Dylan 10/21/26), admin only.
   securityrole: () => {
     const m = require('./lib/securityrole');
@@ -213,8 +218,8 @@ function loadJob(file, envs) {
   } catch (e) {
     return { errors: [`cannot read ${file} as JSON: ${e.message}`] };
   }
-  // Eight kinds: rows (CONTRACT.md §2a), merge (DESIGN.md §8c), schema and component (§10e), setting (1.11.12), role (1.11.13),
-  // appuser and securityrole (1.11.31).
+  // Nine kinds: rows (CONTRACT.md §2a), merge (DESIGN.md §8c), schema and component (§10e), setting (1.11.12), role (1.11.13),
+  // appuser and securityrole (1.11.31), duperule (1.11.36).
   if (raw && raw.kind === 'merge') return merge.validateMergeJob(raw, { envs });
   const app = raw && appKind(raw.kind);
   return app ? app.validate(raw, { envs }) : validateJob(raw, { envs });
