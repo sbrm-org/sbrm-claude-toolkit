@@ -302,7 +302,9 @@ first (`read_query` on `duplicaterule` joined to `duplicaterulecondition` on `re
   new rule is published), `off` (unpublish) or `on` (publish). `off` and `on` take no `definition`. A rule is never
   deleted: undo of a create turns it off.
 - `definition` (update: only what changes): `name`, `description`, `iscasesensitive`, `excludeinactiverecords`
-  (true = inactive records are ignored), `conditions`. **`conditions` is the WHOLE list** and replaces the rule's.
+  (true = inactive records are ignored), `conditions`. **`conditions` is the WHOLE list** and replaces the rule's. A rule
+  holds ONE condition per column + match type (Dataverse enforces it): a condition the rule already has on that column
+  and match type is changed in place, a new one is added, and the ones left out are removed.
 - A condition: `attribute` (one column, same table on both sides), `operatorcode` 0 Exact Match, 1 Same First
   Characters, 2 Same Last Characters (both need `operatorparam`, 1 to 100 characters), 3 Same Date, 4 Same Date and
   Time, 5 / 6 Exact Match (Pick List Label / Value); `ignoreblankvalues` true means a blank never counts as a match.

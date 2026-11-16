@@ -3,6 +3,16 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.38** (2026-11-16, duperule: one condition per column + match type)
+  1.11.37's Option 1 apply in Donor App Dev (plan 20261116-152306-14fbe523) added the ZIP condition, then was refused
+  adding first name again: Dataverse holds ONE condition per rule + column + match type ("violates a database constraint
+  ... uniquerulename, operatorcode, matchingattributename, baseattributename ... use update"). The rule was left
+  unpublished with its first/last conditions intact and ZIP added (Dev only; the engine said UNPUBLISHED). Now a wanted
+  condition whose column and match type the rule already has is CHANGED IN PLACE (PATCH, If-Match *), only a new column +
+  match type is added, and the rows no longer wanted are removed after; Option 1 is one add and two in-place changes, no
+  delete. A job file with two conditions on one column + match type is refused. The log adds `conditions_changed`. The
+  fake now enforces the constraint. Tests `duperule.test.js` (25, incl. the Dev case: undo removes ZIP and republishes);
+  mutation pass 26 of 27 (the survivor is equivalent).
 - **1.11.37** (2026-11-16, duperule fix from the live Dev proof)
   1.11.36 refused every duplicate-rule update live ("a condition came back with no version tag"; plan
   20261116-150151-bcbbce00 in Donor App Dev, nothing written). Measured the same day (`probe_dupecond_etag.js`): Dataverse
