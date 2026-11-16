@@ -3,6 +3,23 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.36** (2026-11-16, duplicate-detection rules; Dylan: "lets do the duplicate-rule job")
+  New kind `duperule` (admin): change a duplicate-detection rule's conditions or settings, make a new rule, or turn one
+  off or on. Why: the Fundraise Up connector matches donors through the donor app's published duplicate rules and takes
+  the first record returned, so the name-only contact rule could put a gift on another donor with the same name; Dylan
+  ruled 11/16 to make it first + last + ZIP, and nothing could change a rule (a records job on `duplicaterules` is
+  refused, and the 10/7 email-rule fix ran through the root write path switched off 10/14). Apply unpublishes the rule
+  (Unpublish is an UNBOUND action), changes it, adds the new conditions BEFORE removing the old ones (a failed add never
+  leaves a rule with none), publishes it again (bound, async; a publish still running after 10 minutes is reported, the
+  platform finishes it) and reads everything back. A rule is never deleted: undo of a create turns it off. Condition
+  rows ARE deleted when a list is replaced, by the ids and version tags read before the prompt, and logged by id
+  (RULED Dylan 11/16/26, review F2: condition rows are the rule's definition, not records). A change while the prompt is
+  open stops the apply before any write. An unpublish still pending after 5 minutes, or a read-back that fails after a
+  part-way failure, says so and how to turn the rule back on. A rule reading "publishing" is refused at plan and apply.
+  The guard's prompt names the rule and every condition it ends with. Plans proved live (reads only) in Donor App Dev
+  and the Donor App on 11/16. Tests `duperule.test.js` (20), mutation pass 20 of 20; C1 review
+  `reviews/2026-11-16_duperule/` (Codex seat empty, out of credits; confined Claude seat: 13 findings, 11 fixed or
+  resolved, F2 ruled, F10 unverified).
 - **1.11.35** (2026-11-16, task #6j2wwwQC67Cf9vcr, review item R-1309)
   A flow update that Dataverse refuses on its version check although nothing had moved is now written once more.
   Live 11/16 (Dylan, recovery flow f3fff7dc '[Function] Get Program Director ID', plans 20261116-104408-21ba32fd and

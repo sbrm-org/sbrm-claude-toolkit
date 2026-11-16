@@ -938,6 +938,15 @@ function describePlan(id) {
       head = rec.action === 'delete' ? `Delete the security role '${rec.name}' in the ${app}`
         : `Create the security role '${rec.name}' in the ${app}${rec.writes ? ' (WRITES)' : ' (read only)'}: ${ps.map((p) => `${p.access} ${p.table} (${p.depth_word})`).join(', ')}; plus the baseline Dataverse gives every role (Read on plug-ins, Read, Create and Write on SharePoint data)`;
     }
+    else if (rec.kind === 'duperule') {
+      // A duplicate-detection rule (11/16/26): the prompt names the rule and every condition it ends with.
+      const r = rec.rule || {};
+      const a = rec.after || {};
+      const how = (c) => ({ 0: 'exact', 1: `first ${c.operatorparam} chars`, 2: `last ${c.operatorparam} chars`, 3: 'same date', 4: 'same date and time', 5: 'exact choice label', 6: 'exact choice value' }[c.operatorcode] || `match ${c.operatorcode}`);
+      const conds = Array.isArray(a.conditions) ? a.conditions.map((c) => `${c.attribute} ${how(c)}${c.ignoreblankvalues ? ' (blanks ignored)' : ''}`).join(' + ') : '';
+      const verb = { create: 'Create', off: 'Turn off', on: 'Turn on', update: 'Change' }[rec.mode] || 'Change';
+      head = `${verb} the duplicate rule '${r.name}' in the ${app}${rec.mode === 'off' ? '' : `: ${conds}${a.published === false ? ', unpublished' : ''}`}`;
+    }
     else head = `A change in the ${app}`;
     const warn = (rec.severity && Array.isArray(rec.severity.lines)) ? rec.severity.lines : [];
     return `${head}${rec.reverts_plan_id ? ' (an undo)' : ''}${warn.length ? `. ${warn.join(' ')}` : ''}`;
