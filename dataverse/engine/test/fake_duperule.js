@@ -162,6 +162,7 @@ function fakeDupeDv({ email = 'admin@example.org', userId = IDS.me, fullname = '
       if (!rec) throw new DataverseError('Does Not Exist', { code: '0x80040217' });
       if (etag !== '*') throw new DataverseError('no version to match (a duplicate rule has none)', { code: '0x80060882' });
       if (set === 'duplicaterules' && published(id)) throw new DataverseError('A published duplicate rule cannot be modified. Unpublish it first.');
+      if (set === 'duplicateruleconditions' && published(rec._regardingobjectid_value)) throw new DataverseError('A published duplicate rule cannot be modified. Unpublish it first.');
       Object.assign(rec, body);
       bump(set, id);
       return {};
@@ -179,6 +180,10 @@ function fakeDupeDv({ email = 'admin@example.org', userId = IDS.me, fullname = '
         const m = /^\/duplicaterules\(([0-9a-f-]{36})\)$/.exec(body['regardingobjectid@odata.bind'] || '');
         if (!m) throw new DataverseError('a condition needs its rule');
         if (published(m[1])) throw new DataverseError('A published duplicate rule cannot be modified. Unpublish it first.');
+        // MEASURED 11/16 (Donor App Dev): one condition per rule + column + match type, a database constraint.
+        if (d.duplicateruleconditions.some((c) => c._regardingobjectid_value === m[1] && c.baseattributename === body.baseattributename && c.operatorcode === body.operatorcode)) {
+          throw new DataverseError('Cannot complete the creation of DuplicateRuleCondition because it violates a database constraint. Please delete the existing record or use update.');
+        }
         const id = `c2000000-0000-0000-0000-${String(seq).padStart(12, '0')}`;
         if (dv.dropsConditions) return { duplicateruleconditionid: id }; // accepted, never saved (read-back mismatch)
         d.duplicateruleconditions.push(cond(id, m[1], body.baseattributename, { operatorcode: body.operatorcode, operatorparam: body.operatorparam === undefined ? null : body.operatorparam, ignoreblankvalues: body.ignoreblankvalues, matching: body.matchingattributename }));

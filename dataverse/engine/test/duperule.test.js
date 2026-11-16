@@ -161,9 +161,10 @@ test('apply Option 1: unpublish (unbound), wait, replace the conditions, publish
   assert.ok(fileGone);
   assert.equal(shown.length, 1);
   const writes = nonGets(dv).map((c) => `${c.method} ${c.path.replace(/\(.*$/, '')}`);
-  // New conditions before the old ones go (a failed add never leaves a rule with no conditions).
-  assert.deepEqual(writes, ['POST UnpublishDuplicateRule', 'POST duplicateruleconditions', 'POST duplicateruleconditions',
-    'POST duplicateruleconditions', 'DELETE duplicateruleconditions', 'DELETE duplicateruleconditions', 'POST duplicaterules']);
+  // One condition per column + match type (measured 11/16): first and last name change IN PLACE, ZIP is added, nothing
+  // is removed.
+  assert.deepEqual(writes, ['POST UnpublishDuplicateRule', 'POST duplicateruleconditions', 'PATCH duplicateruleconditions',
+    'PATCH duplicateruleconditions', 'POST duplicaterules']);
   assert.equal(nonGets(dv)[1].body['regardingobjectid@odata.bind'], `/duplicaterules(${IDS.nameRule})`);
   assert.match(nonGets(dv).at(-1).path, /^duplicaterules\(0c16fb72-.*\)\/Microsoft\.Dynamics\.CRM\.PublishDuplicateRule$/);
   assert.ok(slept >= 2, 'it waited for the async jobs');
@@ -332,9 +333,61 @@ test('measured 11/16: rules and conditions carry no version, so their writes go 
   assert.equal(res.outcome, 'applied', JSON.stringify(res.rows[0]));
   const versioned = nonGets(dv).filter((c) => c.method === 'DELETE' || c.method === 'PATCH');
   assert.ok(versioned.length === 3 && versioned.every((c) => c.etag === '*'), JSON.stringify(versioned));
-  assert.deepEqual([...res.rows[0].conditions_removed].sort(), [IDS.first, IDS.last].sort());
-  assert.equal(res.rows[0].conditions_added.length, 3);
+  assert.deepEqual([...res.rows[0].conditions_changed].sort(), [IDS.first, IDS.last].sort());
+  assert.deepEqual(res.rows[0].conditions_removed, []);
+  assert.equal(res.rows[0].conditions_added.length, 1);
   assert.equal(ruleOf(dv, IDS.nameRule).iscasesensitive, true);
+});
+
+test('measured 11/16: one condition per column + match type; a second is refused in the job file, and the platform refuses an add', () => {
+  const r = D.validateDupeRuleJob(job({ definition: { conditions: [{ attribute: 'firstname', operatorcode: 0, ignoreblankvalues: true }, { attribute: 'firstname', operatorcode: 0, ignoreblankvalues: false }] } }), { envs: ENVS });
+  assert.ok(r.errors.some((e) => /same column with the same match type/.test(e)), r.errors.join(' | '));
+  const ok = D.validateDupeRuleJob(job({ definition: { conditions: [{ attribute: 'firstname', operatorcode: 0, ignoreblankvalues: true }, { attribute: 'firstname', operatorcode: 1, operatorparam: 3, ignoreblankvalues: true }] } }), { envs: ENVS });
+  assert.deepEqual(ok.errors, [], 'the same column with a different match type is fine');
+});
+
+test('the Dev case of 11/16: a rule left unpublished with ZIP added is put back by its undo (remove ZIP, republish, no add)', async () => {
+  const dv = dvAs();
+  // The state 1.11.37 left in Donor App Dev: ZIP added, first/last untouched, unpublished.
+  Object.assign(ruleOf(dv, IDS.nameRule), { statecode: 0, statuscode: 0 });
+  dv.data.duplicateruleconditions.push({ duplicateruleconditionid: 'c3000000-0000-0000-0000-000000000001', _regardingobjectid_value: IDS.nameRule, baseattributename: 'address1_postalcode', matchingattributename: 'address1_postalcode', operatorcode: 1, operatorparam: 5, ignoreblankvalues: true, ismanaged: false });
+  const back = await D.planDupeRule(dv, valid(job({ definition: { conditions: [{ attribute: 'firstname', operatorcode: 0, ignoreblankvalues: false }, { attribute: 'lastname', operatorcode: 0, ignoreblankvalues: false }] } })), ctx());
+  // A plain update keeps the publish state, so the undo path is used for the republish:
+  const entry = { mode: 'duperule', outcome: 'applied with problems', action: 'update', env: 'donorapp', plan_id: '20261116-152306-14fbe523', headline: 'x', person: { fullname: 'x' },
+    rows: [{ id: IDS.nameRule, outcome: 'failed', before: { name: NAME_RULE, description: '', iscasesensitive: false, excludeinactiverecords: true, published: true, conditions: back.before.conditions.filter((c) => c.attribute !== 'address1_postalcode') }, after: back.before }] };
+  const plan = await D.planDupeRuleRevert(dv, entry, ctx());
+  assert.deepEqual(plan.changed.sort(), ['conditions', 'published']);
+  dv.calls.length = 0;
+  const { res } = await applied(plan, dv);
+  assert.equal(res.outcome, 'applied', JSON.stringify(res.rows[0]));
+  assert.deepEqual(nonGets(dv).map((c) => `${c.method} ${c.path.replace(/\(.*$/, '')}`), ['DELETE duplicateruleconditions', 'POST duplicaterules']);
+  assert.deepEqual(condsOf(dv, IDS.nameRule).map((c) => c.baseattributename).sort(), ['firstname', 'lastname']);
+  assert.equal(ruleOf(dv, IDS.nameRule).statuscode, 2);
+});
+
+test('a character count changes in place (ZIP first 5 -> first 3), one PATCH carrying the new count', async () => {
+  const dv = dvAs();
+  await applied(await D.planDupeRule(dv, valid(job()), ctx()), dv);
+  const three = OPTION_1.map((c) => (c.attribute === 'address1_postalcode' ? { ...c, operatorparam: 3 } : c));
+  dv.calls.length = 0;
+  const { res } = await applied(await D.planDupeRule(dv, valid(job({ definition: { conditions: three } })), ctx()), dv);
+  assert.equal(res.outcome, 'applied', JSON.stringify(res.rows[0]));
+  const patches = nonGets(dv).filter((c) => c.method === 'PATCH');
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].body.operatorparam, 3);
+  assert.equal(condsOf(dv, IDS.nameRule).find((c) => c.baseattributename === 'address1_postalcode').operatorparam, 3);
+});
+
+test('undo of Option 1 changes first and last name back in place and removes ZIP', async () => {
+  const dv = dvAs();
+  const { res } = await applied(await D.planDupeRule(dv, valid(job()), ctx()), dv);
+  const back = await D.planDupeRuleRevert(dv, { ...res.entry, plan_id: '20261116-150500-abcdef01' }, ctx());
+  dv.calls.length = 0;
+  const { res: r2 } = await applied(back, dv);
+  assert.equal(r2.outcome, 'applied', JSON.stringify(r2.rows[0]));
+  assert.deepEqual(nonGets(dv).map((c) => `${c.method} ${c.path.replace(/\(.*$/, '')}`),
+    ['POST UnpublishDuplicateRule', 'PATCH duplicateruleconditions', 'PATCH duplicateruleconditions', 'DELETE duplicateruleconditions', 'POST duplicaterules']);
+  assert.ok(condsOf(dv, IDS.nameRule).every((c) => !c.ignoreblankvalues));
 });
 
 test('review F5: a failed read-back after the unpublish still says UNPUBLISHED and how to bring it back', async () => {

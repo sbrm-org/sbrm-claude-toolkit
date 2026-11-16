@@ -149,6 +149,9 @@ function validateDupeRuleJob(raw, { envs }) {
           if (!errors.length) {
             const keys = d.conditions.map((c) => condKey(condOf(c)));
             if (new Set(keys).size !== keys.length) err('definition.conditions lists the same condition twice');
+            // The platform allows one condition per column + match type on a rule (measured 11/16/26).
+            const pairs = d.conditions.map((c) => `${String(c.attribute).toLowerCase()}|${c.operatorcode}`);
+            if (new Set(pairs).size !== pairs.length) err('definition.conditions has two conditions on the same column with the same match type; a rule holds only one');
           }
         }
       }
@@ -453,6 +456,7 @@ async function applyDupeRule(plan, deps, { id, file, fs }) {
   // before the prompt and again after it; any difference stops the apply before a write (review F4). What remains is
   // the seconds between the second read and the writes (accepted residual, Dylan 11/16/26).
   let ruleId = plan.rule.id;
+  let oldRows = []; // the rule's condition rows as read at the check: {id, attribute, operatorcode, operatorparam, ignoreblankvalues}
   const check = () => {
     if (plan.mode === 'create') {
       if (rulesNamed(dv, plan.rule.name).length) throw new ApplyRefused(`a duplicate rule named '${plan.rule.name}' exists now. Nothing was written; make a new plan.`, 'snapshot_moved');
@@ -466,7 +470,8 @@ async function applyDupeRule(plan, deps, { id, file, fs }) {
     if (!sameState(nowState, plan.before)) throw new ApplyRefused(`'${plan.rule.name}' has changed since the plan. Nothing was written; make a new plan.`, 'snapshot_moved');
     const ids = raw.map((c) => String(c.duplicateruleconditionid).toLowerCase()).sort();
     if (JSON.stringify(ids) !== JSON.stringify([...plan.condition_ids].sort())) throw new ApplyRefused(`'${plan.rule.name}''s conditions were replaced since the plan. Nothing was written; make a new plan.`, 'snapshot_moved');
-    return JSON.stringify({ state: nowState, rows: raw.map((c) => ({ id: String(c.duplicateruleconditionid).toLowerCase(), ...condOf(c) })).sort((x, y) => x.id.localeCompare(y.id)) });
+    oldRows = raw.map((c) => ({ id: String(c.duplicateruleconditionid).toLowerCase(), ...condOf(c) })).sort((x, y) => x.id.localeCompare(y.id));
+    return JSON.stringify({ state: nowState, rows: oldRows });
   };
   const checked = check();
 
@@ -485,8 +490,8 @@ async function applyDupeRule(plan, deps, { id, file, fs }) {
     throw new ApplyRefused(`'${plan.rule.name}' was changed while the approval was open. Nothing was written; make a new plan.`, 'snapshot_moved');
   }
 
-  // The condition row ids go in the log: the ones removed and the ones made (F9).
-  const row = { name: plan.rule.name, id: ruleId, action: plan.mode, before: plan.before, after: null, steps: [], conditions_removed: [], conditions_added: [] };
+  // The condition row ids go in the log: the ones removed, made and changed in place (F9).
+  const row = { name: plan.rule.name, id: ruleId, action: plan.mode, before: plan.before, after: null, steps: [], conditions_removed: [], conditions_added: [], conditions_changed: [] };
   const step = (s) => row.steps.push(s);
   const b = plan.before;
   const a = plan.after;
@@ -516,22 +521,38 @@ async function applyDupeRule(plan, deps, { id, file, fs }) {
         step(`changed ${Object.keys(patch).join(', ')}`);
       }
     }
-    // New conditions FIRST, old ones after (advisor review 11/16): a failed add leaves the old conditions in place,
-    // never a rule with none.
+    // MEASURED LIVE 11/16/26 (Donor App Dev, plan 20261116-152306-14fbe523): a rule holds at most ONE condition per
+    // column + match type ("violates a database constraint ... uniquerulename, operatorcode, matchingattributename,
+    // baseattributename ... use update"). So a wanted condition whose column and match type the rule already has CHANGES
+    // that row in place; only a new column + match type is added; then the rows no longer wanted are removed. Changes
+    // and adds come FIRST (advisor review 11/16): a failure part-way never leaves a rule with fewer conditions.
     if (plan.mode === 'create' || (plan.mode === 'update' && !sameConds(a.conditions, b.conditions))) {
+      const kept = new Set();
       for (const c of a.conditions) {
+        const same = oldRows.find((o) => o.attribute === c.attribute && o.operatorcode === c.operatorcode && !kept.has(o.id));
+        if (same) {
+          kept.add(same.id);
+          if (same.operatorparam !== c.operatorparam || same.ignoreblankvalues !== c.ignoreblankvalues) {
+            const body = { ignoreblankvalues: c.ignoreblankvalues };
+            if (c.operatorparam !== null) body.operatorparam = c.operatorparam;
+            dv.update(COND_SET, same.id, body, '*'); // no version on a condition (measured 11/16)
+            row.conditions_changed.push(same.id);
+          }
+          continue;
+        }
         const body = { baseattributename: c.attribute, matchingattributename: c.attribute, operatorcode: c.operatorcode, ignoreblankvalues: c.ignoreblankvalues, 'regardingobjectid@odata.bind': `/${RULE_SET}(${ruleId})` };
         if (c.operatorparam !== null) body.operatorparam = c.operatorparam;
         const made = dv.create(COND_SET, body);
         row.conditions_added.push(String((made && made.duplicateruleconditionid) || '').toLowerCase() || null);
       }
-      step(`added ${a.conditions.length} condition(s)`);
-      // The old rows, by the ids the plan read and both checks confirmed (no version exists to send; see the check).
-      for (const cid of [...plan.condition_ids].sort()) {
-        dv.remove(COND_SET, cid, '*');
-        row.conditions_removed.push(cid);
+      if (row.conditions_changed.length) step(`changed ${row.conditions_changed.length} condition(s) in place`);
+      if (row.conditions_added.length) step(`added ${row.conditions_added.length} condition(s)`);
+      // The rows no longer wanted, by the ids both checks confirmed (no version exists to send; see the check).
+      for (const o of oldRows.filter((x) => !kept.has(x.id))) {
+        dv.remove(COND_SET, o.id, '*');
+        row.conditions_removed.push(o.id);
       }
-      if (plan.condition_ids.length) step(`removed ${plan.condition_ids.length} old condition(s)`);
+      if (row.conditions_removed.length) step(`removed ${row.conditions_removed.length} condition(s)`);
     }
     if (a.published) {
       dv.publishDuplicateRule(ruleId);
