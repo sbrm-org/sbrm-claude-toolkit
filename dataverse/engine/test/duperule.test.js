@@ -309,17 +309,32 @@ test('review F1: an unpublish still pending after the wait says it may still lan
   assert.equal(on.after.published, true);
 });
 
-test('review F3/F4: a condition changed while the prompt is open stops the apply before any write; deletes carry the read tag', async () => {
+test('review F4: a rule or condition changed while the prompt is open stops the apply before any write', async () => {
+  // Rules and conditions have NO version on the platform (measured 11/16), so the engine's own before/after-prompt
+  // read is the protection: a changed value, a changed setting or a swapped condition row is caught.
+  const swaps = [
+    (dv) => dv.touch('duplicateruleconditions', IDS.first, { ignoreblankvalues: true }),
+    (dv) => dv.touch('duplicaterules', IDS.nameRule, { description: 'someone else' }),
+    (dv) => { dv.data.duplicateruleconditions.find((c) => c.duplicateruleconditionid === IDS.first).duplicateruleconditionid = 'c9000000-0000-0000-0000-000000000009'; },
+  ];
+  for (const swap of swaps) {
+    const dv = dvAs();
+    const plan = await D.planDupeRule(dv, valid(job()), ctx());
+    dv.calls.length = 0;
+    await assert.rejects(applied(plan, dv, { confirm: () => { swap(dv); return { approved: true }; } }), /changed while the approval was open/);
+    assert.deepEqual(nonGets(dv), []);
+  }
+});
+
+test('measured 11/16: rules and conditions carry no version, so their writes go If-Match *; removed and added ids are logged', async () => {
   const dv = dvAs();
-  const plan = await D.planDupeRule(dv, valid(job()), ctx());
-  dv.calls.length = 0;
-  await assert.rejects(applied(plan, dv, { confirm: () => { dv.touch('duplicateruleconditions', IDS.first, {}); return { approved: true }; } }), /changed while the approval was open/);
-  assert.deepEqual(nonGets(dv), []);
-  const dv2 = dvAs();
-  const { res } = await applied(await D.planDupeRule(dv2, valid(job()), ctx()), dv2);
-  assert.ok(nonGets(dv2).filter((c) => c.method === 'DELETE').every((c) => /^W\/"\d+"$/.test(c.etag)), 'never If-Match *');
+  const { res } = await applied(await D.planDupeRule(dv, valid(job({ definition: { conditions: OPTION_1, iscasesensitive: true }, intent: { verb: 'update', rule: NAME_RULE, changed: ['case', 'conditions'] } })), ctx()), dv);
+  assert.equal(res.outcome, 'applied', JSON.stringify(res.rows[0]));
+  const versioned = nonGets(dv).filter((c) => c.method === 'DELETE' || c.method === 'PATCH');
+  assert.ok(versioned.length === 3 && versioned.every((c) => c.etag === '*'), JSON.stringify(versioned));
   assert.deepEqual([...res.rows[0].conditions_removed].sort(), [IDS.first, IDS.last].sort());
   assert.equal(res.rows[0].conditions_added.length, 3);
+  assert.equal(ruleOf(dv, IDS.nameRule).iscasesensitive, true);
 });
 
 test('review F5: a failed read-back after the unpublish still says UNPUBLISHED and how to bring it back', async () => {

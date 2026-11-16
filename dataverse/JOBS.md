@@ -317,6 +317,8 @@ first (`read_query` on `duplicaterule` joined to `duplicaterulecondition` on `re
   background**: with the publish wait it can take over 10 minutes, longer than a foreground command may run.
   A rule that reads "publishing" is refused at plan and apply; plan again in a few minutes.
 - Refused: a managed rule, a rule matching one table against another, a name another rule has, and no change.
+- Dataverse keeps no version on a duplicate rule or its conditions (measured 11/16/26), so the engine reads the rule and
+  its condition rows before the approval and again after it, and refuses if anything moved in between.
 - Undo: `revert` puts back the logged before (conditions, settings, on or off), only while the rule still reads what
   the apply left.
 
