@@ -324,6 +324,10 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
       // which moves the flow's version before the version check, so an If-Match carrying the tag read at apply is
       // refused and the flow stays on. `offBumpsVersion` models it; `If-Match: *` (exists, any version) is not refused.
       if (set === 'workflows' && dv.offBumpsVersion && body.statecode === 0) bump(set, id);
+      // Live 11/16/26 (R-1309, recovery flow f3fff7dc, plans 20261116-104408-21ba32fd and 20261116-105853-28a8a380; and
+      // F-1032 10/22, Dev flow 0ff3b2e0): Dataverse refused an exact If-Match on a flow whose version, definition and
+      // modifiedon never moved. `refuseExactTag` models it: any tag but * is refused and NOTHING moves.
+      if (dv.refuseExactTag && etag !== '*') throw new DataverseError('version mismatch', { code: '0x80060882' });
       if (etag !== '*' && etag !== tag(set, id)) throw new DataverseError('version mismatch', { code: '0x80060882' });
       if (dv.unpublishedUntilPublish && d.drafts[set]) {
         d.drafts[set][id] = { ...(d.drafts[set][id] || {}), ...body };
