@@ -1839,6 +1839,23 @@ function subscriptionStamp(dv, id) {
   }
 }
 
+// R-1309 (11/16/26): after a flow write's exact tag was refused, is the flow exactly as apply read it? The same tag, the
+// same definition hash, state and owner, and the same trigger subscription (both reads readable). Any read failure,
+// or any difference, is "moved": then no retry.
+function unmovedSince(dv, set, id, live, etag, beforeHash, subBefore) {
+  try {
+    if (!live || !etag || subBefore === null) return false;
+    const sub = subscriptionStamp(dv, id);
+    if (sub === null || sub !== subBefore) return false;
+    const now = readComponent(dv, set, id);
+    if (!now || now.etag !== etag || now.statecode !== live.statecode) return false;
+    if ((now.owner && now.owner.id) !== (live.owner && live.owner.id)) return false;
+    return hashDef(set, now.id, now.definition) === beforeHash;
+  } catch {
+    return false;
+  }
+}
+
 // What PublishXml names after a write: that sitemap, that web resource, or the view's or form's table; a flow is not
 // published. Plan and apply both build it from here (apply from the id it wrote).
 function publishFor(set, id, table) {
@@ -2521,7 +2538,25 @@ async function applyComponent(plan, deps, { id, file, fs }) {
         // version before the If-Match check, so every off of an ON flow was refused and the flow stayed on. A state
         // change (on / off) is idempotent and its definition, state and owner were re-checked just above, so it goes
         // with If-Match: * (the row must still exist, any version). Every other write keeps the exact tag.
-        dv.update(set, rid, body, plan.mode === 'on' || plan.mode === 'off' ? '*' : etag);
+        try {
+          dv.update(set, rid, body, plan.mode === 'on' || plan.mode === 'off' ? '*' : etag);
+        } catch (e1) {
+          // R-1309 (11/16/26): Dataverse refused the exact tag on a flow update though nothing had moved (version,
+          // definition and modifiedon all unchanged; F-1032 on 10/22 the same). Only when a fresh read proves nothing
+          // moved, the subscription included, is the same body written ONCE more with If-Match *. A real save meanwhile
+          // moves the tag or the definition and stays a refusal.
+          if (!(flowUpdate && e1 && e1.code === '0x80060882' && unmovedSince(dv, set, rid, live, etag, plan.before_hash, subBefore))) throw e1;
+          // The note goes on only once the retry's outcome is known (review F2, 11/16): never "written" ahead of a
+          // retry that is then refused or times out.
+          try {
+            dv.update(set, rid, body, '*');
+          } catch (e2) {
+            if (e2 && typeof e2 === 'object' && !isTimeout(e2)) e2.retryRefused = true;
+            else row.notes.push('Dataverse refused the version check although nothing had moved, so the same change was sent once more without it; that second request timed out on this computer (the outcome says whether it landed).');
+            throw e2;
+          }
+          row.notes.push('Dataverse refused the version check although nothing had moved (same version, same definition, same state and owner, re-read just now), so the same change was written once more without it.');
+        }
       }
     } catch (e) {
       if (!isTimeout(e)) throw e;
@@ -2542,7 +2577,15 @@ async function applyComponent(plan, deps, { id, file, fs }) {
     }
   } catch (e) {
     if (!wrote && isConnectionRefusal(e)) row.outcome = `refused: ${connectionRefusalText(view)}`;
-    else if (!wrote && e && e.code === '0x80060882' && flowUpdate) {
+    else if (!wrote && e && e.retryRefused) {
+      // R-1309: the retry without the version check was refused too. Never "the component changed" (it had not).
+      const subAfter = subscriptionStamp(dv, rid);
+      if (subBefore === null || subAfter === null) {
+        row.outcome = `failed: Dataverse refused the version check although nothing had moved, then refused the write again without it (${e.message}), and the flow's trigger subscription could not be read, so it is NOT KNOWN whether the live trigger changed. Check the trigger in the designer before re-planning`;
+      } else if (subAfter !== subBefore) {
+        row.outcome = `failed: PARTLY WRITTEN: Dataverse refused the version check although nothing had moved, then refused the write again without it (${e.message}), and the live trigger changed meanwhile. Turn the flow off, re-plan the update on the off flow, then turn it on`;
+      } else row.outcome = `failed: Dataverse refused the version check although nothing had moved, and refused the write again without it (${e.message}); nothing was written to it`;
+    } else if (!wrote && e && e.code === '0x80060882' && flowUpdate) {
       const subAfter = subscriptionStamp(dv, rid);
       if (subBefore === null || subAfter === null) {
         row.outcome = 'failed: the flow write was refused (version conflict), and its trigger subscription could not be read, so it is NOT KNOWN whether the live trigger changed. Check the trigger in the designer before re-planning';

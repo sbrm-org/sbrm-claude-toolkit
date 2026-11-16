@@ -3,6 +3,24 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.35** (2026-11-16, task #6j2wwwQC67Cf9vcr, review item R-1309)
+  A flow update that Dataverse refuses on its version check although nothing had moved is now written once more.
+  Live 11/16 (Dylan, recovery flow f3fff7dc '[Function] Get Program Director ID', plans 20261116-104408-21ba32fd and
+  20261116-105853-28a8a380): an actions-only change of an ON flow came back 0x80060882 twice while the flow's version,
+  definition and modifiedon (8/22/2023) never moved, and the engine reported "the component changed between the check and
+  the write", which was false (F-1032 on 10/22, Dev flow 0ff3b2e0, the same). A flow update still sends the exact tag
+  first. On that refusal the engine re-reads the flow, and only when the tag it sent, the definition, the state, the owner
+  and the trigger subscription are ALL unchanged does it send the same body once more with `If-Match: *`, through the same
+  timeout handling, with a note on the row. A real save meanwhile moves one of them and stays a refusal; a re-registered
+  trigger still reads PARTLY WRITTEN; a retry that is refused too gets its own outcome, never "the component changed".
+  Views, forms, sitemaps, web resources, deletes and hand-overs are unchanged. Accepted residual (Dylan 11/16, review
+  F1): the retry itself carries no version check, so a save landing in the one round trip between the no-move re-read and
+  the retry would be overwritten, the same gap 1.11.33 accepted for on/off. The fake gains `refuseExactTag` (red first,
+  as live); `component.test.js` +5 tests (one from the C1 review: a retry that times out, an unreadable re-read; the
+  review also moved the row's note after the retry, F2); suite 1,030 pass / 0 fail (1 skip), guard self-test 247/247,
+  real store unchanged; mutation pass `mutate_2026_11_16_flow_retry.js` 14 of 15 killed, the survivor equivalent (only a
+  flow update reads the trigger subscription, so the no-move check already refuses a retry for any other component).
+  Review: `Shared Dataverse Write/reviews/2026-11-16_r1309_flow_retry/` (internal).
 - **1.11.33** (2026-11-11, task #6hxVMCcX9GMJP37J, review item R-1253)
   Turning an ON flow off no longer fails every time. The platform's own turn-off re-registers the flow's trigger
   subscription and moves its version before the version check, so the If-Match write came back 0x80060882 and the flow

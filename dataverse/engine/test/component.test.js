@@ -12,6 +12,7 @@ const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'sbrmdv-component-'));
 process.env.SBRM_DV_HOME = path.join(HOME, 'store');
 
 const C = require('../lib/component');
+const { DataverseError } = require('../lib/cli');
 const { fakeComponentDv, devDv, devEntry, flowCd, REF, IDS, ENVS, ACCESS, FETCH, LAYOUT, FORM, SITEMAP, secretFlowCd, PLACEHOLDER_SECRET } = require('./fake_component');
 
 // Donor App Dev's Write Log: the same column change to the same view, applied there first.
@@ -740,6 +741,151 @@ test('R-1253: If-Match * never skips the re-checks: a flow changed or deleted si
   delete gone.data.workflows[IDS.flow];
   await assert.rejects(applied(p2, gone), (e) => e.code === 'snapshot_moved');
   assert.equal(nonGets(gone).length, 0, 'nothing written');
+});
+
+// R-1309 (Dylan 11/16/26, recovery flow f3fff7dc, plans 20261116-104408-21ba32fd and 20261116-105853-28a8a380; F-1032 on
+// 10/22 the same): an actions-only update of an ON flow came back 0x80060882 twice though the flow's version, definition
+// and modifiedon never moved, and the engine said "the component changed", which was false. A flow update still sends the
+// exact tag first; on that refusal, with the trigger subscription unchanged, the flow is re-read, and only when the tag
+// sent, the definition, the state and the owner all still match is it written ONCE more with If-Match *.
+const actionsCd = () => { const cd = flowCd(); cd.properties.definition.actions.Compose_total.inputs = 'changed'; return cd; };
+const patches = (dv) => nonGets(dv).filter((c) => c.method === 'PATCH');
+
+test('R-1309: an exact tag refused with nothing moved is re-read and written once more with If-Match *', async () => {
+  const dv = dvAs('admin');
+  const plan = await C.planComponent(dv, valid(flowJob(dv, actionsCd(), { changed: ['actions'] })), ctx());
+  dv.refuseExactTag = true;
+  const { res } = await applied(plan, dv);
+  assert.equal(res.outcome, 'applied', JSON.stringify(res.rows[0]));
+  assert.equal(res.rows[0].outcome, 'written');
+  const p = patches(dv);
+  assert.equal(p.length, 2, 'the exact tag, then * once');
+  assert.match(p[0].etag, /^W\/"\d+"$/);
+  assert.equal(p[1].etag, '*');
+  assert.deepEqual(p[1].body, p[0].body, 'the same body both times');
+  assert.match(JSON.stringify(dv.data.workflows[IDS.flow].clientdata), /changed/, 'the new definition landed');
+  assert.ok(res.rows[0].notes.some((n) => /refused the version check although nothing had moved/.test(n)), JSON.stringify(res.rows[0].notes));
+});
+
+test('R-1309: no retry when something did move: a real save meanwhile, or a re-registered trigger', async () => {
+  // someone saved the flow between the read and the write: the version moved, so it is a true conflict, one PATCH
+  const dv = dvAs('admin');
+  const plan = await C.planComponent(dv, valid(flowJob(dv, actionsCd(), { changed: ['actions'] })), ctx());
+  const real = dv.update;
+  dv.update = (set, id, body, etag) => { dv.touch(set, id, {}); return real(set, id, body, etag); };
+  const r = (await applied(plan, dv)).res;
+  assert.match(r.rows[0].outcome, /failed: the component changed between the check and the write; nothing was written to it/);
+  assert.equal(patches(dv).length, 1);
+  // the definition changed meanwhile but the tag was refused without moving (the hash check catches it): no retry
+  const h = dvAs('admin');
+  const p2 = await C.planComponent(h, valid(flowJob(h, actionsCd(), { changed: ['actions'] })), ctx());
+  h.refuseExactTag = true;
+  const realH = h.update;
+  h.update = (set, id, body, etag) => {
+    if (etag !== '*') { const rec = h.data.workflows[id]; const cd = JSON.parse(rec.clientdata); cd.properties.definition.actions.Compose_total.inputs = 'someone else'; rec.clientdata = JSON.stringify(cd); }
+    return realH(set, id, body, etag);
+  };
+  const r2 = (await applied(p2, h)).res;
+  assert.match(r2.rows[0].outcome, /^failed: /);
+  assert.equal(patches(h).length, 1, 'never written with * over another edit');
+  // the trigger was re-registered during the refused write: still PARTLY WRITTEN, never retried
+  const t = dvAs('admin');
+  const p3 = await C.planComponent(t, valid(flowJob(t, actionsCd(), { changed: ['actions'] })), ctx());
+  t.reRegisterThenConflict = true;
+  const r3 = (await applied(p3, t)).res;
+  assert.match(r3.rows[0].outcome, /^failed: PARTLY WRITTEN/);
+  assert.equal(patches(t).length, 1);
+});
+
+test('R-1309: no retry when the state, owner or trigger subscription moved, or the refusal was not a version refusal', async () => {
+  // Each case: the exact tag is refused WITHOUT the version moving (as live), and one other thing changes at that moment.
+  async function refusedWith(sideEffect, err) {
+    const dv = dvAs('admin');
+    const plan = await C.planComponent(dv, valid(flowJob(dv, actionsCd(), { changed: ['actions'] })), ctx());
+    const real = dv.update;
+    dv.update = (set, id, body, etag) => {
+      if (etag !== '*') {
+        dv.calls.push({ method: 'PATCH', path: `${set}(${id})`, body, etag });
+        sideEffect(dv, id);
+        throw err || new DataverseError('version mismatch', { code: '0x80060882' });
+      }
+      return real(set, id, body, etag);
+    };
+    const res = (await applied(plan, dv)).res;
+    return { res, n: patches(dv).length };
+  }
+  const off = await refusedWith((dv, id) => { dv.data.workflows[id].statecode = 0; dv.data.workflows[id].statuscode = 1; });
+  assert.equal(off.n, 1, 'turned off meanwhile: no retry');
+  assert.match(off.res.rows[0].outcome, /^failed: /);
+  const owner = await refusedWith((dv, id) => { dv.data.workflows[id]._ownerid_value = IDS.me; });
+  assert.equal(owner.n, 1, 'handed to someone else meanwhile: no retry');
+  const sub = await refusedWith((dv, id) => { for (const c of dv.data.callbackregistrations) if (c.name === id) c.filteringattributes = 'statecode'; });
+  assert.equal(sub.n, 1, 'trigger re-registered meanwhile: no retry');
+  assert.match(sub.res.rows[0].outcome, /^failed: PARTLY WRITTEN/);
+  const other = await refusedWith(() => {}, new DataverseError('Some other refusal', { code: '0x80040220' }));
+  assert.equal(other.n, 1, 'not a version refusal: no retry');
+  assert.match(other.res.rows[0].outcome, /^failed: Some other refusal/);
+});
+
+test('R-1309 review F4: a retry that times out goes through the timeout re-read; an unreadable re-read means no retry', async () => {
+  const TIMEOUT = new DataverseError('non-JSON response to PATCH: The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing.');
+  async function retryTimesOut(landed) {
+    const dv = dvAs('admin');
+    const plan = await C.planComponent(dv, valid(flowJob(dv, actionsCd(), { changed: ['actions'] })), ctx());
+    dv.refuseExactTag = true;
+    const real = dv.update;
+    dv.update = (set, id, body, etag) => {
+      if (etag === '*') {
+        if (landed) real(set, id, body, etag);
+        else dv.calls.push({ method: 'PATCH', path: `${set}(${id})`, body, etag });
+        throw TIMEOUT;
+      }
+      return real(set, id, body, etag);
+    };
+    const r = (await applied(plan, dv, { clock: (() => { let t = 0; return () => (t += 60000); })() })).res;
+    return { r, n: patches(dv).length };
+  }
+  const lost = await retryTimesOut(false);
+  assert.equal(lost.n, 2, 'the exact tag, then * once, never a third');
+  assert.match(lost.r.rows[0].outcome, /^failed: the request timed out on this computer and the change was not on/);
+  assert.ok(!lost.r.rows[0].notes.some((n) => /written once more/.test(n)), 'no "written" note');
+  assert.ok(lost.r.rows[0].notes.some((n) => /second request timed out/.test(n)), JSON.stringify(lost.r.rows[0].notes));
+  const found = await retryTimesOut(true);
+  assert.equal(found.r.rows[0].outcome, 'written', JSON.stringify(found.r.rows[0]));
+  assert.ok(found.r.rows[0].notes.some((n) => /timed out on this computer, but the change landed/.test(n)), JSON.stringify(found.r.rows[0].notes));
+  // the re-read after the refusal fails: no retry, and the outcome is what it was before R-1309
+  const dv = dvAs('admin');
+  const plan = await C.planComponent(dv, valid(flowJob(dv, actionsCd(), { changed: ['actions'] })), ctx());
+  dv.refuseExactTag = true;
+  dv.subscriptionReadsFail = true;
+  const r = (await applied(plan, dv)).res;
+  assert.equal(patches(dv).length, 1, 'unreadable: no retry');
+  assert.match(r.rows[0].outcome, /NOT KNOWN whether the live trigger changed/);
+});
+
+test('R-1309: a retry that is refused too says so, never "the component changed"; a view is never retried', async () => {
+  const dv = dvAs('admin');
+  const plan = await C.planComponent(dv, valid(flowJob(dv, actionsCd(), { changed: ['actions'] })), ctx());
+  dv.refuseExactTag = true;
+  const real = dv.update;
+  dv.update = (set, id, body, etag) => {
+    if (etag === '*') { dv.calls.push({ method: 'PATCH', path: `${set}(${id})`, body, etag }); throw new DataverseError('still refused', { code: '0x80060882' }); }
+    return real(set, id, body, etag);
+  };
+  const r = (await applied(plan, dv)).res;
+  assert.equal(r.outcome, 'applied with problems');
+  assert.match(r.rows[0].outcome, /^failed: Dataverse refused the version check although nothing had moved, and refused the write again without it/);
+  assert.match(r.rows[0].outcome, /nothing was written/);
+  assert.doesNotMatch(r.rows[0].outcome, /the component changed/);
+  assert.equal(patches(dv).length, 2);
+  assert.ok(!r.rows[0].notes.some((n) => /written once more/.test(n)), 'no "written" note on a refused retry (review F2)');
+  // a view (any set but workflows) keeps the old behaviour: one PATCH, "the component changed"
+  const v = dvAs('admin');
+  const pv = await C.planComponent(v, valid(viewJob(v, { layoutxml: SWAPPED_LAYOUT })), ctx());
+  v.refuseExactTag = true;
+  const rv = (await applied(pv, v)).res;
+  assert.match(rv.rows[0].outcome, /the component changed between the check and the write/);
+  assert.equal(patches(v).length, 1);
 });
 
 test('turning a flow on: a 403 ConnectionAuthorizationFailed comes back as who has to turn it on', async () => {
