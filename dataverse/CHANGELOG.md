@@ -3,6 +3,16 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.37** (2026-11-16, duperule fix from the live Dev proof)
+  1.11.36 refused every duplicate-rule update live ("a condition came back with no version tag"; plan
+  20261116-150151-bcbbce00 in Donor App Dev, nothing written). Measured the same day (`probe_dupecond_etag.js`): Dataverse
+  keeps NO version on `duplicaterules` or `duplicateruleconditions` (no @odata.etag in any read, no versionnumber column),
+  so review F3's tag-only rule could never pass. Their PATCH and DELETE now go with If-Match *, and the protection is the
+  engine's own read of the rule's settings, every condition's values and the condition row ids, before the prompt and
+  again after it; any difference stops the apply before a write. The seconds between the second read and the writes are
+  an ACCEPTED residual (Dylan 11/16/26: "Accept, ship today"). The test fake now hands out no version for these tables
+  and accepts only *. Tests `duperule.test.js` (21); mutation pass 21 of 22 (the survivor is equivalent: the check refuses
+  on any changed value or row id before the fingerprint compare).
 - **1.11.36** (2026-11-16, duplicate-detection rules; Dylan: "lets do the duplicate-rule job")
   New kind `duperule` (admin): change a duplicate-detection rule's conditions or settings, make a new rule, or turn one
   off or on. Why: the Fundraise Up connector matches donors through the donor app's published duplicate rules and takes

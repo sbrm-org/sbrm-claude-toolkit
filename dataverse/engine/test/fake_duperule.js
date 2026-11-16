@@ -138,7 +138,7 @@ function fakeDupeDv({ email = 'admin@example.org', userId = IDS.me, fullname = '
         tick(m[1].toLowerCase());
         const rec = find('duplicaterules', m[1]);
         if (!rec) throw new DataverseError('Does Not Exist', { code: '0x80040217' });
-        const out = { '@odata.etag': tag('duplicaterules', m[1]) };
+        const out = {}; // MEASURED 11/16 (Donor App Dev): no @odata.etag on a duplicate rule
         for (const k of m[2].split(',')) out[k] = rec[k] === undefined ? null : rec[k];
         return out;
       }
@@ -147,7 +147,7 @@ function fakeDupeDv({ email = 'admin@example.org', userId = IDS.me, fullname = '
         const cols = m[2].split(',');
         return {
           value: d[m[1]].filter(keep).map((r) => {
-            const out = { '@odata.etag': tag(m[1], r[ID_COL[m[1]]]) };
+            const out = {}; // MEASURED 11/16: no @odata.etag on rules or conditions, in a collection read either
             for (const c of cols) out[c] = r[c] === undefined ? null : r[c];
             return out;
           }),
@@ -160,7 +160,7 @@ function fakeDupeDv({ email = 'admin@example.org', userId = IDS.me, fullname = '
       if (dv.failOn === `update ${set}`) throw new DataverseError('boom');
       const rec = find(set, id);
       if (!rec) throw new DataverseError('Does Not Exist', { code: '0x80040217' });
-      if (etag !== tag(set, id)) throw new DataverseError('version mismatch', { code: '0x80060882' });
+      if (etag !== '*') throw new DataverseError('no version to match (a duplicate rule has none)', { code: '0x80060882' });
       if (set === 'duplicaterules' && published(id)) throw new DataverseError('A published duplicate rule cannot be modified. Unpublish it first.');
       Object.assign(rec, body);
       bump(set, id);
@@ -191,7 +191,7 @@ function fakeDupeDv({ email = 'admin@example.org', userId = IDS.me, fullname = '
       if (set !== 'duplicateruleconditions') throw new Error(`fake_duperule: unexpected delete in ${set}`);
       const rec = find(set, id);
       if (!rec) throw new DataverseError('Does Not Exist', { code: '0x80040217' });
-      if (etag !== tag(set, id)) throw new DataverseError('version mismatch', { code: '0x80060882' }); // '*' included: never sent
+      if (etag !== '*') throw new DataverseError('no version to match (a condition has none)', { code: '0x80060882' });
       if (published(rec._regardingobjectid_value)) throw new DataverseError('A published duplicate rule cannot be modified. Unpublish it first.');
       d[set] = d[set].filter((r) => r !== rec);
       return {};

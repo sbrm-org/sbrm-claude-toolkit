@@ -446,13 +446,17 @@ async function applyDupeRule(plan, deps, { id, file, fs }) {
   const acc = accessFor(resolveAccess(access, dv, plan.env), me.email, plan.env);
   if (!atLeast(acc.level, 'admin')) throw new ApplyRefused(`changing a duplicate rule takes admin access; you have ${acc.level}. Nothing was written.`, 'access_revoked');
 
-  // What the plan read must still be true. `check` reads the rule's version and every condition row with ITS version
-  // tag; the same read after the prompt must match exactly (review F4), and the deletes use these tags (review F3).
+  // What the plan read must still be true. MEASURED LIVE 11/16/26 (Donor App Dev, probe_dupecond_etag.js): neither
+  // duplicaterules nor duplicateruleconditions carries a version (no @odata.etag, no versionnumber column), so Dataverse
+  // cannot protect these writes and they go with If-Match * (review F3's tag-only rule refused every update live). The
+  // protection is this check instead: the rule's settings, every condition's values AND the condition row ids, read
+  // before the prompt and again after it; any difference stops the apply before a write (review F4). What remains is
+  // the seconds between the second read and the writes (accepted residual, Dylan 11/16/26).
   let ruleId = plan.rule.id;
   const check = () => {
     if (plan.mode === 'create') {
       if (rulesNamed(dv, plan.rule.name).length) throw new ApplyRefused(`a duplicate rule named '${plan.rule.name}' exists now. Nothing was written; make a new plan.`, 'snapshot_moved');
-      return { tag: null, conds: [] };
+      return '';
     }
     const live = readRule(dv, ruleId, { strong: true });
     if (!live || live.ismanaged) throw new ApplyRefused(`'${plan.rule.name}' is gone or now managed. Nothing was written.`, 'snapshot_moved');
@@ -460,10 +464,9 @@ async function applyDupeRule(plan, deps, { id, file, fs }) {
     const raw = readConditions(dv, ruleId);
     const nowState = { ...stateOf(live), conditions: sortConds(raw.map(condOf)) };
     if (!sameState(nowState, plan.before)) throw new ApplyRefused(`'${plan.rule.name}' has changed since the plan. Nothing was written; make a new plan.`, 'snapshot_moved');
-    const conds = raw.map((c) => ({ id: String(c.duplicateruleconditionid).toLowerCase(), tag: c['@odata.etag'] || null })).sort((x, y) => x.id.localeCompare(y.id));
-    if (JSON.stringify(conds.map((c) => c.id)) !== JSON.stringify([...plan.condition_ids].sort())) throw new ApplyRefused(`'${plan.rule.name}''s conditions were replaced since the plan. Nothing was written; make a new plan.`, 'snapshot_moved');
-    if (conds.some((c) => !c.tag)) throw new ApplyRefused('a condition came back with no version tag, so its removal could not be protected. Nothing was written.', 'snapshot_moved');
-    return { tag: live['@odata.etag'] || null, conds };
+    const ids = raw.map((c) => String(c.duplicateruleconditionid).toLowerCase()).sort();
+    if (JSON.stringify(ids) !== JSON.stringify([...plan.condition_ids].sort())) throw new ApplyRefused(`'${plan.rule.name}''s conditions were replaced since the plan. Nothing was written; make a new plan.`, 'snapshot_moved');
+    return JSON.stringify({ state: nowState, rows: raw.map((c) => ({ id: String(c.duplicateruleconditionid).toLowerCase(), ...condOf(c) })).sort((x, y) => x.id.localeCompare(y.id)) });
   };
   const checked = check();
 
@@ -476,8 +479,9 @@ async function applyDupeRule(plan, deps, { id, file, fs }) {
   };
   if (!answer.approved) return { entry: { ...base, outcome: 'cancelled', note: answer.note || null, rows: [] }, outcome: 'cancelled', person: me, dv, written: 0, rows: [], left_out: [] };
   // A change while the prompt was open (another admin) stops the apply before anything is written (F4).
-  const again = check();
-  if (again.tag !== checked.tag || JSON.stringify(again.conds) !== JSON.stringify(checked.conds)) {
+  let again;
+  try { again = check(); } catch (e) { if (e instanceof ApplyRefused && e.code === 'snapshot_moved') again = null; else throw e; }
+  if (again !== checked) {
     throw new ApplyRefused(`'${plan.rule.name}' was changed while the approval was open. Nothing was written; make a new plan.`, 'snapshot_moved');
   }
 
@@ -508,8 +512,7 @@ async function applyDupeRule(plan, deps, { id, file, fs }) {
       if (a.iscasesensitive !== b.iscasesensitive) patch.iscasesensitive = a.iscasesensitive;
       if (a.excludeinactiverecords !== b.excludeinactiverecords) patch.excludeinactiverecords = a.excludeinactiverecords;
       if (Object.keys(patch).length) {
-        const r = readRule(dv, ruleId, { strong: true });
-        dv.update(RULE_SET, ruleId, patch, r['@odata.etag']);
+        dv.update(RULE_SET, ruleId, patch, '*'); // no version on duplicaterules (measured 11/16); see the check above
         step(`changed ${Object.keys(patch).join(', ')}`);
       }
     }
@@ -523,12 +526,12 @@ async function applyDupeRule(plan, deps, { id, file, fs }) {
         row.conditions_added.push(String((made && made.duplicateruleconditionid) || '').toLowerCase() || null);
       }
       step(`added ${a.conditions.length} condition(s)`);
-      // The old rows, by the ids and version tags read before the prompt (never If-Match *).
-      for (const c of checked.conds) {
-        dv.remove(COND_SET, c.id, c.tag);
-        row.conditions_removed.push(c.id);
+      // The old rows, by the ids the plan read and both checks confirmed (no version exists to send; see the check).
+      for (const cid of [...plan.condition_ids].sort()) {
+        dv.remove(COND_SET, cid, '*');
+        row.conditions_removed.push(cid);
       }
-      if (checked.conds.length) step(`removed ${checked.conds.length} old condition(s)`);
+      if (plan.condition_ids.length) step(`removed ${plan.condition_ids.length} old condition(s)`);
     }
     if (a.published) {
       dv.publishDuplicateRule(ruleId);
