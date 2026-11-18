@@ -24,6 +24,7 @@
 const { whoAmI, accessFor, PlanRefused } = require('./resolve');
 const { resolveAccess } = require('./access');
 const { ApplyRefused } = require('./apply');
+const { planTooOld, STALE_TEXT } = require('./store');
 const { DataverseError } = require('./cli');
 const { GUID } = require('./contract');
 const { atLeast } = require('./levels');
@@ -368,7 +369,7 @@ const refuse = (msg, code) => { throw new ApplyRefused(`${msg} Nothing was writt
 
 async function applyRole(plan, deps, { id, file, fs }) {
   const { access, connect, confirm, now = new Date() } = deps;
-  if (now - new Date(plan.created) > MAX_AGE_MS) throw new ApplyRefused('this plan is more than 24 hours old. Make a new plan.', 'stale_plan');
+  if (planTooOld(plan, now, MAX_AGE_MS)) throw new ApplyRefused(STALE_TEXT, 'stale_plan');
   const shapeBad = planShapeProblems(plan);
   if (shapeBad.length) throw new ApplyRefused(`this plan file asks to write ${shapeBad.join(', ')}, which no role plan writes. It was changed after it was made; make a new plan. Nothing was written.`, 'plan_tampered');
   const dv = connect(plan.host);

@@ -3,6 +3,14 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.39** (2026-11-18, weekly pool: every apply path refuses an undated plan)
+  The 24-hour check in every apply path read a plan whose `created` is missing, empty or not a date as FRESH:
+  `now - new Date(undefined)` is NaN and NaN > the limit is false. Found in the 1.11.36 duperule review (F8) and fixed
+  there only. Now one check in `lib/store.js` (`planTooOld`) serves all ten paths (rows, schema, component, setting,
+  role, appuser, duperule, securityrole, merge, unmerge) and refuses such a plan as `stale_plan`: "this plan is more
+  than 24 hours old, or says nothing about when it was made". Reachability: `savePlan` always stamps `created` inside
+  the signed hash, so an undated plan needs a forged signature; this is defence in depth, not a live hole. No
+  staff-facing change. `test/undated_plan.test.js` (39 tests; 27 red before the fix), mutation pass 13 of 13.
 - **1.11.38** (2026-11-16, duperule: one condition per column + match type)
   1.11.37's Option 1 apply in Donor App Dev (plan 20261116-152306-14fbe523) added the ZIP condition, then was refused
   adding first name again: Dataverse holds ONE condition per rule + column + match type ("violates a database constraint

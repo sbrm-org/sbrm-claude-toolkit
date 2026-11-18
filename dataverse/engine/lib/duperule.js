@@ -27,6 +27,7 @@
 const { whoAmI, accessFor, PlanRefused } = require('./resolve');
 const { resolveAccess } = require('./access');
 const { ApplyRefused } = require('./apply');
+const { planTooOld, STALE_TEXT } = require('./store');
 const { DataverseError } = require('./cli');
 const { GUID } = require('./contract');
 const { atLeast } = require('./levels');
@@ -439,8 +440,7 @@ const sameState = (a, b) => Boolean(a && b) && a.name === b.name && (a.descripti
 async function applyDupeRule(plan, deps, { id, file, fs }) {
   const { access, connect, confirm, now = new Date(), sleep = defaultSleep } = deps;
   // A missing or unreadable `created` is refused, not read as fresh (review F8: NaN > MAX_AGE_MS is false).
-  const age = now - new Date(plan && plan.created);
-  if (!Number.isFinite(age) || age > MAX_AGE_MS) throw new ApplyRefused('this plan is more than 24 hours old, or says nothing about when it was made. Make a new plan.', 'stale_plan');
+  if (planTooOld(plan, now, MAX_AGE_MS)) throw new ApplyRefused(STALE_TEXT, 'stale_plan');
   const shapeBad = planShapeProblems(plan);
   if (shapeBad.length) throw new ApplyRefused(`this plan file asks to write ${shapeBad.join(', ')}, which no duplicate-rule plan writes. It was changed after it was made; make a new plan. Nothing was written.`, 'plan_tampered');
   const dv = connect(plan.host);

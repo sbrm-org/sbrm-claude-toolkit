@@ -28,6 +28,7 @@ const severity = require('./severity');
 const { loadTable, label } = require('./meta');
 const { GUID } = require('./contract');
 const { ApplyRefused } = require('./apply');
+const { planTooOld, STALE_TEXT } = require('./store');
 const closedYear = require('./closedyear');
 
 const CONTRACT = 'sbrm-dv-job/1';
@@ -463,7 +464,7 @@ async function readBack(dv, plan, p) {
 
 async function applyMerge(plan, deps, { id, file, fs }) {
   const { access, connect, confirm, now = new Date() } = deps;
-  if (now - new Date(plan.created) > MAX_AGE_MS) throw new ApplyRefused('this plan is more than 24 hours old. Make a new plan.', 'stale_plan');
+  if (planTooOld(plan, now, MAX_AGE_MS)) throw new ApplyRefused(STALE_TEXT, 'stale_plan');
   const dv = connect(plan.host);
   const me = whoAmI(dv);
   if (me.systemuserid !== plan.identity.systemuserid) throw new ApplyRefused(`this plan was made by ${plan.identity.fullname}; you are signed in as ${me.fullname}. Nothing was written.`, 'different_person');
@@ -662,7 +663,7 @@ function groupKids(kids) {
 
 async function applyUnmerge(plan, deps, { id, file, fs }) {
   const { access, connect, confirm, now = new Date() } = deps;
-  if (now - new Date(plan.created) > MAX_AGE_MS) throw new ApplyRefused('this plan is more than 24 hours old. Make a new plan.', 'stale_plan');
+  if (planTooOld(plan, now, MAX_AGE_MS)) throw new ApplyRefused(STALE_TEXT, 'stale_plan');
   const dv = connect(plan.host);
   const me = whoAmI(dv);
   if (me.systemuserid !== plan.identity.systemuserid) throw new ApplyRefused(`this plan was made by ${plan.identity.fullname}; you are signed in as ${me.fullname}. Nothing was written.`, 'different_person');

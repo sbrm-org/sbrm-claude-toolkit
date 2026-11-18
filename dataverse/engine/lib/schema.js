@@ -25,6 +25,7 @@ const { whoAmI, accessFor, PlanRefused } = require('./resolve');
 const { GUID } = require('./contract');
 const { resolveAccess } = require('./access');
 const { ApplyRefused } = require('./apply');
+const { planTooOld, STALE_TEXT } = require('./store');
 const { DataverseError, isTimeout } = require('./cli');
 const { atLeast } = require('./levels');
 const severity = require('./severity');
@@ -2394,7 +2395,7 @@ function rowOf(s) {
 
 async function applySchema(plan, deps, { id, file, fs }) {
   const { access, connect, confirm, now = new Date(), sleep = realSleep, clock = Date.now } = deps;
-  if (now - new Date(plan.created) > MAX_AGE_MS) throw new ApplyRefused('this plan is more than 24 hours old. Make a new plan.', 'stale_plan');
+  if (planTooOld(plan, now, MAX_AGE_MS)) throw new ApplyRefused(STALE_TEXT, 'stale_plan');
   // Every step's labels must say what its request does: the level and the severity below are worked out
   // from the requests, and the plan prints the labels.
   const odd = plan.steps.filter((s) => stepKind(s) !== `${s.object}.${s.action}`);
