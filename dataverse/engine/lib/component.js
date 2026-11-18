@@ -1395,8 +1395,24 @@ function validateComponentJob(raw, { envs }) {
   if (needsHash) {
     if (typeof raw.snapshot_hash !== 'string' || !HASH.test(raw.snapshot_hash)) err('"snapshot_hash" is required: the 64-character hash of the live definition you built from (lib/component.js snapshot)');
   } else if (raw.snapshot_hash !== undefined) err('"snapshot_hash" is for changes to an existing component');
+  // A create names its solution: a bare unique name (an existing SBRM solution), or, from 1.11.41, {uniquename,
+  // friendlyname?}: an existing one is used as before, a missing one WITH a friendly name is made by this change.
+  let solUnique = null;
+  let solFriendly = null;
   if (mode === 'create') {
-    if (typeof raw.solution !== 'string' || !SOLUTION_NAME.test(raw.solution)) err('"solution" is required for a create: the unique name of an unmanaged SBRM solution');
+    const s = raw.solution;
+    if (typeof s === 'string') {
+      if (!SOLUTION_NAME.test(s)) err('"solution" is required for a create: the unique name of an unmanaged SBRM solution');
+      else solUnique = s;
+    } else if (obj(s)) {
+      for (const k of Object.keys(s)) if (!['uniquename', 'friendlyname'].includes(k)) err(`unknown key "solution.${k}"`);
+      if (typeof s.uniquename !== 'string' || !SOLUTION_NAME.test(s.uniquename)) err('"solution.uniquename" must be letters, digits and _ (no spaces), starting with a letter or _');
+      else solUnique = s.uniquename;
+      if (s.friendlyname !== undefined && s.friendlyname !== null) {
+        if (typeof s.friendlyname !== 'string' || !s.friendlyname.trim() || /[\r\n]/.test(s.friendlyname) || s.friendlyname.trim().length > 256) err('"solution.friendlyname" must be one line of text, at most 256 characters');
+        else solFriendly = s.friendlyname.trim();
+      }
+    } else err('"solution" is required for a create: the unique name of an unmanaged SBRM solution, or {uniquename, friendlyname} to make a new one');
   } else if (raw.solution !== undefined) err('"solution" is for a create (an existing component stays in its solutions)');
   if (mode === 'own') {
     if (typeof raw.owner !== 'string' || !GUID.test(raw.owner)) err('"owner" must be the new owner\'s systemuser GUID');
@@ -1508,7 +1524,7 @@ function validateComponentJob(raw, { envs }) {
       contract: CONTRACT, kind: 'component', env: raw.env, mode,
       component: { set, id: mode === 'create' ? null : c.id.toLowerCase(), name: c.name.trim() },
       definition: def, rename, owner: raw.owner ? raw.owner.toLowerCase() : null, snapshot_hash: raw.snapshot_hash || null,
-      solution: raw.solution || null, proven_in: raw.proven_in ? raw.proven_in.trim() : null,
+      solution: solUnique, solution_friendlyname: solFriendly, proven_in: raw.proven_in ? raw.proven_in.trim() : null,
       source: raw.source.trim(), reason: raw.reason.trim(), intent,
     },
   };
@@ -1738,8 +1754,14 @@ function tableFields(dv, logical) {
   }
 }
 
-function readSolution(dv, envInfo, uniquename) {
+function readSolution(dv, envInfo, uniquename, friendlyname = null) {
   const rows = dv.get(filterPath('solutions', 'solutionid,uniquename,friendlyname,ismanaged,_publisherid_value', `uniquename eq '${q(uniquename)}'`)).value || [];
+  // A missing solution named with a friendly name is made by this change (1.11.41), under this environment's SBRM
+  // publisher, as a schema job makes one.
+  if (!rows.length && friendlyname) {
+    if (!envInfo.publisher) return { why: `envs.json names no SBRM publisher for the ${envInfo.name}`, code: 'engine_bug' };
+    return { solution: { id: null, uniquename, name: friendlyname, create: true, publisher: String(envInfo.publisher).toLowerCase() } };
+  }
   if (rows.length !== 1) return { why: `there is no solution "${uniquename}" in the ${envInfo.name}`, code: 'invalid_job' };
   const s = rows[0];
   if (s.ismanaged) return { why: `the solution "${uniquename}" is managed; nothing is ever added to a managed solution (the change rules)`, code: 'not_permitted' };
@@ -1747,8 +1769,18 @@ function readSolution(dv, envInfo, uniquename) {
   if (String(s._publisherid_value || '').toLowerCase() !== String(envInfo.publisher).toLowerCase()) {
     return { why: `the solution "${uniquename}" is not under the SBRM publisher; SBRM's own changes go only in SBRM-publisher solutions`, code: 'not_permitted' };
   }
-  return { solution: { id: String(s.solutionid).toLowerCase(), uniquename: s.uniquename, name: s.friendlyname || s.uniquename } };
+  return { solution: { id: String(s.solutionid).toLowerCase(), uniquename: s.uniquename, name: s.friendlyname || s.uniquename, create: false } };
 }
+
+// The body that makes a NEW solution (1.11.41): schema.js's, word for word, so both paths make the same thing.
+function newSolutionBody(sol, reason) {
+  return {
+    uniquename: sol.uniquename, friendlyname: sol.name, version: '1.0.0.0',
+    description: `Made through the SBRM toolkit's app development path (Shared Dataverse Write). First change: ${reason}`.slice(0, 2000),
+    'publisherid@odata.bind': `/publishers(${sol.publisher})`,
+  };
+}
+const solutionText = (sol) => `'${sol.name}' (${sol.uniquename}) under the SBRM publisher`;
 
 // ---------- levels and severity (pure, from the plan's facts) ----------
 
@@ -1787,6 +1819,7 @@ function severityFor(f, warnRows) {
   const lasting = [];
   const what = `the ${f.noun} '${f.name}'`;
   if (f.mode === 'create') lasting.push(`creates ${what}${f.set === 'workflows' ? ' (Off)' : ''}`);
+  if (f.mode === 'create' && f.new_solution) lasting.push(`creates the solution ${solutionText(f.new_solution)}`);
   if (f.mode === 'delete') irreversible.push(`deletes ${what}${f.set === 'workflows' ? ' and its run history' : ''} (its full definition stays in the Write Log)`);
   if (f.set === 'workflows' && f.mode === 'update') {
     const live = ['trigger', 'concurrency', 'actions', 'connections'].filter((s) => f.sections.includes(s));
@@ -1937,7 +1970,7 @@ function title(plan) {
   const c = plan.component;
   const on = c.table ? ` (${c.table})` : '';
   const what = `the ${c.noun} '${c.name}'${on}`;
-  if (plan.mode === 'create') return `Create ${what} in the ${plan.app}${c.noun === 'flow' ? ', Off,' : ''} in solution ${plan.solution.name}`;
+  if (plan.mode === 'create') return `Create ${what} in the ${plan.app}${c.noun === 'flow' ? ', Off,' : ''} in solution ${plan.solution.name}${plan.solution.create ? ' (a new solution, made by this change)' : ''}`;
   if (plan.mode === 'update') return `Change ${what} in the ${plan.app}`;
   if (plan.mode === 'on') return `Turn on ${what} in the ${plan.app}`;
   if (plan.mode === 'off') return `Turn off ${what} in the ${plan.app}`;
@@ -1983,7 +2016,7 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
   let carried = null;
   let rename = null;
   if (job.mode === 'create') {
-    const s = readSolution(dv, envInfo, job.solution);
+    const s = readSolution(dv, envInfo, job.solution, job.solution_friendlyname || null);
     if (s.why) throw new PlanRefused([s.why], s.code);
     solution = s.solution;
     table = spec.table ? job.definition[spec.table] : null;
@@ -2091,6 +2124,7 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
     mode: job.mode, set, name: live ? live.name : job.component.name, table, id: live ? live.id : null, live, written: after, carried, extra: createExtra,
     me: identity.systemuserid, rename,
   });
+  facts.new_solution = solution && solution.create ? solution : null; // 1.11.41
   if (facts.target_drafts.length) throw new PlanRefused([draftRefusal(live.name)], 'invalid_job');
 
   if (flow) {
@@ -2199,7 +2233,7 @@ function componentDetail(plan, { id } = {}) {
   if (id) out.push(`Plan: ${id}`);
   if (plan.reverts_plan_id) out.push(`Undoes plan: ${plan.reverts_plan_id}`);
   out.push(`Component: ${c.set} ${c.id || '(new)'}${c.table ? `, table ${c.table}` : ''}`);
-  if (plan.solution) out.push(`Solution: ${plan.solution.name} (${plan.solution.uniquename})`);
+  if (plan.solution) out.push(`Solution: ${plan.solution.name} (${plan.solution.uniquename})${plan.solution.create ? ', created by this change' : ''}`);
   out.push(`Access needed: ${plan.need}${plan.need_why.length ? ` (${plan.need_why.join('; ')})` : ''}; ${plan.identity.fullname} has ${plan.access}`);
   if (plan.diff.sections.length) out.push(`Changes: ${plan.diff.sections.join(', ')}`);
   for (const p of (plan.facts && plan.facts.power) || []) out.push(`  admin because ${p}`);
@@ -2247,6 +2281,15 @@ function planShapeProblems(plan) {
   }
   for (const k of Object.keys(plan.after_definition || {})) if (!fields.includes(k)) bad.push(`the definition key "${k}"`);
   if (plan.mode === 'create') for (const k of Object.keys(plan.create_extra || {})) if (!(CREATE_EXTRAS[set] || []).includes(k)) bad.push(`the create field "${k}"`);
+  // A solution the plan says to MAKE (1.11.41): only on a create, a valid unique name, a one-line friendly name, a
+  // publisher GUID (the environment's SBRM one, read at plan time and signed with the plan).
+  const sol = plan.solution;
+  if (sol && sol.create) {
+    if (plan.mode !== 'create') bad.push('a new solution on something that is not a create');
+    if (typeof sol.uniquename !== 'string' || !SOLUTION_NAME.test(sol.uniquename)) bad.push('a new solution with a bad unique name');
+    if (typeof sol.name !== 'string' || !sol.name.trim() || /[\r\n]/.test(sol.name) || sol.name.length > 256) bad.push('a new solution with a bad friendly name');
+    if (typeof sol.publisher !== 'string' || !GUID.test(sol.publisher)) bad.push('a new solution with no publisher GUID');
+  }
   // A new web resource (1.11.40): the same rules the job file was held to, on what the plan file now says.
   if (plan.mode === 'create' && set === 'webresourceset') {
     const x = plan.create_extra || {};
@@ -2518,7 +2561,10 @@ async function applyComponent(plan, deps, { id, file, fs }) {
   let etag = null;
   if (plan.mode === 'create') {
     const sol = dv.get(filterPath('solutions', 'solutionid,ismanaged,_publisherid_value', `uniquename eq '${q(plan.solution.uniquename)}'`)).value || [];
-    if (sol.length !== 1 || sol[0].ismanaged || String(sol[0].solutionid).toLowerCase() !== plan.solution.id) throw new ApplyRefused(`the solution ${plan.solution.uniquename} changed since the plan (gone, or now managed). Make a new plan.`, 'snapshot_moved');
+    if (plan.solution.create) {
+      // A new solution (1.11.41): it must still not exist; one made since the plan is someone else's.
+      if (sol.length) throw new ApplyRefused(`the solution ${plan.solution.uniquename} now exists (made since the plan). Nothing was written; make a new plan.`, 'snapshot_moved');
+    } else if (sol.length !== 1 || sol[0].ismanaged || String(sol[0].solutionid).toLowerCase() !== plan.solution.id) throw new ApplyRefused(`the solution ${plan.solution.uniquename} changed since the plan (gone, or now managed). Make a new plan.`, 'snapshot_moved');
     if (existingByName(dv, set, plan.component.name, plan.component.table).length) throw new ApplyRefused(`a ${plan.component.noun} named '${plan.component.name}' now exists in the ${plan.app}. Nothing was written.`, 'snapshot_moved');
   } else {
     live = readComponent(dv, set, plan.component.id);
@@ -2564,6 +2610,7 @@ async function applyComponent(plan, deps, { id, file, fs }) {
     id: live ? live.id : null, live, written, unproven: plan.facts && plan.facts.unproven, carried: plan.flow ? plan.flow.concurrency_carried : null, extra: plan.create_extra || {},
     me: me.systemuserid, rename: renameNow,
   });
+  d.facts.new_solution = plan.mode === 'create' && plan.solution && plan.solution.create ? plan.solution : null; // 1.11.41
   if (d.facts.target_drafts.length) throw new ApplyRefused(`${draftRefusal(live.name)}. Nothing was written.`, 'snapshot_moved');
   if (set === 'systemforms' && written && !tableless(set, d.facts.table)) {
     const have = tableFields(dv, d.facts.table);
@@ -2610,6 +2657,17 @@ async function applyComponent(plan, deps, { id, file, fs }) {
   if (plan.mode === 'create' && existingByName(dv, set, plan.component.name, plan.component.table).length) {
     throw new ApplyRefused(`a ${plan.component.noun} named '${plan.component.name}' was made while the approval was waiting. Nothing was written.`, 'snapshot_moved');
   }
+  if (plan.mode === 'create') {
+    const solNow = dv.get(filterPath('solutions', 'solutionid,ismanaged', `uniquename eq '${q(plan.solution.uniquename)}'`)).value || [];
+    if (plan.solution.create && solNow.length) {
+      throw new ApplyRefused(`the solution ${plan.solution.uniquename} was made while the approval was waiting. Nothing was written; make a new plan.`, 'snapshot_moved');
+    }
+    // An existing solution is still the one the plan read (1.11.41 review F2; pre-existing for every create): the same
+    // id, still unmanaged. One swapped for another of the same name while the prompt was open is refused.
+    if (!plan.solution.create && (solNow.length !== 1 || solNow[0].ismanaged || String(solNow[0].solutionid).toLowerCase() !== plan.solution.id)) {
+      throw new ApplyRefused(`the solution ${plan.solution.uniquename} changed while the approval was waiting (gone, replaced or now managed). Nothing was written; make a new plan.`, 'snapshot_moved');
+    }
+  }
   // A rename's clash, again (1.11.30 review F2): another component may have taken the name while the prompt was open.
   if (plan.rename) {
     const clash = nameClash(set, plan.rename.to, live, nameTaken(dv, set, plan.rename.to, live));
@@ -2626,10 +2684,30 @@ async function applyComponent(plan, deps, { id, file, fs }) {
   const flowUpdate = set === 'workflows' && plan.mode === 'update';
   const subBefore = flowUpdate ? subscriptionStamp(dv, rid) : null;
   let timedOut = null; // the outcome of a timed-out write that never showed up (1.11.30)
+  let solutionSent = false; // a new solution's POST went out (1.11.41 review F3)
   let reconciled = false; // a timed-out write that was found by re-reading (1.11.30)
   try {
     try {
       if (plan.mode === 'create') {
+        if (plan.solution.create) {
+          // The new solution first (1.11.41), then read back: it must be there, unmanaged, under the SBRM publisher
+          // the plan named, before anything is put in it.
+          // A POST that timed out on this computer is judged by the read below, never sent twice.
+          const solBody = newSolutionBody(plan.solution, plan.reason);
+          solutionSent = true;
+          try { dv.metadata('POST', 'solutions', solBody, []); } catch (es) { if (!isTimeout(es)) throw es; }
+          const made = dv.get(filterPath('solutions', 'solutionid,ismanaged,_publisherid_value,friendlyname,description', `uniquename eq '${q(plan.solution.uniquename)}'`), { strong: true }).value || [];
+          if (made.length !== 1 || made[0].ismanaged || String(made[0]._publisherid_value || '').toLowerCase() !== plan.solution.publisher) {
+            throw new Error(`the solution ${plan.solution.uniquename} did not read back as an unmanaged SBRM solution after it was made; the ${plan.component.noun} was not created. Look at the solution in the maker portal before planning again`);
+          }
+          // Ours, not one someone else made while a timed-out POST was being judged (1.11.41 review F1): the friendly
+          // name and description this POST sent.
+          if (made[0].friendlyname !== solBody.friendlyname || (made[0].description || '') !== solBody.description) {
+            throw new Error(`the solution ${plan.solution.uniquename} did not read back as the one this change made (another name or description: someone else's); the ${plan.component.noun} was not created`);
+          }
+          row.new_solution = plan.solution.uniquename;
+          row.notes.push(`created the solution ${solutionText(plan.solution)}`);
+        }
         const res = dv.create(set, body, { solution: plan.solution.uniquename });
         rid = String(res[SETS[set].id] || '').toLowerCase();
         if (!rid) throw new Error('the new component id did not come back');
@@ -2699,6 +2777,8 @@ async function applyComponent(plan, deps, { id, file, fs }) {
     // The write went through and only what came after it failed (1.11.30 review F5): never "failed", as for records.
     else if (wrote) row.outcome = `read-back failed: the write went through but '${view.component.name}' could not be read back: ${e.message}. Read it before doing anything else`;
     else row.outcome = `failed: ${e.message}`;
+    if (!wrote && row.new_solution) row.notes.push(`the solution '${plan.solution.name}' (${plan.solution.uniquename}) was created and stays (empty); plan again into it, or remove it in the maker portal`);
+    else if (!wrote && solutionSent) row.notes.push(`the solution '${plan.solution.name}' (${plan.solution.uniquename}) was sent and may exist; look for it in the maker portal before planning again`);
     try { row.after = wrote ? stateOf(readComponent(dv, set, rid)) : stateOf(live); } catch { row.after = null; }
   }
   fs.rmSync(file, { force: true });
