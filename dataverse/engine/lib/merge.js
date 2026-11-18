@@ -536,7 +536,8 @@ async function applyMerge(plan, deps, { id, file, fs }) {
 //   3. the fields the merge filled on the kept record go back to their before values, if they still hold
 //      what the merge wrote (else left out: someone edited them since).
 // Closed-year gifts may be moved back, the same exception as the merge (attribution, not finances;
-// extended to the undo by inference, 10/7, flagged to Dylan). Same grant as merging.
+// extended to the undo by inference 10/7, RULED by Dylan 11/18/26: an undo carries the same exception, as it only
+// reverses the attribution the merge changed; 1.11.39 review F2). Same grant as merging.
 
 function statusFor(dv, logical, state) {
   const r = dv.get(`EntityDefinitions(LogicalName='${logical}')/Attributes(LogicalName='statuscode')`

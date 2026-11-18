@@ -497,7 +497,9 @@ function cmdApply(run, deps, id) {
 function applyAny(run, deps, id) {
   const { access } = config();
   run.planId = id;
-  const { record } = loadPlan(id);
+  // ONE read: the record applied is the record whose signature is checked (1.11.39 review F1; it read the file again
+  // for `intact`, so a change between the reads was applied unsigned).
+  const { record, intact, file } = loadPlan(id);
   run.env = record.env;
   run.person = record.identity; // provisional: apply refuses a different signed-in person
   refuseIfExposed([storeExposure()], 'written');
@@ -508,13 +510,11 @@ function applyAny(run, deps, id) {
     throw new ApplyRefused(`this plan's app (${record.app || '?'}) and server (${record.host || '?'}) do not match the toolkit's list for "${record.env}". Make a new plan.`, 'plan_tampered');
   }
   if (record.kind === 'merge' || record.kind === 'unmerge') {
-    const { intact, file } = loadPlan(id);
     if (!intact) throw new ApplyRefused('this plan file was changed after it was made. Make a new plan.', 'plan_tampered');
     return applyMergeCmd(run, deps, id, record, file);
   }
   const app = appKind(record.kind);
   if (app) {
-    const { intact, file } = loadPlan(id);
     if (!intact) throw new ApplyRefused('this plan file was changed after it was made. Make a new plan.', 'plan_tampered');
     return applyAppCmd(run, deps, id, record, file, app);
   }
