@@ -75,13 +75,14 @@ async function applied(plan, dv, over = {}) {
 
 // ---------- validation ----------
 
-test('web resource job: update only, content must be canonical base64 of UTF-8 text, sections are content and description', () => {
+test('web resource job: content must be canonical base64 of UTF-8 text, sections are content and description; never deleted, switched or handed over', () => {
   const dv = dvAs();
   valid(wrJob(dv, { content: b64(NEW_SCRIPT) }));
   valid(wrJob(dv, { description: 'Receipt by method (11/6).', changed: ['description'] }));
   const errs = (raw) => C.validateComponentJob(raw, { envs: ENVS_NODEV }).errors.join('\n');
-  for (const mode of ['create', 'delete', 'on', 'off', 'own']) {
-    assert.match(errs({ ...wrJob(dv, { content: b64(NEW_SCRIPT) }), mode, intent: { verb: mode, component: 'web resource', name: NAME } }), /web resource/i, mode);
+  // mode "create" is its own suite since 1.11.40 (component_webresource_create.test.js)
+  for (const mode of ['delete', 'on', 'off', 'own']) {
+    assert.match(errs({ ...wrJob(dv, { content: b64(NEW_SCRIPT) }), mode, intent: { verb: mode, component: 'web resource', name: NAME } }), /a web resource is created or changed here .*removed in the maker portal/, mode);
   }
   assert.match(errs(wrJob(dv, { content: 'not base64 at all!' })), /definition\.content.*base64/);
   assert.match(errs(wrJob(dv, { content: `${b64(NEW_SCRIPT)}\n` })), /definition\.content.*base64/, 'whitespace or a line break is not the canonical form');

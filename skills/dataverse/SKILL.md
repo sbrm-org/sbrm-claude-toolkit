@@ -154,12 +154,14 @@ on its own. Never ask the person to run or paste a command.
   mode "on" (a trigger change on a flow that is On half-lands, so the engine refuses it).
   To RENAME a flow, view or form (a dashboard is a form), put the new name in `definition.name` (JOBS.md); the
   plan shows old -> new and refuses a name already in use. Say both names to the person.
-- **Form scripts and other text web resources** (`kind: "component"`, set `webresourceset`, mode `update`
-  only): `snapshot` also saves the script itself as a file to edit; the job's `definition.content` is the edited
+- **Form scripts, pages and other text web resources** (`kind: "component"`, set `webresourceset`, mode `update`
+  or `create`): `snapshot` also saves the script itself as a file to edit; the job's `definition.content` is the edited
   file's bytes as base64. Changing the code is an admin's (it runs for everyone who opens a form that loads it);
-  the plan names those forms and shows the changed lines: read both to the person. A new or deleted web resource,
-  or an image, is made in the maker portal. When a form change depends on new script code, publish the script
-  first, then the form (two jobs, in that order).
+  the plan names those forms and shows the changed lines: read both to the person. A NEW one (a page, a script; mode
+  `create`, admin, JOBS.md) goes in a named SBRM solution with its type and name; the plan shows its size and
+  fingerprint, and undo cannot remove it: say so. It shows nowhere until a sitemap entry or a form names it (a
+  second job). A web resource is removed, and an image is made, in the maker portal. When a form change depends on
+  new script code, publish the script first, then the form (two jobs, in that order).
 - **Settings** (`kind: "setting"`, admin): the value of an environment variable, such as a Yes/No switch
   a flow checks before it acts. Name it by its schema name and give the value as the setting stores it (a
   Yes/No setting takes "yes" or "no"). The plan names the flows that read it: tell the person which are on,
