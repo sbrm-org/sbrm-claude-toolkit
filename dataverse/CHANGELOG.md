@@ -3,6 +3,25 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.40** (2026-11-18, a component job can CREATE a text web resource)
+  Dylan 11/18/26: "let's put the feature in the toolkit now and release it" (first use: the recovery Bed Board page).
+  `webresourceset` takes mode `create`: a new HTML, CSS, JavaScript or XML web resource in a named unmanaged SBRM
+  solution, with `definition.content` (canonical base64 of UTF-8 text), `webresourcetype` (1-4, required) and
+  optional `displayname` / `description`. Always admin ("it adds code that runs in the app"). The name starts `sbrm_`,
+  uses only letters, numbers, periods, underscores and single slashes, and ends in its type's extension. The plan reads
+  only, shows line count, bytes and SHA-256 (the detail shows the first 200 lines), refuses a name that exists
+  published OR only in the unpublished layer, and warns "Can't be fully undone" when a form already names it (it runs
+  at once). Apply re-checks the solution and the name, POSTs into the solution, publishes that web resource only, and
+  reads back content, type and display name; a timeout is found by name, never re-sent. `planShapeProblems` holds a
+  plan file to the same name, type, extension, display-name and content rules. Undo cannot remove it (the maker
+  portal does). Delete, on, off and own stay refused for web resources. Tests: `component_webresource_create.test.js`
+  18 (all red first); the fake's `readBackDrops` now applies to a create. JOBS.md + the dataverse skill updated.
+  C1 review `reviews/2026-11-18_wr_create/` (Codex Sol): F2 fixed for EVERY create kind (a name taken while the
+  approval waited is refused before the POST; pre-existing for views, forms and flows); F3 fixed (after a timeout, a
+  web resource found by name is taken as this create only if its latest layer holds the content and type sent, so
+  another writer's code is never published); F5 fixed (a new web resource's NAME is read back). F1 and F4 refuted (an
+  edited plan file is refused by its signature before apply). 5 more tests (23); mutation
+  `mutate_2026_11_18_wrcreate.js` 20 of 23 killed, the 3 survivors each drop a check a second one already covers.
 - **1.11.39** (2026-11-18, weekly pool: every apply path refuses an undated plan)
   The 24-hour check in every apply path read a plan whose `created` is missing, empty or not a date as FRESH:
   `now - new Date(undefined)` is NaN and NaN > the limit is false. Found in the 1.11.36 duperule review (F8) and fixed

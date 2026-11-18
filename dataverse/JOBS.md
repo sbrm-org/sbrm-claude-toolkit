@@ -117,7 +117,7 @@ It prints the `snapshot_hash` and saves the current definition to `~/.sbrm-datav
 
 - `mode`: `update`, `create` (with `solution` = an unmanaged SBRM solution's unique name; a new view needs
   `returnedtypecode`, `fetchxml` and `layoutxml`, a new form `objecttypecode` and `formxml`, a new flow
-  `clientdata`), and for flows only `on`, `off` and `own` (with `owner` = the new owner's systemuser id;
+  `clientdata`, a new web resource `content` and `webresourcetype`, see below), and for flows only `on`, `off` and `own` (with `owner` = the new owner's systemuser id;
   admin, since a flow acts as its owner); `delete` is admin, and never a flow that is On.
   Every mode except `create` needs the `snapshot_hash` from `snapshot`.
 - `definition` holds only what changes: flows `clientdata` (+ `description`), views `fetchxml` /
@@ -149,10 +149,10 @@ It prints the `snapshot_hash` and saves the current definition to `~/.sbrm-datav
   swapping a connection, or changing the trigger of a flow that is On, is admin. Turning a flow On fails
   unless the person owns its connections; the engine says who must do it.
 
-### A web resource (a form script)
+### A web resource (a form script or a page)
 
-`mode` is `update` only (a new or deleted web resource, and any image, is made in the maker portal), and only a
-text one: JavaScript, HTML, CSS or XML. `snapshot <env> webresourceset <id>` saves the definition AND the decoded
+`mode` is `update` or, from 1.11.40, `create` (below); a web resource is removed, and any image is made, in the maker
+portal. Only a text one: JavaScript, HTML, CSS or XML. `snapshot <env> webresourceset <id>` saves the definition AND the decoded
 file beside it (`snapshot-<env>-webresourceset-<id>.content.js`), exactly as stored, line endings included. Edit
 that file; `definition.content` is its bytes as canonical base64 (one line, no spaces), e.g.
 `fs.readFileSync(file).toString('base64')` in node. `component.name` is the web resource's name
@@ -174,6 +174,32 @@ that file; `definition.content` is its bytes as canonical base64 (one line, no s
   publishes that web resource only, and reads it back. Revert puts the logged content back.
 - A form that calls a NEW function in the script: publish the script first, then change the form (two jobs, in
   that order), or the form calls a function that does not exist yet.
+
+**A NEW web resource** (`mode: "create"`, admin, from 1.11.40): a new page, script, stylesheet or XML file, in a named
+unmanaged SBRM solution. No `id` and no `snapshot_hash`.
+
+```json
+{ "contract": "sbrm-dv-job/1", "kind": "component", "env": "recovery",
+  "component": { "set": "webresourceset", "name": "sbrm_/BedBoard/BedBoard.html" },
+  "mode": "create", "solution": "SBRMAdHocChanges",
+  "definition": { "content": "<the file, base64>", "webresourcetype": 1, "displayname": "Bed Board" },
+  "source": "claude-session", "reason": "A page that shows every bed and who is in it.",
+  "intent": { "verb": "create", "component": "web resource", "name": "sbrm_/BedBoard/BedBoard.html" } }
+```
+
+- `component.name` is the new web resource's name, which is its address in the app (`WebResources/<name>`): it starts
+  `sbrm_`, uses only letters, numbers, periods, underscores and single forward slashes, and ends in the extension of
+  its type. `webresourcetype` (required): 1 HTML (`.html`, `.htm`), 2 CSS (`.css`), 3 JavaScript (`.js`), 4 XML
+  (`.xml`). `displayname` (optional): one line, at most 200 characters. `description` is optional too.
+- Always admin: it is new code in the app. The plan shows the file's line count, size and SHA-256 (compare it with the
+  file on disk), the first 200 lines in `show`, **Loaded by** (normally "no form names it"; a form that ALREADY names
+  it runs the new code the moment it is published, and the plan says so), and refuses a name that already exists,
+  published or only saved in the maker portal.
+- Apply POSTs it into the solution, publishes that web resource only, and reads back the content, type and display
+  name. Undo cannot remove it (the maker portal does); change it afterwards with `snapshot` and `mode: "update"`.
+- A new page shows nowhere until something names it: a sitemap entry (`<SubArea ... Url="$webresource:<name>" />`, a
+  separate sitemap job, admin) or a form. Create the web resource first, then the sitemap or form (two jobs, in that
+  order).
 
 ## App settings: `kind: "setting"` (admin)
 

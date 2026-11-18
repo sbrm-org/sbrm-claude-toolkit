@@ -71,9 +71,11 @@ const SETS = {
     sections: ['areas', 'groups', 'subareas', 'other'],
   },
   // A web resource (task #6hwP6PqfgwVp7gWr, Dylan 11/5/26: "add script support to the toolkit"): the CONTENT of an
-  // existing text web resource (a form's JavaScript, HTML, CSS, XML), held by Dataverse as base64. Only `update`: a
-  // new or deleted web resource is the maker portal's. Read live 11/6/26 in the Sober Living app (sbrm_/Transaction/
-  // Form.js): canonical base64 of the file's bytes, CRLF kept, and RetrieveUnpublishedMultiple answers for this set.
+  // existing text web resource (a form's JavaScript, HTML, CSS, XML), held by Dataverse as base64. Read live 11/6/26 in
+  // the Sober Living app (sbrm_/Transaction/Form.js): canonical base64 of the file's bytes, CRLF kept, and
+  // RetrieveUnpublishedMultiple answers for this set. `create` since 1.11.40 (Dylan 11/18/26: "let's put the feature in
+  // the toolkit now"): a NEW text web resource in a named unmanaged SBRM solution, admin, its type and display name as
+  // create fields (CREATE_EXTRAS below). A web resource is still never deleted here: that is the maker portal's.
   webresourceset: {
     noun: 'web resource', id: 'webresourceid', name: 'name', fields: ['content', 'description'], xml: {}, b64: 'content',
     // Publishing a web resource publishes its whole unpublished layer, so a draft of the display name counts too (read
@@ -88,6 +90,20 @@ const FLOW_ONLY = new Set(['on', 'off', 'own']);
 // webresourcetype values whose content is text the engine can show and compare (1 HTML, 2 CSS, 3 JavaScript, 4 XML).
 // Images, Silverlight, XSL, ICO, SVG and RESX are changed in the maker portal.
 const TEXT_WEB_RESOURCE = { 1: 'HTML', 2: 'CSS', 3: 'JavaScript', 4: 'XML' };
+// A NEW web resource (1.11.40). Its name is its address in the app (WebResources/<name>), so it carries SBRM's publisher
+// prefix and only the characters Dataverse allows in one (letters, numbers, periods, underscores, single forward
+// slashes), and it ends in the extension of its type, so a page is never stored as a script or the reverse.
+const WR_NEW_NAME = /^sbrm_[A-Za-z0-9_.]*(?:\/[A-Za-z0-9_.]+)*$/;
+const wrNameOk = (name) => typeof name === 'string' && WR_NEW_NAME.test(name) && !name.includes('..') && name.length <= 200;
+const wrExtOk = (name, type) => {
+  const ext = (/\.([A-Za-z0-9_]+)$/.exec(typeof name === 'string' ? name : '') || [])[1];
+  return Boolean(ext && WR_EXTENSIONS[type] && WR_EXTENSIONS[type].includes(ext.toLowerCase()));
+};
+const WR_EXTENSIONS = { 1: ['html', 'htm'], 2: ['css'], 3: ['js'], 4: ['xml'] };
+const WR_DISPLAY_MAX = 200;
+// The fields a create may carry beyond the definition, by set. validateComponentJob lets a job name them; apply
+// refuses a plan file that names any other (planShapeProblems).
+const CREATE_EXTRAS = { savedqueries: ['returnedtypecode', 'querytype'], systemforms: ['objecttypecode', 'type'], webresourceset: ['webresourcetype', 'displayname'] };
 // Trigger messages (the earlier Python component tool MESSAGES).
 const MESSAGES = { 1: 'create', 2: 'delete', 3: 'update', 4: 'create or update', 5: 'create or delete', 6: 'update or delete', 7: 'any change' };
 // Step types that must carry a note when added (the app developer, 9/25/26; the earlier Python component tool check_notes).
@@ -1181,6 +1197,8 @@ function createBody(set, name, def, extra = {}) {
   for (const f of SETS[set].fields) if (!blank(def[f])) base[f] = def[f];
   if (set === 'workflows') return { ...base, category: 5, type: 1, primaryentity: 'none' }; // new_flow_job's body, created Off (9/29)
   if (set === 'savedqueries') return { querytype: 0, ...extra, ...base };
+  // A new web resource (1.11.40): its type and display name, nothing the engine adds.
+  if (set === 'webresourceset') return { ...extra, ...base };
   return { type: 2, ...extra, ...base };
 }
 
@@ -1188,7 +1206,21 @@ const EXTRA_LABELS = {
   savedqueries: { querytype: { 0: 'public view', 1: 'advanced find', 2: 'associated view', 4: 'quick find', 64: 'lookup view' } },
   systemforms: { type: { 2: 'main form', 5: 'mobile form', 6: 'quick view form', 7: 'quick create form', 11: 'card form' } },
   workflows: { category: { 5: 'cloud flow' }, type: { 1: 'definition' } },
+  webresourceset: { webresourcetype: TEXT_WEB_RESOURCE },
 };
+
+// What a NEW web resource holds (1.11.40): how big it is and the SHA-256 of its bytes, so the person can tie what
+// they approve to the file on disk; the detail carries the lines themselves (this is the code being approved),
+// whole, the first WR_DETAIL_MAX of them.
+function newWebResource(def) {
+  const t = b64Text(def.content);
+  const sha = crypto.createHash('sha256').update(t.bytes).digest('hex');
+  if (t.text === null) return { line: `Content: ${t.bytes.length} bytes, sha256 ${sha} (not text)`, detail: [] };
+  const tl = textLines(t.text);
+  const detail = tl.slice(0, WR_DETAIL_MAX).map((l) => `  content + ${l}`);
+  if (tl.length > WR_DETAIL_MAX) detail.push(`  content ... ${tl.length - WR_DETAIL_MAX} more line(s)`);
+  return { line: `Content: ${tl.length} lines, ${t.bytes.length} bytes, sha256 ${sha}`, detail };
+}
 
 function extraLine(set, body) {
   const shown = new Set(['name', ...SETS[set].fields]);
@@ -1221,6 +1253,8 @@ function createLines(set, def, body = null) {
     out.push(`Tabs: ${p.tabs.length}${p.tabs.length ? ` (${names(p.tabs.map((t) => t.label || t.name))})` : ''}`);
     out.push(`Sections: ${p.sections.length}`);
     out.push(`Fields: ${p.fields.length}${p.fields.length ? ` (${names(p.fields)})` : ''}`);
+  } else if (set === 'webresourceset') {
+    out.push(newWebResource(def).line);
   }
   if (def.description) out.push(`Description: ${clipLine(def.description, 100)}`);
   const extra = body ? extraLine(set, body) : null;
@@ -1349,9 +1383,12 @@ function validateComponentJob(raw, { envs }) {
       if (c.id !== undefined && c.id !== null) err('"component.id" is for changing an existing component; a create gets its id from Dataverse');
     } else if (typeof c.id !== 'string' || !GUID.test(c.id)) err('"component.id" must be the component\'s GUID');
   }
-  if (set === 'webresourceset' && MODES.includes(mode) && mode !== 'update') {
-    err(`a web resource is only changed here (mode "update": its content or description); a new or deleted web resource is made in the maker portal, not mode "${mode}"`);
+  if (set === 'webresourceset' && MODES.includes(mode) && mode !== 'update' && mode !== 'create') {
+    err(`a web resource is created or changed here (modes "create" and "update"); one is removed in the maker portal, not mode "${mode}"`);
   } else if (set && FLOW_ONLY.has(mode) && set !== 'workflows') err(`mode "${mode}" is for flows only`);
+  if (set === 'webresourceset' && mode === 'create' && typeof c.name === 'string' && !wrNameOk(c.name.trim())) {
+    err('"component.name" of a new web resource must start with "sbrm_" and use only letters, numbers, periods, underscores and single forward slashes (for example sbrm_/BedBoard/BedBoard.html)');
+  }
   if (set === 'sitemaps' && mode === 'create') err('a new sitemap belongs to a new app, which is made in the maker portal');
 
   const needsHash = MODES.includes(mode) && mode !== 'create';
@@ -1378,8 +1415,7 @@ function validateComponentJob(raw, { envs }) {
     if (!obj(d) || !Object.keys(d).length) err('"definition" is required for a create or an update');
     else if (set) {
       const spec = SETS[set];
-      const extra = mode === 'create' ? { savedqueries: ['returnedtypecode', 'querytype'], systemforms: ['objecttypecode', 'type'] }[set] || []
-        : spec.nameMax ? ['name'] : [];
+      const extra = mode === 'create' ? CREATE_EXTRAS[set] || [] : spec.nameMax ? ['name'] : [];
       const allowed = [...spec.fields, ...extra];
       for (const k of Object.keys(d)) if (!allowed.includes(k)) err(`unknown key "definition.${k}" for a ${spec.noun} ${mode} (allowed: ${allowed.join(', ')})`);
       def = {};
@@ -1421,9 +1457,23 @@ function validateComponentJob(raw, { envs }) {
         } else if (f === 'returnedtypecode' || f === 'objecttypecode') {
           if (typeof v !== 'string' || !IDENT.test(v)) err(`"definition.${f}" must be the table's logical name`);
           else def[f] = v;
+        } else if (f === 'webresourcetype') {
+          // A new web resource (1.11.40): a text type only, and the name ends in that type's extension.
+          if (!Number.isInteger(v) || !has(TEXT_WEB_RESOURCE, v)) {
+            err(`"definition.webresourcetype" must be one of ${Object.entries(TEXT_WEB_RESOURCE).map(([k, n]) => `${k} (${n})`).join(', ')}; an image or any other kind is made in the maker portal`);
+          } else {
+            def[f] = v;
+            if (!wrExtOk(obj(c) && typeof c.name === 'string' ? c.name.trim() : '', v)) {
+              err(`the name of a new ${TEXT_WEB_RESOURCE[v]} web resource must end in ${WR_EXTENSIONS[v].map((x) => `.${x}`).join(' or ')}`);
+            }
+          }
+        } else if (f === 'displayname') {
+          if (typeof v !== 'string' || !v.trim() || /[\r\n]/.test(v) || v.trim().length > WR_DISPLAY_MAX) err(`"definition.displayname" must be one line of text, at most ${WR_DISPLAY_MAX} characters`);
+          else def[f] = v.trim();
         } else if (!Number.isInteger(v) || v < 0) err(`"definition.${f}" must be a whole number`);
         else def[f] = v;
       }
+      if (mode === 'create' && set === 'webresourceset' && !has(d, 'webresourcetype')) err('"definition.webresourcetype" is required for a new web resource: 1 (HTML), 2 (CSS), 3 (JavaScript) or 4 (XML)');
       if (mode === 'create' && set === 'savedqueries' && !has(d, 'returnedtypecode')) err('"definition.returnedtypecode" is required for a new view: the table it lists');
       if (mode === 'create' && set === 'systemforms' && !has(d, 'objecttypecode')) err('"definition.objecttypecode" is required for a new form: the table it shows');
     }
@@ -1503,6 +1553,7 @@ function readComponent(dv, set, id) {
     table: spec.table ? row[spec.table] || null : null,
     type: row.type === undefined ? null : row.type,
     restype: row.webresourcetype === undefined ? null : row.webresourcetype,
+    display: row.displayname === undefined ? null : row.displayname,
     etag: row['@odata.etag'] || null,
   };
 }
@@ -1665,6 +1716,14 @@ function nameClash(set, name, live, taken) {
 
 function existingByName(dv, set, name, table) {
   const spec = SETS[set];
+  if (set === 'webresourceset') {
+    // A web resource's name is its address, one per environment, on no table (1.11.40). One saved in the maker portal
+    // and never published exists only in the unpublished layer, which a plain read does not show, so both are read.
+    const f = `name eq '${q(name)}'`;
+    const published = dv.get(filterPath(set, `${spec.id},name`, f)).value || [];
+    if (published.length) return published;
+    return dv.get(`${set}/Microsoft.Dynamics.CRM.RetrieveUnpublishedMultiple()?$select=${spec.id},name&$filter=${encodeURIComponent(f)}`).value || [];
+  }
   const f = set === 'workflows' ? `name eq '${q(name)}' and category eq 5`
     : `name eq '${q(name)}' and ${spec.table} eq '${q(table)}'`;
   return dv.get(filterPath(set, `${spec.id},name`, f)).value || [];
@@ -1716,6 +1775,8 @@ function needFor(f) {
   // A web resource's content is code that runs in the app (JOBS.md: "a script or web content in a view or form" is
   // admin). Its description alone is not.
   if (f.set === 'webresourceset' && (f.sections || []).includes('content')) why.push('it changes code that runs in the app (a web resource\'s content)');
+  // A NEW web resource is new code in the app, whatever names it later (1.11.40).
+  if (f.set === 'webresourceset' && f.mode === 'create') why.push('it adds code that runs in the app (a new web resource)');
   // Round 3: what a step, script, control or page can REACH (lib: stepPower, markupPower).
   for (const p of f.power || []) why.push(p);
   return { level: why.length ? 'admin' : 'develop', why };
@@ -1737,6 +1798,11 @@ function severityFor(f, warnRows) {
   if (f.set === 'webresourceset' && (f.sections || []).includes('content')) {
     irreversible.push(`publishes new code in ${what}, which runs at once for everyone who opens ${f.loaded_by && f.loaded_by.length ? names(f.loaded_by) : 'anything that loads it'}; whatever it does before a revert stays done`);
   }
+  // A NEW web resource runs nowhere until a form or a page names it. One a form ALREADY names (a script that was
+  // missing) runs the moment it is published (1.11.40).
+  if (f.set === 'webresourceset' && f.mode === 'create' && f.loaded_by && f.loaded_by.length) {
+    irreversible.push(`publishes new code in ${what}, which runs at once for everyone who opens ${names(f.loaded_by)}; whatever it does stays done`);
+  }
   if ((f.other_drafts || []).length) irreversible.push(`publishing ${f.table} also publishes unpublished edits to: ${names(f.other_drafts)}`);
   return severity.assess({ count: 1, noun: 'components', lasting, irreversible, unproven: f.unproven || null }, { warnRows });
 }
@@ -1751,7 +1817,7 @@ function describe(dv, { mode, set, name, table, id, live, written, unproven, car
   const spec = SETS[set];
   let diff = { sections: [], lines: [], detail: [] };
   if (mode === 'update') diff = diffComponent(set, live.definition, written);
-  else if (mode === 'create') diff = { sections: [], lines: createLines(set, written, createBody(set, name, written, extra || {})), detail: [] };
+  else if (mode === 'create') diff = { sections: [], lines: createLines(set, written, createBody(set, name, written, extra || {})), detail: set === 'webresourceset' ? newWebResource(written).detail : [] };
   diff.lines = [...diff.lines];
   // A rename (1.11.30) is its own section, first, so the person reads it before anything else.
   if (mode === 'update' && rename) diff = { ...diff, sections: ['name', ...diff.sections], lines: [`Name: '${rename.from}' -> '${rename.to}'`, ...diff.lines] };
@@ -1861,7 +1927,8 @@ function unmovedSince(dv, set, id, live, etag, beforeHash, subBefore) {
 function publishFor(set, id, table) {
   if (set === 'workflows') return null;
   if (set === 'sitemaps') return { sitemaps: [`{${id}}`] };
-  if (set === 'webresourceset') return { webresources: [`{${id}}`] };
+  // A plan for a NEW web resource has no id yet; apply builds this again from the id it wrote (1.11.40).
+  if (set === 'webresourceset') return { webresources: id ? [`{${id}}`] : [] };
   if (tableless(set, table)) return { dashboards: [`{${id}}`] };
   return { entities: [table] };
 }
@@ -2090,6 +2157,7 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
 function undoLine(plan) {
   const n = plan.component.noun;
   if (plan.mode === 'update') return `Can be undone with revert: the definition before this change is kept in full in the Write Log.${plan.component.set === 'workflows' ? ' Anything the flow does before then stays done.' : ''}`;
+  if (plan.mode === 'create' && plan.component.set === 'webresourceset') return `Undo cannot remove the new ${n}; it is removed in the maker portal.`;
   if (plan.mode === 'create') return plan.component.set === 'workflows' ? 'Undo turns the flow off; it is not deleted (only an admin delete removes it).' : `Undo cannot remove the new ${n}; only an admin delete can.`;
   if (plan.mode === 'on') return 'Can be undone with revert (turns it back off). Anything it does while on stays done.';
   if (plan.mode === 'off') return 'Can be undone with revert (turns it back on).';
@@ -2156,8 +2224,7 @@ function defaultSleep(ms) {
 
 // What a plan may ask apply to write (round 3): an update sends only definition fields; a create sends the
 // definition, the name, the fixed flow fields and the create extras validation allows. Anything else in a plan
-// file was put there by hand, and apply refuses it (plan_tampered).
-const CREATE_EXTRAS = { savedqueries: ['returnedtypecode', 'querytype'], systemforms: ['objecttypecode', 'type'] };
+// file was put there by hand, and apply refuses it (plan_tampered). CREATE_EXTRAS is declared with the sets, above.
 const FLOW_CREATE_FIXED = ['category', 'type', 'primaryentity'];
 
 function planShapeProblems(plan) {
@@ -2180,6 +2247,16 @@ function planShapeProblems(plan) {
   }
   for (const k of Object.keys(plan.after_definition || {})) if (!fields.includes(k)) bad.push(`the definition key "${k}"`);
   if (plan.mode === 'create') for (const k of Object.keys(plan.create_extra || {})) if (!(CREATE_EXTRAS[set] || []).includes(k)) bad.push(`the create field "${k}"`);
+  // A new web resource (1.11.40): the same rules the job file was held to, on what the plan file now says.
+  if (plan.mode === 'create' && set === 'webresourceset') {
+    const x = plan.create_extra || {};
+    if (!wrNameOk(c.name)) bad.push('a web resource name outside the naming rule');
+    if (!Number.isInteger(x.webresourcetype) || !has(TEXT_WEB_RESOURCE, x.webresourcetype)) bad.push('a web resource type that is not text');
+    else if (!wrExtOk(c.name, x.webresourcetype)) bad.push('a name that does not end in its type\'s extension');
+    if (has(x, 'displayname') && (typeof x.displayname !== 'string' || !x.displayname.trim() || /[\r\n]/.test(x.displayname) || x.displayname.length > WR_DISPLAY_MAX)) bad.push('a display name that is not one line of text');
+    const content = (plan.after_definition || {}).content;
+    if (typeof content !== 'string' || !content || Buffer.from(content, 'base64').toString('base64') !== content || b64Text(content).text === null) bad.push('content that is not canonical base64 of text');
+  }
   if (!bad.length && (plan.mode === 'update' || plan.mode === 'create')) {
     const allowed = new Set([...fields, ...(plan.mode === 'create' ? ['name', ...(CREATE_EXTRAS[set] || []), ...(set === 'workflows' ? FLOW_CREATE_FIXED : [])] : rn ? ['name'] : [])]);
     for (const k of Object.keys(bodyFor(plan))) if (!allowed.has(k)) bad.push(`the body key "${k}"`);
@@ -2333,6 +2410,14 @@ function readBack(dv, plan, rid, sleep) {
     }
     if (off.length) bad.push(`the definition read back differs from what was sent (${off.join(', ')})`);
     if (plan.mode === 'create' && set === 'workflows' && now.statecode !== 0) bad.push(`the new flow is not off (statecode ${now.statecode})`);
+    // A new web resource (1.11.40): its type and display name are sent beside the definition, so they are read back too.
+    if (plan.mode === 'create' && set === 'webresourceset') {
+      const x = plan.create_extra || {};
+      // its name is its address in the app (1.11.40 review F5)
+      if (String(now.name || '') !== plan.component.name) bad.push(`its name reads back '${now.name || ''}', not '${plan.component.name}'`);
+      if (now.restype !== x.webresourcetype) bad.push(`its type reads back ${now.restype === null ? 'blank' : now.restype}, not ${x.webresourcetype}`);
+      if (has(x, 'displayname') && String(now.display === null ? '' : now.display) !== x.displayname) bad.push(`its display name reads back '${now.display === null ? '' : now.display}', not '${x.displayname}'`);
+    }
   }
   // Round 3: a flow the platform switched off (or on) while saving the definition is not "written": a save that
   // fails the platform's own validation can leave the flow off.
@@ -2364,7 +2449,20 @@ function landedNow(dv, plan, rid, table) {
   const spec = SETS[set];
   if (plan.mode === 'create') {
     const found = existingByName(dv, set, plan.component.name, table);
-    return found.length ? String(found[0][spec.id]).toLowerCase() : null;
+    if (!found.length) return null;
+    const fid = String(found[0][spec.id]).toLowerCase();
+    // A new web resource is code that apply then publishes (1.11.40 review F3): one found by its name is ours only if
+    // its latest layer holds exactly the content and type this apply sent; anyone else's is never taken or published.
+    if (set === 'webresourceset') {
+      const sel = `${spec.id},name,webresourcetype,content`;
+      const un = (dv.get(`${set}/Microsoft.Dynamics.CRM.RetrieveUnpublishedMultiple()?$select=${sel}&$filter=${encodeURIComponent(`${spec.id} eq ${fid}`)}`).value || [])[0];
+      const row = un || dv.get(`${set}(${fid})?$select=${sel}`);
+      const x = plan.create_extra || {};
+      const same = row && row.webresourcetype === x.webresourcetype
+        && canonical(readBackField(set, 'content', row.content, fid)) === canonical(readBackField(set, 'content', plan.after_definition.content, fid));
+      if (!same) throw new Error(`a web resource named '${plan.component.name}' exists, but it does not hold what this apply sent (someone else's); it was not taken for this change or published`);
+    }
+    return fid;
   }
   if (plan.mode === 'delete') return readComponent(dv, set, rid) ? null : rid;
   let now = readComponent(dv, set, rid);
@@ -2506,6 +2604,11 @@ async function applyComponent(plan, deps, { id, file, fs }) {
   const newDrafts = again.others.map((x) => x.name).filter((n) => !d.facts.other_drafts.includes(n));
   if (newDrafts.length) {
     throw new ApplyRefused(`unpublished edits were saved while the approval was waiting, and publishing ${d.facts.table} now would publish them too: ${names(newDrafts)}. Nothing was written; make a new plan.`, 'severity_grew');
+  }
+  // A create's name, again (1.11.40 review F2): another writer may have made one with this name while the prompt was
+  // open, and a create never makes a second.
+  if (plan.mode === 'create' && existingByName(dv, set, plan.component.name, plan.component.table).length) {
+    throw new ApplyRefused(`a ${plan.component.noun} named '${plan.component.name}' was made while the approval was waiting. Nothing was written.`, 'snapshot_moved');
   }
   // A rename's clash, again (1.11.30 review F2): another component may have taken the name while the prompt was open.
   if (plan.rename) {
@@ -2705,6 +2808,7 @@ async function planComponentRevert(dv, entry, ctx) {
       if (!hasSent && entry.sections.length === 1 && entry.sections[0] === 'name') job.definition = {};
     }
   } else if (entry.action === 'create') {
+    if (set === 'webresourceset') throw new PlanRefused([`${what} stays: revert does not delete what it created; a web resource is removed in the maker portal`], 'nothing_to_undo');
     if (set !== 'workflows') throw new PlanRefused([`${what} stays: revert does not delete what it created; only an admin delete removes it`], 'nothing_to_undo');
     if (live.statecode !== 1) throw new PlanRefused([`${what} is already off; it stays (only an admin delete removes it)`], 'nothing_to_undo');
     job.mode = 'off';
