@@ -158,7 +158,8 @@ on its own. Never ask the person to run or paste a command.
   or `create`): `snapshot` also saves the script itself as a file to edit; the job's `definition.content` is the edited
   file's bytes as base64. Changing the code is an admin's (it runs for everyone who opens a form that loads it);
   the plan names those forms and shows the changed lines: read both to the person. A NEW one (a page, a script; mode
-  `create`, admin, JOBS.md) goes in a named SBRM solution with its type and name; the plan shows its size and
+  `create`, admin, JOBS.md) goes in a named SBRM solution (or a new one: `solution: {uniquename, friendlyname}` makes
+  it in the same change) with its type and name; the plan shows its size and
   fingerprint, and undo cannot remove it: say so. It shows nowhere until a sitemap entry or a form names it (a
   second job). A web resource is removed, and an image is made, in the maker portal. When a form change depends on
   new script code, publish the script first, then the form (two jobs, in that order).

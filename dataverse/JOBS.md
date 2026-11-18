@@ -115,6 +115,10 @@ It prints the `snapshot_hash` and saves the current definition to `~/.sbrm-datav
   "intent": { "verb": "update", "component": "view", "name": "Active Donors", "changed": ["columns"] } }
 ```
 
+- A create's `solution` (from 1.11.41) may also be `{ "uniquename": "SBRMRecoveryBedBoard", "friendlyname": "SBRM
+  Recovery Bed Board" }`: an existing SBRM solution of that name is used; a missing one is MADE by this change under the
+  environment's SBRM publisher, just before the component (the plan says "a new solution, made by this change"). A bare
+  string names an existing solution only. If the component then fails, the empty solution stays and the outcome says so.
 - `mode`: `update`, `create` (with `solution` = an unmanaged SBRM solution's unique name; a new view needs
   `returnedtypecode`, `fetchxml` and `layoutxml`, a new form `objecttypecode` and `formxml`, a new flow
   `clientdata`, a new web resource `content` and `webresourcetype`, see below), and for flows only `on`, `off` and `own` (with `owner` = the new owner's systemuser id;

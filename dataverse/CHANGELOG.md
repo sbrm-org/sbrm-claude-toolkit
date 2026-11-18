@@ -3,6 +3,22 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.41** (2026-11-18, a component create can make its own new solution)
+  Dylan 11/18/26 (the Bed Board page goes in a new solution; "Another toolkit release"). A component create's `solution`
+  may be `{uniquename, friendlyname}`: an existing SBRM solution is used as before; a missing one is made in the same
+  apply under the environment's SBRM publisher (the body schema jobs use), read back (unmanaged, that publisher), and
+  only then is the component created in it. A bare string still names an existing solution only. The plan says "a new
+  solution, made by this change" and carries a Lasting line; apply refuses, before the prompt, a solution of that name
+  made since the plan, and again after the approval. A component that then fails leaves the empty solution, said in the
+  outcome. Level unchanged (making a solution is develop, as in schema jobs; a web resource is still admin).
+  `planShapeProblems` holds a new solution to a create, a valid unique name, a one-line friendly name and a publisher
+  GUID. Tests `component_new_solution.test.js` 10 (all red first); the fake models the solution POST
+  (`solutionPublisherOnCreate`, `failCreateOf`; its timeout wrapper now covers the solution POST).
+  C1 review `reviews/2026-11-18_new_solution/` (Codex Sol), 3 confirmed and fixed: F1 a timed-out solution POST adopts a
+  same-named solution only if it reads back with the friendly name and description this POST sent; F2 an EXISTING
+  solution is re-checked after the approval (same id, unmanaged; pre-existing for every create kind); F3 a solution POST
+  whose read-back failed is said in the outcome ("was sent and may exist"). 14 tests; mutation 15 of 16, the survivor
+  drops the "only on a create" plan-file check, which an update never reads.
 - **1.11.40** (2026-11-18, a component job can CREATE a text web resource)
   Dylan 11/18/26: "let's put the feature in the toolkit now and release it" (first use: the recovery Bed Board page).
   `webresourceset` takes mode `create`: a new HTML, CSS, JavaScript or XML web resource in a named unmanaged SBRM

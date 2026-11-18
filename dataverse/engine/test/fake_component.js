@@ -371,8 +371,19 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
       if (set === 'workflows') register(dv, id);
       return {};
     },
+    // A new solution (1.11.41): the one metadata write a component create makes. `solutionPublisherOnCreate` stores a
+    // different publisher than the one bound (a control for the read-back).
+    metadata(method, apiPath, body) {
+      calls.push({ method, path: apiPath, body });
+      if (method !== 'POST' || apiPath !== 'solutions') throw new Error(`fake_component: unrouted metadata ${method} ${apiPath}`);
+      const pub = dv.solutionPublisherOnCreate || /\(([^)]+)\)/.exec(body['publisherid@odata.bind'])[1];
+      const id = `50000000-0000-0000-0000-${String(d.solutions.length + 100).padStart(12, '0')}`;
+      d.solutions.push({ solutionid: id, uniquename: body.uniquename, friendlyname: body.friendlyname, description: body.description, ismanaged: false, _publisherid_value: pub });
+      return {};
+    },
     create(set, body, opts = {}) {
       calls.push({ method: 'POST', path: set, body, solution: opts.solution || null });
+      if (dv.failCreateOf === set) throw new DataverseError('A validation error occurred.', { code: '0x80040216' });
       const n = Object.keys(d[set]).length + 1;
       const id = `cccccccc-cccc-cccc-cccc-${String(n).padStart(12, '0')}`;
       // `readBackDrops` (above) applies to a create too (1.11.40): a field the platform silently does not store.
@@ -412,7 +423,7 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
   };
   // `timeoutOnWrite` (above): wraps the three writes. The text is the CLI's own (D-1240), which lib/cli.js isTimeout reads.
   const timedOut = () => new DataverseError('The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing. (TaskCanceledException)');
-  for (const verb of ['update', 'create', 'remove']) {
+  for (const verb of ['update', 'create', 'remove', 'metadata']) { // metadata: the new-solution POST (1.11.41)
     const real = dv[verb];
     dv[verb] = (...args) => {
       const t = dv.timeoutOnWrite;
