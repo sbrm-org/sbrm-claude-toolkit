@@ -18,7 +18,7 @@ const { whoAmI, accessFor, same, display } = require('./resolve');
 const { resolveAccess, TOOLKIT_SETS, LOG_TABLES, APP_DEFINITION_SETS } = require('./access');
 const { BIND_VALUE } = require('./contract');
 const { DataverseError, isTimeout } = require('./cli');
-const { loadPlan } = require('./store');
+const { loadPlan, planTooOld, STALE_TEXT } = require('./store');
 const { summary, detail, headline } = require('./render');
 const { writeEntry } = require('./log');
 const closedYear = require('./closedyear');
@@ -180,7 +180,7 @@ function applyPlan(id, deps) {
   const { access, connect, confirm, now = new Date(), env = process.env, sleep = defaultSleep, clock = Date.now } = deps;
   const { record: plan, file, intact } = loadPlan(id, { env });
   if (!intact) throw new ApplyRefused('this plan file was changed after it was made. Make a new plan.', 'plan_tampered');
-  if (now - new Date(plan.created) > MAX_AGE_MS) throw new ApplyRefused('this plan is more than 24 hours old. Make a new plan.', 'stale_plan');
+  if (planTooOld(plan, now, MAX_AGE_MS)) throw new ApplyRefused(STALE_TEXT, 'stale_plan');
   // A delete plan made by an earlier toolkit (1.10.x) within the last day: records are never deleted now.
   if (!['create', 'update'].includes(plan.mode)) throw new ApplyRefused('records are never deleted, only made inactive (ruled 10/8): plan an update of the status instead.', 'not_permitted');
 

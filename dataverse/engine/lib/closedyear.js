@@ -4,7 +4,7 @@
 // HARD RULE (Dylan 7/30/26 for QBO, restated 9/24/26 for donor-app gifts): once a fiscal year is closed,
 // its gifts are CLOSED. No creating, deactivating, recoding or re-pointing a gift or soft credit whose book
 // date falls in a closed FY. Three exceptions: a MERGE may re-point closed-year gifts to the kept donor, because
-// it changes attribution, not finances (Dylan 10/7/26, lib/merge); LATE ENTRY (Dylan 10/8/26, below); and the
+// it changes attribution, not finances (Dylan 10/7/26, lib/merge; its UNDO too, Dylan 11/18/26); LATE ENTRY (Dylan 10/8/26, below); and the
 // PLEDGE LINK (Dylan 10/16/26, below).
 //
 // WHEN A YEAR CLOSES (Dylan 9/29/26): SBRM's FY runs Oct 1 - Sep 30 and each FY locks on Dec 1 after it

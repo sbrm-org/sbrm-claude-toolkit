@@ -3,6 +3,21 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.39** (2026-11-18, weekly pool: every apply path refuses an undated plan)
+  The 24-hour check in every apply path read a plan whose `created` is missing, empty or not a date as FRESH:
+  `now - new Date(undefined)` is NaN and NaN > the limit is false. Found in the 1.11.36 duperule review (F8) and fixed
+  there only. Now one check in `lib/store.js` (`planTooOld`) serves all ten paths (rows, schema, component, setting,
+  role, appuser, duperule, securityrole, merge, unmerge) and refuses such a plan as `stale_plan`: "this plan is more
+  than 24 hours old, or says nothing about when it was made". Reachability: `savePlan` always stamps `created` inside
+  the signed hash, so an undated plan needs a forged signature; this is defence in depth, not a live hole. No
+  staff-facing change. `test/undated_plan.test.js` (39 tests; 27 red before the fix), mutation pass 13 of 13.
+  Review C1 (`reviews/2026-11-18_undated_plan`, Codex Sol) F1, fixed here: the apply dispatcher read the plan file
+  once for the record it applied (merge, unmerge, the app kinds) and AGAIN for the signature check, so a file changed
+  between the two reads was applied unsigned. One read now gives both (`dataverse-write.js` applyAny);
+  `test/dispatch_single_read.test.js`, an app kind and a merge (the merge branch had no tampered-plan test before;
+  red before: the changed copy reached apply), mutation pass 4 of 4. F2, ruled by Dylan 11/18: undoing a
+  merge may move closed-year gifts back, the same attribution exception as the merge (comments in `lib/merge.js` and
+  `lib/closedyear.js`; no behaviour change).
 - **1.11.38** (2026-11-16, duperule: one condition per column + match type)
   1.11.37's Option 1 apply in Donor App Dev (plan 20261116-152306-14fbe523) added the ZIP condition, then was refused
   adding first name again: Dataverse holds ONE condition per rule + column + match type ("violates a database constraint

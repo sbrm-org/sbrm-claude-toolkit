@@ -109,4 +109,12 @@ function loadPlan(id, { env } = {}) {
   return { file, record, intact: ok && record.id === id && id.endsWith(hash.slice(0, 8)) };
 }
 
-module.exports = { home, dir, accountHome, canonical, planHash, planKey, savePlan, loadPlan, PLAN_ID };
+// The age test every apply path runs first. A missing or unreadable `created` counts as too old, never as
+// fresh: `now - new Date(undefined)` is NaN and NaN > max is false (duperule review F8, 11/16; every kind 1.11.39).
+const STALE_TEXT = 'this plan is more than 24 hours old, or says nothing about when it was made. Make a new plan.';
+function planTooOld(plan, now, maxAgeMs) {
+  const age = now - new Date(plan && plan.created);
+  return !Number.isFinite(age) || age > maxAgeMs;
+}
+
+module.exports = { home, dir, accountHome, canonical, planHash, planKey, savePlan, loadPlan, PLAN_ID, planTooOld, STALE_TEXT };
