@@ -14,15 +14,17 @@ description: >
   setting on", "give her the role", "remove his security role", "take away access", "duplicate rule", "duplicate
   detection", "undo that change", "revert", "the
   Dataverse tools aren't working", "is my Dataverse set up right", "report a problem with the donor app tools".
-  Also covers READING MANY ROWS into a file with the engine's read-only `query` (hundreds or thousands of
-  records): "pull every donor who", "export the list of", "all gifts in batch", "read hundreds of rows",
-  "compare these cards against the donor records", "how many contacts have".
+  Also covers READING with the engine's read-only commands, which need no Copilot credits: `get` (any read:
+  a record, rows, a table's columns, choice labels), `query` (hundreds or thousands of rows into a file) and
+  `image` (a gift's check scan or any image column): "look up this contact", "pull every donor who", "export
+  the list of", "all gifts in batch", "read hundreds of rows", "how many contacts have", "open the check scan",
+  "download the scans for batch", "what columns does this table have", and every time a Dataverse read tool
+  answers "User is not entitled to perform operation".
 ---
 
 # Dataverse changes (SBRM shared write path)
 
-Reads still go through the read-only Dataverse connections; this
-skill is for CHANGES, plus one read: `query`, for many rows at once (below). Use only the toolkit's own connections (tools named
+This skill is for CHANGES, and for READING through the engine (next section). Use only the toolkit's own connections (tools named
 `mcp__plugin_sbrm-toolkit_dataverse-<app>__...`). If your notes or memory name another Dataverse
 connection (an older hand-built `dataverse-donorapp`, say), it was removed: don't look for it, and offer
 `/dataverse-setup` to bring the notes up to date. An app's connection with no tools is switched off on
@@ -34,12 +36,58 @@ preparing a donor-app job: it prints the closed-fiscal-year rule and what both C
 coding, flows, forms, fields). Anything you learn while doing the change goes back there as an entry (`ctx save`),
 never into local notes or memory. This skill stays the HOW of writing; that repo is the WHAT.
 
+## Reading: use the engine first (`get`, `query`, `image`; read-only, no Copilot credits)
+
+⭐ **Read through the engine, not the Dataverse read tools** (Dylan 11/23/26). Microsoft bills every call of the
+read tools (`read_query`, `describe`, `file_download`, `search_data`) in Copilot credits, and when SBRM has none
+they stop with **"User is not entitled to perform operation"** (they did on 11/23/26, for everyone). The engine
+reads through the same plain Dataverse connection it writes with, which costs nothing and sees exactly what the
+person's own Dataverse role lets them see. It cannot write: its read connection sends GET requests only.
+
+| need | command |
+|---|---|
+| one record, a few rows, a table's columns, a choice's labels, WhoAmI: anything | `get` |
+| more than a few dozen rows, for a script | `query` (below) |
+| a gift's check scan, or any picture column | `image` |
+
+The read tools are still there: if one answers, a quick look is fine. If one says "not entitled", do not retry it
+and do not report it: switch to the engine. It is a licensing matter for Dylan, not a fault on this machine.
+
+### `get`: any read
+
+`node "<toolkit>/dataverse/engine/dataverse-write.js" get <app> '<Web API path>' [--all [--max N]] [--print] [--name label]`
+
+- The path is what follows `api/data/v9.2/`, in ONE quoted argument, OData as written. ⚠ **Quote it so the
+  shell keeps every `$`**: single quotes when the path has no `'` in it, otherwise double quotes with each `$`
+  written `\$`. The engine refuses a path the shell has already stripped (it would read the wrong thing).
+  - `'msnfp_transactions(<id>)?$select=msnfp_amount,msnfp_bookdate'` (one record)
+  - `"EntityDefinitions(LogicalName='contact')/Attributes?\$select=LogicalName,AttributeType"` (a table's columns)
+  - `"contacts?\$select=fullname,emailaddress1&\$filter=lastname eq 'Rivera' and statecode eq 0&\$top=10"` (rows)
+  - `'WhoAmI'` (who the connection reads as)
+- The answer is saved to a file in `sbrm-reads` (same rules as `query`: deleted after 7 days, never copied into
+  OneDrive, git, Teams or email). The engine prints what came back (how many rows, or which fields) and the file.
+- `--print` also prints the answer into the conversation when it is small (up to 20,000 characters), the way the
+  read tools did: use it for schema lookups and one record. For client rows, read the file with a script.
+- One page comes back by default; it says when more exist. `--all` follows every page (up to `--max`, default 5,000).
+- Choice and lookup columns also come back as display text (`<column>@OData.Community.Display.V1.FormattedValue`).
+- Only this app's data API is read: a full address, `..`, `$batch` and the raw `/$value` form are refused.
+- A misspelt table, column or filter comes back with Dataverse's message; fix the path and run it again. It is not
+  something to report.
+
+### `image`: a check scan (or any image column)
+
+`node "<toolkit>/dataverse/engine/dataverse-write.js" image <app> <table set> <image column> <record id> [<record id> ...] [--thumb]`
+
+- The gift's scan: `image donorapp msnfp_transactions sbrm_paymentimage <transaction id> [...]` (up to 200 ids per
+  run; get the ids with `get` or `query`). Full size by default; `--thumb` gives the small preview.
+- Each picture is saved to `sbrm-reads` as `<app>-<table>-<column>-<id>.jpg` (or `.png`); open it with the Read
+  tool to look at it. A record with no picture (a cash gift) is said, not an error.
+
 ## Reading many rows: `query` (read-only)
 
-For a question about a few records, use the read connection's tools as usual. When the work needs **more
-than a few dozen rows** (every gift in a batch, every donor matching something, a comparison across hundreds
-of records), do NOT page the read tool into the conversation: run the engine's `query`, which reads the whole
-table (or a filter of it) into a file, then process that file with a script.
+When the work needs **more than a few dozen rows** (every gift in a batch, every donor matching something, a
+comparison across hundreds of records), do NOT page reads into the conversation: run the engine's `query`, which
+reads the whole table (or a filter of it) into a file, then process that file with a script.
 
 `node "<toolkit>/dataverse/engine/dataverse-write.js" query <app> <table set> --select col,col --filter "<OData filter>" [--orderby "col desc"] [--expand "nav($select=col)"] [--max N] [--csv] [--name label]`
 
