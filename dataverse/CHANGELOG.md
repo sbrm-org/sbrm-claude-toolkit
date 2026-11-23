@@ -3,6 +3,35 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.42** (2026-11-23, reads that need no Copilot credits: `get` and `image`)
+  Dylan 11/23/26 ("go on the general read command"; "everything that's like recurring that we can build into the
+  toolkit, we should, particularly if it doesn't use copilot credits"). On 11/23 the Dataverse read tools
+  (`read_query`, `describe`, `file_download`) answered "User is not entitled to perform operation" for every staff
+  member: Microsoft bills each call in Copilot credits and SBRM had none, which stopped a mail batch review (the full
+  check scans). The engine reads through the plain Dataverse Web API, which is not metered. Two read-only commands:
+  `get <app> "<Web API path>" [--all [--max N]] [--print] [--name label]` (any GET: rows, one record, table and column
+  definitions, choice labels, WhoAmI; the answer saved to `sbrm-reads`, `--print` shows a small one in the
+  conversation; only this app's data API: a full address, `..`, `$batch`, the raw `/$value` form and a path the
+  shell stripped of its `$` are refused before anything is read) and `image <app> <table set> <image column> <record
+  id> ... [--thumb]` (a record's full-size picture as a file, e.g. `msnfp_transactions` `sbrm_paymentimage`; the JSON
+  base64 form of the column, since the raw form is corrupted by the CLI's text output). Both use the read
+  connection, which has no method but GET; files follow `query`'s rules (outside git and OneDrive, deleted after 7
+  days); their usage and Dataverse refusals are not review items. The skill now sends Claude to the engine first and
+  says what "not entitled" means.
+  C1 review `reviews/2026-11-23_reads_1_11_42/` (Codex Sol), 8 findings + 1 found live, all fixed: F1 a prefixed path
+  (`api/data/v9.2/api/mcp`) is checked after the prefix comes off; F2 `--all` holds Dataverse's next-page links to
+  the same rules; F3 the reads folder is judged where it really is, past any symlink or junction (also for `query`);
+  F4 `get` file names end in milliseconds + random hex; F5 every read command purges old scans; F6 half-written temp
+  files older than a day are purged; F7 a misspelt image column is an error with Dataverse's words, never "no
+  image"; F8 decodable text that is not a picture is refused; F9 an empty answer is "no image" only once the record is
+  read (Dataverse answers a missing record the same way, measured).
+  Round 2 (delta, same seat), 6 findings: fixed R2 the path is checked as Dataverse reads it, every %xx decoded
+  (`.%2e`, `%24value`, an escaped `api`); R4 `query` file names end in milliseconds + random hex too; R5 a read's
+  SETUP problem (no Dataverse CLI) is recorded for the review like any command's, only a refusal is left out (this
+  also covers `check` and `query`); R6 a JPEG or PNG that is cut short is not saved. Not changed: R1 a read run still
+  sends the toolkit's own queued event rows, as every command has since 10/7 (no record or app data changes); R3 a
+  scan overwriting a file already committed under a git-ignored reads folder needs that file planted by name.
+  Tests `get.test.js` 10, `image.test.js` 11, `query.test.js` +1.
 - **1.11.41** (2026-11-18, a component create can make its own new solution)
   Dylan 11/18/26 (the Bed Board page goes in a new solution; "Another toolkit release"). A component create's `solution`
   may be `{uniquename, friendlyname}`: an existing SBRM solution is used as before; a missing one is made in the same

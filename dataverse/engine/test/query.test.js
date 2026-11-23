@@ -123,7 +123,7 @@ test('--csv writes a CSV with label columns and safe quoting', () => {
   const { code } = go(['query', 'donorapp', 'contacts', '--csv', '--name', 'gik-donors'], deps(dv));
   assert.equal(code, 0);
   const [f] = files();
-  assert.match(f, /^donorapp-contacts-gik-donors-\d{8}-\d{6}\.csv$/);
+  assert.match(f, /^donorapp-contacts-gik-donors-\d{8}-\d{6}-\d{3}[0-9a-f]{4}\.csv$/);
   const txt = fs.readFileSync(path.join(readsDir(), f), 'utf8');
   const lines = txt.split('\r\n');
   assert.equal(lines[0], 'contactid,fullname,statecode,statecode@label');
@@ -185,6 +185,18 @@ test('refuses to write into a git-tracked folder or OneDrive (client data never 
   } finally {
     process.env.SBRM_DV_READS = real;
   }
+});
+
+test('1.11.42 review round 2 R4: two queries of one table in the same second land in two files', () => {
+  clearReads();
+  const query = require('../lib/query');
+  const now = new Date('2026-11-23T20:00:00.123Z');
+  const a = query.save(readsDir(), { env: 'donorapp', set: 'contacts', opt: { filter: 'a' }, result: { rows: [{ who: 'a' }], truncated: false }, now });
+  const b = query.save(readsDir(), { env: 'donorapp', set: 'contacts', opt: { filter: 'b' }, result: { rows: [{ who: 'b' }], truncated: false }, now });
+  assert.notEqual(a, b);
+  assert.equal(JSON.parse(fs.readFileSync(a, 'utf8')).rows[0].who, 'a');
+  assert.equal(JSON.parse(fs.readFileSync(b, 'utf8')).rows[0].who, 'b');
+  clearReads();
 });
 
 test('files older than 7 days are deleted on the next query; newer ones stay', () => {

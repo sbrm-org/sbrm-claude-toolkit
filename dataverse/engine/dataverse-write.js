@@ -669,7 +669,8 @@ function cmdQuery(run, deps, args) {
   const dir = query.readsDir();
   const exposed = query.exposure(dir);
   if (exposed) throw new Refusal('client_info_exposed', 'query', [exposed, 'Point SBRM_DV_READS at a folder outside git and OneDrive.'], { nothing: 'read' });
-  const purged = query.purge(dir);
+  // Every read command purges every kind of read file (1.11.42 review F5: a scan kept past 7 days otherwise).
+  const purged = query.purge(dir) + require('./lib/image').purge(dir, query.KEEP_DAYS);
   const dv = connect(run, deps, 'read', envs[env].host);
   let result;
   try {
@@ -684,6 +685,75 @@ function cmdQuery(run, deps, args) {
   if (result.truncated) console.log(`  Stopped at --max ${result.max}: more rows exist. Narrow the filter or raise --max.`);
   console.log(`  Columns (${cols.length}): ${cols.slice(0, 40).join(', ')}${cols.length > 40 ? ', ...' : ''}`);
   console.log(`Nothing was changed. Read the file with a script, not into the chat. Files in ${dir} are deleted after ${query.KEEP_DAYS} days${purged ? ` (${purged} older file(s) deleted now)` : ''}.\n`);
+  return 0;
+}
+
+const IMAGE_USAGE = 'image <app> <table set> <image column> <record id> [<record id> ...] [--thumb]';
+
+// A record's full-size image column into a file (1.11.42): READ-ONLY, through the plain Web API, so it needs no
+// Copilot credits (the MCP read connection's file_download does). First use: a mail batch's check scans.
+function cmdImage(run, deps, args) {
+  const image = require('./lib/image');
+  const query = require('./lib/query');
+  const { pos, opt } = options(args, ['thumb']);
+  const [env, set, column, ...ids] = pos;
+  const { envs } = config();
+  const bad = image.validate({ env, set, column, ids, envs });
+  if (opt.thumb !== undefined && opt.thumb !== true) bad.push('--thumb takes no value');
+  if (bad.length) throw new Refusal('usage', 'image', [...bad, IMAGE_USAGE], { exitCode: 2, nothing: 'read' });
+  run.env = env;
+  const dir = query.readsDir();
+  const exposed = query.exposure(dir);
+  if (exposed) throw new Refusal('client_info_exposed', 'image', [exposed, 'Point SBRM_DV_READS at a folder outside git and OneDrive.'], { nothing: 'read' });
+  const purged = query.purge(dir) + image.purge(dir, query.KEEP_DAYS);
+  const dv = connect(run, deps, 'read', envs[env].host);
+  const results = image.readAll(dv, { env, set, column, ids, thumb: opt.thumb === true, dir });
+  const saved = results.filter((r) => r.file);
+  const none = results.filter((r) => r.none);
+  const failed = results.filter((r) => r.problem);
+  console.log(`\nRead ${saved.length} of ${ids.length} ${opt.thumb ? 'thumbnail' : 'full-size'} image(s) of ${set}.${column} from the ${envs[env].name}${saved.length ? ' into:' : '.'}`);
+  for (const r of saved) console.log(`  ${r.file}  (${r.bytes} bytes, ${r.kind})`);
+  if (none.length) console.log(`  No image on ${none.length} record(s): ${none.map((r) => r.id).join(', ')}`);
+  for (const r of failed) console.log(`  NOT read ${r.id}: ${r.problem}`);
+  console.log(`Nothing was changed. Open a file with the Read tool to look at it. Files in ${dir} are deleted after ${query.KEEP_DAYS} days${purged ? ` (${purged} older file(s) deleted now)` : ''}.\n`);
+  return failed.length ? 1 : 0;
+}
+
+const GET_USAGE = 'get <app> "<Web API path>" [--all [--max N]] [--print] [--name label]   e.g. get donorapp "contacts?$select=fullname&$filter=statecode eq 0&$top=5"';
+
+// Any GET of the app's Web API into a file (1.11.42): READ-ONLY, no Copilot credits (the MCP read tools spend them).
+function cmdGet(run, deps, args) {
+  const get = require('./lib/get');
+  const query = require('./lib/query');
+  const { pos, opt } = options(args, ['all', 'max', 'print', 'name']);
+  const [env, raw, extra] = pos;
+  const { envs } = config();
+  const bad = get.validate({ env, raw, opt, envs });
+  if (extra !== undefined) bad.push(`unexpected "${String(extra).slice(0, 60)}": put the whole path in ONE quoted argument`);
+  if (bad.length) throw new Refusal('usage', 'get', [...bad, GET_USAGE], { exitCode: 2, nothing: 'read' });
+  run.env = env;
+  const dir = query.readsDir();
+  const exposed = query.exposure(dir);
+  if (exposed) throw new Refusal('client_info_exposed', 'get', [exposed, 'Point SBRM_DV_READS at a folder outside git and OneDrive.'], { nothing: 'read' });
+  const purged = query.purge(dir) + require('./lib/image').purge(dir, query.KEEP_DAYS);
+  const { path: p } = get.cleanPath(raw);
+  const dv = connect(run, deps, 'read', envs[env].host);
+  let result;
+  try {
+    result = get.read(dv, p, { all: opt.all === true, max: opt.max ? Number(opt.max) : get.DEFAULT_MAX });
+  } catch (e) {
+    if (e instanceof DataverseError) throw new Refusal('bad_query', 'get', [e.message, 'Check the path: the table set (plural), the column logical names and the filter.'], { nothing: 'read' });
+    if (e && e.code === 'bad_next_link') throw new Refusal('bad_next_link', 'get', [e.message, 'Nothing was saved. Read fewer rows without --all, or narrow the filter.'], { nothing: 'read' });
+    throw e;
+  }
+  const file = get.save(dir, { env, p, opt, result });
+  console.log(`\nRead ${p.slice(0, 160)} from the ${envs[env].name}: ${get.describe(result)}.\n  Saved to: ${file}`);
+  if (opt.print) {
+    const text = JSON.stringify(result.body, null, 1);
+    if (text.length <= get.PRINT_MAX) console.log(text);
+    else console.log(`  (--print skipped: the answer is ${text.length} characters, over ${get.PRINT_MAX}; read the file with a script.)`);
+  }
+  console.log(`Nothing was changed. Files in ${dir} are deleted after ${query.KEEP_DAYS} days${purged ? ` (${purged} older file(s) deleted now)` : ''}.\n`);
   return 0;
 }
 
@@ -1058,7 +1128,7 @@ function cmdResolve(run, deps, args) {
   return 0;
 }
 
-const USAGE = 'usage: dataverse-write.js check|plan <job.json> | show <plan-id> | apply <plan-id> [<plan-id> ...] | revert <plan-id> [env] | whoami <env> | snapshot <env> <set> <id> | doctor [--apps a,b] | report "<words>" | review [--days N] [--brief] | resolve <number> [<number> ...] <resolution> "<note>" | apps [a,b | all] | query <app> <table> [--select ...] [--filter ...] [--max N] [--csv]';
+const USAGE = 'usage: dataverse-write.js check|plan <job.json> | show <plan-id> | apply <plan-id> [<plan-id> ...] | revert <plan-id> [env] | whoami <env> | snapshot <env> <set> <id> | doctor [--apps a,b] | report "<words>" | review [--days N] [--brief] | resolve <number> [<number> ...] <resolution> "<note>" | apps [a,b | all] | query <app> <table> [--select ...] [--filter ...] [--max N] [--csv] | image <app> <table> <column> <record id> [...] [--thumb] | get <app> "<Web API path>" [--all] [--print]';
 
 function dispatch(run, deps, argv) {
   const [cmd, arg, arg2] = argv;
@@ -1077,6 +1147,8 @@ function dispatch(run, deps, argv) {
     case 'resolve': return cmdResolve(run, deps, argv.slice(1));
     case 'apps': return cmdApps(run, deps, argv.slice(1));
     case 'query': return cmdQuery(run, deps, argv.slice(1));
+    case 'image': return cmdImage(run, deps, argv.slice(1));
+    case 'get': return cmdGet(run, deps, argv.slice(1));
     default: throw new Refusal('usage', 'usage', [USAGE], { exitCode: 2 });
   }
 }
@@ -1126,8 +1198,10 @@ function failure(run, e) {
   const detailText = run.output.join('\n') + (kind === 'crash' && e && e.stack ? `\n\n${e.stack}` : '');
   // `check` is Claude's own file-level lint before a plan: its refusals are not events (10/7 review: four
   // throwaway checks queued four events for the review). A crash in check is still recorded. `query` (1.11.8)
-  // likewise: a misspelt column or filter is Claude iterating on a read, not something for Dylan's review.
-  if (!(/^(?:check|query)(?:\s|$)/.test(run.command || '') && kind !== 'crash')) events.record(run, { kind, code: code || 'unclassified', headline, detail: detailText });
+  // likewise: a misspelt column or filter is Claude iterating on a read, not something for Dylan's review. `image`
+  // and `get` (1.11.42) are reads too. Only a REFUSAL is left out: a crash, and a setup problem such as a missing
+  // Dataverse CLI, are recorded for every command, as the skill tells the person (1.11.42 review round 2 R5).
+  if (!(/^(?:check|query|image|get)(?:\s|$)/.test(run.command || '') && kind === 'refused')) events.record(run, { kind, code: code || 'unclassified', headline, detail: detailText });
   return exitCode;
 }
 

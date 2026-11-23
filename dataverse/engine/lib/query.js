@@ -12,6 +12,7 @@
 // hold client records (Recovery is HIPAA; client information is never persisted where it can travel). Files
 // older than KEEP_DAYS are deleted on every query.
 
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -30,11 +31,31 @@ function readsDir(env = process.env) {
   return path.join(home, 'sbrm-reads');
 }
 
-// A refusal reason, or null when the folder is a safe place for client records.
+// Where a folder really is once every symlink or junction on its way is followed: the folder itself when it exists,
+// else its nearest existing parent with the rest added back (review 1.11.42 F3: a junction into a git or OneDrive
+// folder passed a check of the name alone).
+function realDir(dir) {
+  let head = path.resolve(dir);
+  const rest = [];
+  for (;;) {
+    try { return path.join(fs.realpathSync.native(head), ...rest.reverse()); } catch { /* not there yet */ }
+    const up = path.dirname(head);
+    if (up === head) return path.resolve(dir);
+    rest.push(path.basename(head));
+    head = up;
+  }
+}
+
+// A refusal reason, or null when the folder is a safe place for client records. Both the folder as named and where
+// it really is are checked.
 function exposure(dir) {
-  if (/onedrive/i.test(dir)) return `the reads folder (${dir}) is inside OneDrive, which syncs it off this machine; a read can hold client records`;
-  const s = gitExposure(dir);
-  if (s.exposed) return `the reads folder (${dir}) is inside a git-tracked folder (${s.repo}); a read can hold client records and git can carry them`;
+  const real = realDir(dir);
+  for (const d of [...new Set([path.resolve(dir), real])]) {
+    const shown = d === path.resolve(dir) ? dir : `${dir}, which is really ${d}`;
+    if (/onedrive/i.test(d)) return `the reads folder (${shown}) is inside OneDrive, which syncs it off this machine; a read can hold client records`;
+    const s = gitExposure(d);
+    if (s.exposed) return `the reads folder (${shown}) is inside a git-tracked folder (${s.repo}); a read can hold client records and git can carry them`;
+  }
   return null;
 }
 
@@ -129,10 +150,12 @@ function stamp(d) {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
-// Write atomically; returns the file path.
+// Write atomically; returns the file path. The name ends in milliseconds and 4 random hex characters, so two queries
+// of one table in the same second (two runs side by side) never land in one file (1.11.42 review round 2 R4).
 function save(dir, { env, set, opt, result, now = new Date() }) {
   fs.mkdirSync(dir, { recursive: true });
-  const name = `${env}-${set}${opt.name ? `-${opt.name}` : ''}-${stamp(now)}.${opt.csv ? 'csv' : 'json'}`;
+  const unique = `${String(now.getMilliseconds()).padStart(3, '0')}${crypto.randomBytes(2).toString('hex')}`;
+  const name = `${env}-${set}${opt.name ? `-${opt.name}` : ''}-${stamp(now)}-${unique}.${opt.csv ? 'csv' : 'json'}`;
   const file = path.join(dir, name);
   const body = opt.csv ? toCsv(result.rows) : JSON.stringify({
     meta: {
@@ -147,4 +170,4 @@ function save(dir, { env, set, opt, result, now = new Date() }) {
   return file;
 }
 
-module.exports = { readsDir, exposure, purge, validate, firstPath, nextPath, clean, read, columns, toCsv, save, KEEP_DAYS, PAGE_SIZE, DEFAULT_MAX };
+module.exports = { readsDir, exposure, realDir, purge, validate, firstPath, nextPath, clean, read, columns, toCsv, save, KEEP_DAYS, PAGE_SIZE, DEFAULT_MAX };
