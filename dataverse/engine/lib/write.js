@@ -11,9 +11,9 @@
 //   publish                    PublishXml for the named components only; there is no PublishAllXml
 //   grantRole / revokeRole     one security role given to or taken from one user (kind "role", 1.11.13): the
 //                              association $ref on systemuserroles_association, both ids checked as GUIDs
-//   createAppUser / setUserDisabled / createRole / addRolePrivileges / deleteRole
-//                              application users and SBRM security roles (kinds "appuser", "securityrole", 1.11.31):
-//                              fixed paths, bodies built from checked values only (identityCall)
+//   createAppUser / setUserDisabled / createRole / addRolePrivileges / deleteRole / removeRolePrivilege
+//                              application users and SBRM security roles (kinds "appuser", "securityrole", 1.11.31;
+//                              removeRolePrivilege 1.11.43): fixed paths, bodies built from checked values only (identityCall)
 //
 // Every PATCH or DELETE of a record carries If-Match with the version tag read at apply, so Dataverse itself
 // refuses the write (412) if anyone changed the record between the apply-time check and the write.
@@ -31,7 +31,8 @@ const META_SETS = /^(?:EntityDefinitions|RelationshipDefinitions|GlobalOptionSet
 const META_ACTIONS = new Set(['InsertOptionValue', 'UpdateOptionValue', 'OrderOption', 'DeleteOptionValue',
   'UpdateStateValue', 'AddSolutionComponent', 'AddAppComponents', 'RemoveAppComponents', 'ValidateApp']);
 const META_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-// Headers a metadata call may carry. Impersonation (MSCRMCallerID, CallerObjectId) is never allowed.
+// Headers a metadata call may carry. Impersonation (MSCRMCallerID, CallerObjectId) is never allowed here; the one
+// place an on-behalf-of header is ever sent is behalfHeader below (a flow, admin, test slice 11/19/26).
 const META_HEADER = /^(?:MSCRM\.SolutionUniqueName|MSCRM\.MergeLabels|If-Match|Consistency|Prefer):/i;
 const SOLUTION_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -121,6 +122,14 @@ function identityCall(verb, a = {}) {
     if (!a.etag) throw new Error('refusing to DELETE without a version tag (If-Match)');
     return { method: 'DELETE', path: `roles(${guid(a.roleId, 'the role')})`, body: undefined, headers: [`If-Match: ${a.etag}`] };
   }
+  // One privilege taken off an existing role (kind "securityrole", action "remove", 1.11.43). Microsoft Learn,
+  // "RemovePrivilegeRole Action": bound to the role, one parameter `Privilege`, an entity reference to the privilege.
+  if (verb === 'removeRolePrivilege') {
+    return {
+      method: 'POST', path: `roles(${guid(a.roleId, 'the role')})/Microsoft.Dynamics.CRM.RemovePrivilegeRole`,
+      body: { Privilege: { '@odata.type': 'Microsoft.Dynamics.CRM.privilege', privilegeid: guid(a.privilegeId, 'the privilege') } }, headers: [],
+    };
+  }
   throw new Error(`refusing identity verb ${verb}`);
 }
 
@@ -135,6 +144,19 @@ const LOG_ROW = 'sbrm_dataversewritelogs';
 function approved(approval) {
   const a = typeof approval === 'function' ? approval() : approval;
   return ticket.verify(a);
+}
+
+// Writing ON BEHALF OF a flow's connection owner (TEST SLICE, 11/19/26; CONTRACT.md §3, §8): Dataverse's own
+// on-behalf-of header, which the platform honours when the signed-in person holds "Act on Behalf of Another User"
+// (System Administrator does). The record then reads created/modified BY that account and ON BEHALF BY the person.
+// It is added HERE and nowhere else: only on a cloud flow (the `workflows` set), only as a GUID the caller resolved
+// from the live environment (lib/component.js actAsTarget), never from anything a job file carries. Every other
+// write, the Write Log row included, goes as the signed-in person.
+function behalfHeader(set, behalf) {
+  if (behalf === undefined || behalf === null) return [];
+  if (set !== 'workflows') throw new Error('refusing to write on behalf of another user outside a cloud flow');
+  if (!GUID_ONLY.test(String(behalf))) throw new Error('refusing an on-behalf-of id that is not a GUID');
+  return [`CallerObjectId: ${String(behalf).toLowerCase()}`];
 }
 
 function writeConnection(host, cli = resolveCli(), { approval = null } = {}) {
@@ -164,12 +186,13 @@ function writeConnection(host, cli = resolveCli(), { approval = null } = {}) {
       return request(cli, host, apiPath, { method: 'GET', headers: [...(formatted ? [FORMATTED] : []), ...(strong ? ['Consistency: Strong'] : [])] });
     },
     // A new record. `solution` (a new view, form, sitemap or flow) puts it in that unmanaged solution.
-    create(set, body, { solution } = {}) {
-      return send('POST', set, body, ['Prefer: return=representation', ...solutionHeader(solution)]);
+    // `behalf` (test slice, 11/19/26): a flow written on behalf of its connections' owner; see behalfHeader.
+    create(set, body, { solution, behalf } = {}) {
+      return send('POST', set, body, ['Prefer: return=representation', ...solutionHeader(solution), ...behalfHeader(set, behalf)]);
     },
-    update(set, id, body, etag) {
+    update(set, id, body, etag, { behalf } = {}) {
       if (!etag) throw new Error('refusing to PATCH without a version tag (If-Match)');
-      return send('PATCH', `${set}(${id})`, body, [`If-Match: ${etag}`]);
+      return send('PATCH', `${set}(${id})`, body, [`If-Match: ${etag}`, ...behalfHeader(set, behalf)]);
     },
     // The admin delete of one record (ruled 10/7). Version-tagged like an update.
     remove(set, id, etag) {
@@ -218,6 +241,10 @@ function writeConnection(host, cli = resolveCli(), { approval = null } = {}) {
       const c = identityCall('deleteRole', { roleId, etag });
       return send(c.method, c.path, c.body, c.headers);
     },
+    removeRolePrivilege(roleId, privilegeId) {
+      const c = identityCall('removeRolePrivilege', { roleId, privilegeId });
+      return send(c.method, c.path, c.body, c.headers);
+    },
     // Duplicate-detection rules (kind "duperule", 11/16/26). Admin level; the caller checks it. Unpublish is an
     // UNBOUND action (the bound form answers "Resource not found", 10/7); Publish is bound to the rule.
     unpublishDuplicateRule(ruleId) {
@@ -228,10 +255,73 @@ function writeConnection(host, cli = resolveCli(), { approval = null } = {}) {
       const c = dupRuleCall('publish', ruleId);
       return send(c.method, c.path, c.body, []);
     },
+    // A built-in command-bar button hidden for one table in one app (kind "command", 1.11.43). Admin level; the
+    // caller checks it. The new row goes in an SBRM solution, like every other app part made here.
+    createCommandHide(args, solution) {
+      const c = commandCall('hide', args, host);
+      return send(c.method, c.path, c.body, [...c.headers, ...solutionHeader(solution)]);
+    },
+    linkCommandRule(id, ruleId) {
+      const c = commandCall('linkRule', { id, ruleId }, host);
+      return send(c.method, c.path, c.body, c.headers);
+    },
+    setCommandHidden(id, hidden, etag) {
+      const c = commandCall('setHidden', { id, hidden, etag }, host);
+      return send(c.method, c.path, c.body, c.headers);
+    },
     getMany(paths, concurrency) {
       return getMany(cli, host, paths, concurrency);
     },
   };
+}
+
+// A built-in command-bar button hidden for one table in one app (kind "command", 1.11.43; Dylan 11/20/26). The row
+// is the one the maker portal's command designer itself sends for a Hide (captured 11/23/26 in Donor App Dev): the
+// GLOBAL template's own name, context 1 (Entity) with the table, the app, hidden true, origin 2, an EMPTY uniquename
+// the server fills in, and the template's label, icon and JavaScript action. Three verbs, each with one fixed path
+// and a body built here from checked values only: nothing a plan carries can reach another table, column or endpoint.
+const COMMAND_NAME = /^Mscrm\.(Form|HomepageGrid|SubGrid)\.\{!EntityLogicalName\}\.(Deactivate|Activate|NewRecord)$/;
+const COMMAND_TABLE = /^sbrm_[a-z0-9_]{1,60}$/;
+function commandCall(verb, a = {}, host) {
+  const guid = (v, what) => { if (!GUID_ONLY.test(String(v))) throw new Error(`refusing ${verb}: ${what} is not a GUID`); return String(v).toLowerCase(); };
+  const text = (v, what, max) => {
+    if (v === undefined || v === null) return undefined;
+    if (typeof v !== 'string' || v.length > max || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(v)) throw new Error(`refusing ${verb}: ${what} must be text, at most ${max} characters`);
+    return v;
+  };
+  if (verb === 'hide') {
+    if (!COMMAND_NAME.test(String(a.name))) throw new Error('refusing hide: the name is not one of the built-in Deactivate, Activate or New buttons');
+    if (![0, 1, 2, 3].includes(a.location)) throw new Error('refusing hide: the place must be the form, the main grid, a sub grid or an associated grid');
+    if (!COMMAND_TABLE.test(String(a.table))) throw new Error('refusing hide: the table must be one of SBRM\'s own (sbrm_...)');
+    const f = a.fields || {};
+    if (typeof f.sequence !== 'number' || !Number.isFinite(f.sequence)) throw new Error('refusing hide: the button\'s position is not a number');
+    if (typeof f.functionName !== 'string' || !/^[A-Za-z_$][\w$.]{0,199}$/.test(f.functionName)) throw new Error('refusing hide: the button\'s action is not a function name');
+    if (![0, 1, 2].includes(f.visibilitytype)) throw new Error('refusing hide: unknown visibility type');
+    const body = {
+      name: a.name, type: 0, location: a.location, context: 1, contextvalue: a.table, hidden: true, uniquename: '', origin: 2, sequence: f.sequence,
+      'ContextEntity@odata.bind': `/entities(${guid(a.entityId, 'the table')})`, 'AppModuleId@odata.bind': `/appmodules(${guid(a.appId, 'the app')})`,
+      onclickeventtype: 2, 'OnClickEventJavaScriptWebResourceId@odata.bind': `/webresourceset(${guid(f.webresourceId, 'the button\'s script')})`,
+      onclickeventjavascriptfunctionname: f.functionName, visibilitytype: f.visibilitytype,
+    };
+    const optional = { buttonlabeltext: text(f.label, 'the label', 200), buttontooltiptitle: text(f.tooltipTitle, 'the tooltip title', 200),
+      buttonaccessibilitytext: text(f.accessibility, 'the accessibility text', 200), buttontooltipdescription: text(f.tooltipDescription, 'the tooltip', 2000),
+      fonticon: text(f.fonticon, 'the icon', 200), onclickeventjavascriptparameters: text(f.parameters, 'the action\'s parameters', 4000) };
+    for (const [k, v] of Object.entries(optional)) if (v !== undefined) body[k] = v;
+    return { method: 'POST', path: 'appactions', body, headers: ['Prefer: return=representation'] };
+  }
+  // One of the template's classic visibility rules linked to the new row, so a later "show" brings the button back
+  // with the rules it had (the designer sends one of these per rule).
+  if (verb === 'linkRule') {
+    if (!/^https:\/\/[a-z0-9.-]+$/i.test(String(host))) throw new Error('refusing linkRule on a host that is not a bare https address');
+    return { method: 'POST', path: `appactions(${guid(a.id, 'the button row')})/appaction_appactionrule_classicrules/$ref`,
+      body: { '@odata.id': `${host}/api/data/v9.2/appactionrules(${guid(a.ruleId, 'the rule')})` }, headers: [] };
+  }
+  if (verb === 'setHidden') {
+    if (typeof a.hidden !== 'boolean') throw new Error('refusing setHidden: hidden must be true or false');
+    if (!a.etag) throw new Error('refusing to PATCH without a version tag (If-Match)');
+    return { method: 'PATCH', path: `appactions(${guid(a.id, 'the button row')})`, body: { hidden: a.hidden }, headers: [`If-Match: ${a.etag}`] };
+  }
+  throw new Error(`refusing command verb ${verb}`);
 }
 
 function dupRuleCall(verb, ruleId) {
@@ -242,4 +332,4 @@ function dupRuleCall(verb, ruleId) {
   throw new Error(`refusing duplicate rule verb ${verb}`);
 }
 
-module.exports = { writeConnection, checkMeta, publishXml, roleCall, identityCall, dupRuleCall, META_ACTIONS };
+module.exports = { writeConnection, checkMeta, publishXml, roleCall, identityCall, dupRuleCall, commandCall, behalfHeader, META_ACTIONS };

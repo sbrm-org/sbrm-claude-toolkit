@@ -5,7 +5,7 @@ reads everything live, and refuses (never repairs) anything not exactly right. S
 `~/.sbrm-dataverse/jobs/`, never in a git folder. Every job has:
 
 - `contract`: `"sbrm-dv-job/1"`
-- `kind`: `rows`, `merge`, `schema`, `component`, `setting`, `role`, `appuser`, `securityrole` or `duperule`
+- `kind`: `rows`, `merge`, `schema`, `component`, `setting`, `role`, `appuser`, `securityrole`, `duperule` or `command`
 - `env`: the app's key (`donorapp`, `fedev` = Donor App Dev, `hgs`, `recovery`, `soberliving`)
 - `source`: `"claude-session"` (or the script that made it)
 - `reason`: one plain sentence on why, one line, at most 500 characters
@@ -13,7 +13,8 @@ reads everything live, and refuses (never repairs) anything not exactly right. S
   difference, so the sentence you tell the person and the file always agree
 
 Who may run which kind is the person's level in that app (`whoami <env>`): write for `rows` (and `merge`
-with a merge grant), develop for `schema` and `component`, admin for `setting`, `role` and for deleting an app part (records are never deleted).
+with a merge grant), develop for `schema` and `component`, admin for `setting`, `role`, `securityrole`, `appuser`,
+`duperule`, `command` and for deleting an app part (records are never deleted).
 
 ## Records: `kind: "rows"`
 
@@ -152,6 +153,16 @@ It prints the `snapshot_hash` and saves the current definition to `~/.sbrm-datav
 - A flow plan prints who the flow RUNS AS (its connections' owner): say it to the person. Adding or
   swapping a connection, or changing the trigger of a flow that is On, is admin. Turning a flow On fails
   unless the person owns its connections; the engine says who must do it.
+- **TEST, admin only: `"act_as": "connection_owner"`** on a flow `create`, `update`, `on` or `off`. Power Automate
+  lets only the owner of a flow's connections save it or turn it on, so with this key the one write is sent on behalf
+  of that account. The job never names the account: the engine reads who owns the flow's connection references and
+  refuses unless it is ONE account, not the person, enabled, on that app's list of service accounts (a Dataverse Write
+  Access row with level `service`; until an admin adds one, the key is refused everywhere) and not also listed there
+  as a person. The plan's headline ends "written as <account>" and carries a "Can't be fully undone" line (undo writes
+  as the person, which Power Automate may refuse): say both. Dataverse keeps both names on the flow, and the Write Log
+  entry keeps who approved it. If the flow does not read back as written by that account on your behalf, the outcome
+  is a read-back mismatch: say so. A create goes in an existing solution. Under test in Donor App Dev since 11/19/26;
+  do not use it elsewhere until Dylan says the test passed.
 
 ### A web resource (a form script or a page)
 
@@ -311,6 +322,67 @@ One new role from an explicit privilege list: the narrow role a server job's app
 - Undo: `revert` deletes the role, only while nobody holds it (any person, application user or team, through any
   unit's copy) and its privileges are what the apply left. A delete is not undone; re-create it with a new job.
 - Giving the role: `kind: "role"` with `app_user`. A server job's identity is three jobs: securityrole, appuser, role.
+
+### Taking privileges off an existing SBRM role (admin, from 1.11.43)
+
+The same kind with `role` and `remove` instead of `name` and `privileges`: e.g. take Create on one table off a role so
+its New button disappears for everyone who holds that role.
+
+```json
+{ "contract": "sbrm-dv-job/1", "kind": "securityrole", "env": "hgs", "role": "#_ SBRM Normal",
+  "remove": [ { "table": "sbrm_waitlistcount", "access": ["create"] } ],
+  "source": "claude-session", "reason": "The nightly flow makes these rows; nobody makes one by hand.",
+  "intent": { "verb": "securityrole", "role": "#_ SBRM Normal", "action": "remove", "privileges": 1 } }
+```
+
+- `role` is one of SBRM's own roles, by its exact name (starts with `#_ `). Never a Microsoft (managed) role, System
+  Administrator or System Customizer: those are changed by hand in the admin center.
+- `remove`: one entry per table, `access` as above, NO `depth` (a privilege comes off at whatever depth the role holds
+  it). The role must give each one now, or the plan is refused. The security and code tables are refused.
+- `intent.privileges` counts every access on every table. The new-role keys (`name`, `privileges`, `writes`,
+  `description`) are refused in the same job.
+- **Read the plan to the person before they approve.** It names who holds the role (enabled people, application users
+  by name, teams; disabled accounts are counted apart and are unaffected) and every OTHER role that gives each
+  privilege, held or not, with the depth it gives it at: anyone holding one of those keeps it at that depth, because
+  privileges add up across roles. An application user that loses a privilege its integration uses stops working.
+- Apply reads the holders and the other roles again: any change from what the plan showed (the person approved on
+  Claude Code's prompt, which shows the plan) is refused, so make a new plan. Apply also works out each privilege again
+  from the table and the role as it is now.
+- People already signed in may keep the privilege until they sign out and back in.
+- The plan takes about a minute on a widely held role (it reads every role that gives the privilege), and apply reads it
+  all again before it writes: run the apply line with a 10-minute timeout (`timeout: 600000`), never the 2-minute
+  default, so the run is never cut off between taking one privilege off and the next.
+- A privilege shared by several tables (activities share one) is refused; it comes off in the admin center.
+- Undo: `revert` gives back exactly what the read-back showed gone, at the depth it was held, only while the role is
+  still as that apply left it. Its prompt names who holds the role and the other roles, like the removal's, since giving
+  back adds access for every holder. Giving back is not itself undone: take them off again with a new job.
+
+## Hiding a built-in button: `kind: "command"` (admin, from 1.11.43)
+
+Hides Microsoft's own Deactivate, Activate or New button for ONE of SBRM's own tables in ONE model-driven app, e.g.
+so nobody deactivates a nightly row from the list. A security role cannot do this for Deactivate (it rides on Write).
+
+```json
+{ "contract": "sbrm-dv-job/1", "kind": "command", "env": "hgs", "app": "sbrm_Homeless", "table": "sbrm_waitlistcount",
+  "hide": ["deactivate"], "where": ["list", "form"], "solution": "SBRMWaitlistCount",
+  "source": "claude-session", "reason": "Nightly rows are made by the flow; nobody hides one by hand.",
+  "intent": { "verb": "command", "action": "hide", "app": "sbrm_Homeless", "table": "sbrm_waitlistcount", "buttons": 2 } }
+```
+
+- `app` is the app's UNIQUE name (`get <env> 'appmodules?$select=name,uniquename'` lists them). `table` is an
+  unmanaged `sbrm_` table; Microsoft's tables are changed in the maker portal. `solution` is an existing unmanaged
+  solution under the SBRM publisher (never Default) that the new rows go in.
+- `hide`: one or more of `deactivate`, `activate`, `new`. `where` (optional): `list` (the main grid), `form`,
+  `subgrid`, `associated`; left out = all four. `intent.buttons` = buttons x places.
+- **Tell the person before they approve: the button disappears for EVERYONE who uses that app, admins included.**
+  A role does not bring it back. Other apps that show the table keep it.
+- The plan refuses a button that is not Microsoft's plain, live definition, and a place where rows already override
+  it twice or a managed row does. A row an earlier hide left showing is flipped; one already hidden is skipped.
+- After the apply the row reads hidden; that proves the ROW. Say to open the app and look: if the button still
+  shows, the app needs publishing in the maker portal (not yet known whether it does; the first live use will say).
+- Undo: `revert` shows the button again (the rows stay), including a row a failed apply made or flipped. A row a hide
+  left with fewer rules than the button (it stopped part-way) is named in the undo's prompt. Showing is not itself
+  undone: hide it again with a new job.
 
 ## Duplicate rules: `kind: "duperule"` (admin, from 11/16/26)
 

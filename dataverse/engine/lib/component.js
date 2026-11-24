@@ -28,7 +28,7 @@
 
 const crypto = require('crypto');
 const { whoAmI, accessFor, PlanRefused } = require('./resolve');
-const { resolveAccess, TOOLKIT_SETS } = require('./access');
+const { resolveAccess, serviceAccounts, TOOLKIT_SETS } = require('./access');
 const { ApplyRefused } = require('./apply');
 const { canonical, planTooOld, STALE_TEXT } = require('./store');
 const { entryText } = require('./log');
@@ -87,6 +87,13 @@ const SETS = {
 };
 const MODES = ['update', 'create', 'on', 'off', 'own', 'delete'];
 const FLOW_ONLY = new Set(['on', 'off', 'own']);
+// TEST SLICE (11/19/26, Dylan: "do the test"; CONTRACT.md §3, §8): `"act_as": "connection_owner"` on a flow job asks
+// for the one write to go ON BEHALF OF the account that owns the flow's connections, because Power Automate lets
+// only that account save or turn on such a flow (R-1324, 11/16; reproduced in Donor App Dev 11/19, plan
+// 20261119-154350-19b2345a). Admin only; the account must be on the environment's own list of service accounts
+// (a Write Access row with level "service"); who it is comes from the live environment, never from the job.
+const ACT_AS = 'connection_owner';
+const ACT_AS_MODES = new Set(['create', 'update', 'on', 'off']);
 // webresourcetype values whose content is text the engine can show and compare (1 HTML, 2 CSS, 3 JavaScript, 4 XML).
 // Images, Silverlight, XSL, ICO, SVG and RESX are changed in the maker portal.
 const TEXT_WEB_RESOURCE = { 1: 'HTML', 2: 'CSS', 3: 'JavaScript', 4: 'XML' };
@@ -110,7 +117,7 @@ const MESSAGES = { 1: 'create', 2: 'delete', 3: 'update', 4: 'create or update',
 const NOTE_TYPES = new Set(['If', 'OpenApiConnection', 'Scope', 'Terminate', 'Query']);
 
 const TOP_KEYS = new Set(['contract', 'kind', 'env', 'component', 'mode', 'definition', 'owner', 'snapshot_hash',
-  'solution', 'proven_in', 'publish', 'source', 'reason', 'intent']);
+  'solution', 'proven_in', 'publish', 'source', 'reason', 'intent', 'act_as']);
 
 const obj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -1422,6 +1429,16 @@ function validateComponentJob(raw, { envs }) {
     else if (typeof raw.proven_in !== 'string' || !raw.proven_in.trim()) err('"proven_in" must be the dev copy\'s plan id');
   }
   if (raw.publish !== undefined && raw.publish !== true) err('"publish" may only be true: a view, form or sitemap change is always published (an unpublished change reaches nobody)');
+  // Written on behalf of the flow's connection owner (test slice, 11/19/26). The job names no account: the engine
+  // reads who owns the flow's connections and refuses anyone not on the environment's service-account list.
+  let actAs = null;
+  if (raw.act_as !== undefined && raw.act_as !== null) {
+    if (raw.act_as !== ACT_AS) err(`"act_as" may only be "${ACT_AS}": the flow is written on behalf of the account that owns its connection references (admin; the engine reads who that is)`);
+    else if (set && set !== 'workflows') err('"act_as" is for flows only');
+    else if (MODES.includes(mode) && !ACT_AS_MODES.has(mode)) err(`"act_as" is for a flow create, update, on or off, not "${mode}"`);
+    else if (mode === 'create' && obj(raw.solution)) err('a flow written with "act_as" goes in an existing solution: name it by its unique name (make a new solution in a change of its own)');
+    else actAs = ACT_AS;
+  }
 
   // The definition.
   let def = null;
@@ -1525,7 +1542,7 @@ function validateComponentJob(raw, { envs }) {
       component: { set, id: mode === 'create' ? null : c.id.toLowerCase(), name: c.name.trim() },
       definition: def, rename, owner: raw.owner ? raw.owner.toLowerCase() : null, snapshot_hash: raw.snapshot_hash || null,
       solution: solUnique, solution_friendlyname: solFriendly, proven_in: raw.proven_in ? raw.proven_in.trim() : null,
-      source: raw.source.trim(), reason: raw.reason.trim(), intent,
+      source: raw.source.trim(), reason: raw.reason.trim(), intent, act_as: actAs,
     },
   };
 }
@@ -1686,6 +1703,45 @@ function runsAsText(list) {
   return owners.join(' and ');
 }
 
+// The account a flow would be written ON BEHALF OF (test slice, 11/19/26): the ONE owner of every connection
+// REFERENCE the flow uses (what "Runs as" has read since 10/7; a connection's own owner is not read here, review F9),
+// and only when that account is on the environment's service-account list (`service`, a Set of emails from
+// lib/access.js) and is not also listed there as a person (`people`, review F15). Worked out from live reads at plan,
+// at apply, and again after the approval; a job never names it. READS ONLY.
+// Returns { act: { id, name, email, object_id } } or { why }.
+function actAsTarget(dv, flow, service, me, appName, people = null) {
+  const refs = (flow && flow.runs_as) || [];
+  if (!refs.length) return { why: 'this flow uses no connection references, so there is no owner to write it as; leave "act_as" out' };
+  if (refs.some((r) => r.invoker || r.missing || !r.owner_id)) {
+    return { why: 'this flow has a connection with no single owner (one the person who runs it supplies, or a missing connection reference), so it cannot be written as the owner of its connection references' };
+  }
+  const owners = [...new Set(refs.map((r) => r.owner_id))];
+  if (owners.length !== 1) return { why: `this flow's connection references belong to more than one account (${runsAsText(refs)}); it can only be written as one` };
+  if (owners[0] === String(me.systemuserid || '').toLowerCase()) return { why: 'you own this flow\'s connection references yourself; leave "act_as" out' };
+  let u;
+  try {
+    u = dv.get(`systemusers(${owners[0]})?$select=fullname,internalemailaddress,isdisabled,azureactivedirectoryobjectid`);
+  } catch (e) {
+    if (!(e instanceof DataverseError)) throw e;
+    return { why: `the owner of this flow's connection references (${owners[0]}) could not be read in the ${appName}` };
+  }
+  const name = u.fullname || owners[0];
+  // Enabled must be READ as enabled: a missing or null answer is refused, not taken as fine (review F2).
+  if (u.isdisabled !== false) return { why: `${name} owns this flow's connection references but ${u.isdisabled === true ? 'is a disabled user' : 'could not be read as an enabled user'}; nothing can be written as them` };
+  const email = String(u.internalemailaddress || '').trim().toLowerCase();
+  if (!email || !service.has(email)) {
+    return { why: `${name} owns this flow's connection references but is not on the ${appName}'s list of service accounts the toolkit may write as (a Dataverse Write Access row with level "service"). A flow is written as another account only when that account is a listed service account. Ask Dylan.` };
+  }
+  // One email is a person or a service account, never both (review F15): a person row beside the service row would
+  // let a flow change land under a staff member's name.
+  if (people && has(people, email)) {
+    return { why: `${name} is on the ${appName}'s Write Access list as a person as well as a service account; an account is one or the other, so nothing is written as them. Ask Dylan.` };
+  }
+  const oid = String(u.azureactivedirectoryobjectid || '').toLowerCase();
+  if (!GUID.test(oid)) return { why: `${name} has no Entra sign-in id in the ${appName}, so nothing can be written as them` };
+  return { act: { id: owners[0], name, email, object_id: oid } };
+}
+
 // Active flows whose definitions name this flow's id: they call it, so turning it off makes them fail.
 function callersOf(dv, id) {
   try {
@@ -1811,6 +1867,8 @@ function needFor(f) {
   if (f.set === 'webresourceset' && f.mode === 'create') why.push('it adds code that runs in the app (a new web resource)');
   // Round 3: what a step, script, control or page can REACH (lib: stepPower, markupPower).
   for (const p of f.power || []) why.push(p);
+  // Test slice (11/19/26): a write on behalf of another account is an admin's, whatever else it is.
+  if (f.act_as) why.push(`it is written as ${f.act_as}, not as you`);
   return { level: why.length ? 'admin' : 'develop', why };
 }
 
@@ -1837,6 +1895,9 @@ function severityFor(f, warnRows) {
     irreversible.push(`publishes new code in ${what}, which runs at once for everyone who opens ${names(f.loaded_by)}; whatever it does stays done`);
   }
   if ((f.other_drafts || []).length) irreversible.push(`publishing ${f.table} also publishes unpublished edits to: ${names(f.other_drafts)}`);
+  // Test slice (11/19/26): undo writes as the person, which Power Automate refuses for a flow on another account's
+  // connections; so the person reads this before approving.
+  if (f.act_as) irreversible.push(`${what} is written as ${f.act_as}, on your behalf; undo here writes as you, which Power Automate may refuse for a flow on their connections`);
   return severity.assess({ count: 1, noun: 'components', lasting, irreversible, unproven: f.unproven || null }, { warnRows });
 }
 
@@ -1970,10 +2031,12 @@ function title(plan) {
   const c = plan.component;
   const on = c.table ? ` (${c.table})` : '';
   const what = `the ${c.noun} '${c.name}'${on}`;
-  if (plan.mode === 'create') return `Create ${what} in the ${plan.app}${c.noun === 'flow' ? ', Off,' : ''} in solution ${plan.solution.name}${plan.solution.create ? ' (a new solution, made by this change)' : ''}`;
-  if (plan.mode === 'update') return `Change ${what} in the ${plan.app}`;
-  if (plan.mode === 'on') return `Turn on ${what} in the ${plan.app}`;
-  if (plan.mode === 'off') return `Turn off ${what} in the ${plan.app}`;
+  // Test slice (11/19/26): the headline is what Claude Code's prompt shows, so it says whose name the write carries.
+  const as = plan.act_as ? `, written as ${plan.act_as.name}` : '';
+  if (plan.mode === 'create') return `Create ${what} in the ${plan.app}${c.noun === 'flow' ? ', Off,' : ''} in solution ${plan.solution.name}${plan.solution.create ? ' (a new solution, made by this change)' : ''}${as}`;
+  if (plan.mode === 'update') return `Change ${what} in the ${plan.app}${as}`;
+  if (plan.mode === 'on') return `Turn on ${what} in the ${plan.app}${as}`;
+  if (plan.mode === 'off') return `Turn off ${what} in the ${plan.app}${as}`;
   if (plan.mode === 'own') return `Hand ${what} in the ${plan.app} over to ${plan.owner_to.name}`;
   return `Delete ${what} from the ${plan.app}`;
 }
@@ -1986,6 +2049,10 @@ function entryFor(plan, { time, planId, person, outcome, rows }) {
     // sections: what the change changed, so a later `proven_in` can be checked as the SAME change (lib/proven.js).
     mode: 'component', action: plan.mode, component: plan.component, sections: plan.diff.sections, source: plan.source, reason: plan.reason, approval: 'prompt',
     left_out: [], headline: title(plan), outcome, rows, reverts_plan_id: plan.reverts_plan_id || null,
+    // Test slice (11/19/26): whose name the write was ASKED to carry. It is the request, so it also stands on a
+    // cancelled or refused entry (review F11); what the flow read back as is on the row (`written_as`), and only
+    // when something was written. `person` above is always who approved it.
+    ...(plan.act_as ? { requested_as: { id: plan.act_as.id, name: plan.act_as.name, email: plan.act_as.email } } : {}),
   };
 }
 
@@ -2003,7 +2070,8 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
   const set = job.component.set;
   const identity = whoAmI(dv);
   if (!identity.email) throw new PlanRefused(['could not read your email from Dataverse; access cannot be checked'], 'no_identity');
-  const acc = accessFor(resolveAccess(access, dv, job.env), identity.email, job.env);
+  const accessList = resolveAccess(access, dv, job.env);
+  const acc = accessFor(accessList, identity.email, job.env);
   if (!atLeast(acc.level, 'develop')) {
     throw new PlanRefused([`changing the app (views, forms, sitemaps, flows) takes develop access in the ${envInfo.name}; ${identity.fullname} has ${acc.level}. Ask Dylan if this should change.`],
       atLeast(acc.level, 'write') ? 'not_permitted' : 'access_read');
@@ -2138,6 +2206,20 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
     }
   }
 
+  // Written on behalf of the flow's connection owner (test slice, 11/19/26): admin, and only a listed service
+  // account. Checked before the level so a non-admin is told plainly it is an admin's.
+  let actAs = null;
+  if (job.act_as) {
+    if (!atLeast(acc.level, 'admin')) {
+      throw new PlanRefused([`writing a flow as the owner of its connection references takes admin access in the ${envInfo.name}; ${identity.fullname} has ${acc.level}. Ask Dylan.`], 'not_permitted');
+    }
+    if (solution && solution.create) throw new PlanRefused(['a flow written with "act_as" goes in an existing solution; make the new solution in a change of its own'], 'invalid_job');
+    const t = actAsTarget(dv, flow, serviceAccounts(accessList, job.env), identity, envInfo.name, accessList && accessList.people);
+    if (t.why) throw new PlanRefused([t.why], 'not_permitted');
+    actAs = t.act;
+    facts.act_as = actAs.name;
+  }
+
   // Intent: the sections Claude said change, against the engine's own diff (the §6b.1 rule).
   if (job.mode === 'update' && !revertOf) {
     const said = [...job.intent.changed].sort();
@@ -2172,6 +2254,7 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
     publish: ['update', 'create'].includes(job.mode) ? publishFor(set, live ? live.id : null, table) : null,
     proven_in: job.proven_in || null,
     reverts_plan_id: revertOf || null,
+    act_as: actAs,
   };
   // The log keeps the whole definition before and after; if that would not fit one Write Log row, refuse
   // rather than log less (ruled 10/7, §8f).
@@ -2190,6 +2273,13 @@ async function planCore(dv, job, { envs, access, warnRows = severity.DEFAULT_WAR
 
 function undoLine(plan) {
   const n = plan.component.noun;
+  // Written as another account (test slice): undo here is planned and written as the person, which Power Automate
+  // may refuse, so the line never promises it (review F10: the prompt said both "can't" and "can" be undone).
+  if (plan.act_as) {
+    const kept = plan.mode === 'update' ? ' The definition before this change is kept in full in the Write Log.' : '';
+    const what = plan.mode === 'create' ? 'turns the flow off (it is not deleted)' : plan.mode === 'update' ? 'puts the definition back' : plan.mode === 'on' ? 'turns it back off' : 'turns it back on';
+    return `Undo ${what}, but it is written as you, not as ${plan.act_as.name}: Power Automate may refuse it for a flow on their connections.${kept}`;
+  }
   if (plan.mode === 'update') return `Can be undone with revert: the definition before this change is kept in full in the Write Log.${plan.component.set === 'workflows' ? ' Anything the flow does before then stays done.' : ''}`;
   if (plan.mode === 'create' && plan.component.set === 'webresourceset') return `Undo cannot remove the new ${n}; it is removed in the maker portal.`;
   if (plan.mode === 'create') return plan.component.set === 'workflows' ? 'Undo turns the flow off; it is not deleted (only an admin delete removes it).' : `Undo cannot remove the new ${n}; only an admin delete can.`;
@@ -2208,6 +2298,7 @@ function componentSummary(plan) {
   if (plan.mode === 'update' || plan.mode === 'create') for (const l of plan.diff.lines) out.push(`  ${l}`);
   if (plan.flow) {
     out.push(`  Runs as: ${plan.flow.runs_as_text}`);
+    if (plan.act_as) out.push(`  Written as: ${plan.act_as.name}, on your behalf. Dataverse keeps both names on the flow${plan.mode === 'create' ? `, and the new flow belongs to ${plan.act_as.name}` : ''}.`);
     if (plan.flow.concurrency_carried) out.push(`  Trigger concurrency (${concText(plan.flow.concurrency_carried)}) is kept: the platform never lets it be removed.`);
     if (plan.mode === 'update') out.push(plan.flow.live_on ? '  The flow is ON: the change applies from its next run.' : '  The flow is off.');
     if (plan.mode === 'off') {
@@ -2215,7 +2306,11 @@ function componentSummary(plan) {
       if (plan.flow.callers === null) out.push('  Could not check which flows call it.');
       else if (plan.flow.callers.length) out.push(`  Flows that call it will fail while it is off: ${names(plan.flow.callers)}`);
     }
-    if (plan.mode === 'on') out.push(`  Only the owner of its connections (${plan.flow.runs_as_text}) can turn it on; if Power Automate refuses, they turn it on themselves.`);
+    if (plan.mode === 'on') {
+      out.push(plan.act_as
+        ? `  It is turned on as ${plan.act_as.name}, the owner of its connections.`
+        : `  Only the owner of its connections (${plan.flow.runs_as_text}) can turn it on; if Power Automate refuses, they turn it on themselves.`);
+    }
   }
   if (plan.mode === 'own') {
     out.push(`  Owner: ${plan.before.owner ? plan.before.owner.name : 'unknown'} -> ${plan.owner_to.name}`);
@@ -2242,6 +2337,7 @@ function componentDetail(plan, { id } = {}) {
   for (const l of plan.diff.detail) out.push(l);
   if (plan.flow) {
     out.push('', `Runs as: ${plan.flow.runs_as_text}`);
+    if (plan.act_as) out.push(`Written as: ${plan.act_as.name} (${plan.act_as.email}), on behalf of ${plan.identity.fullname}`);
     for (const r of plan.flow.runs_as) out.push(`  ${r.key}: ${r.invoker ? 'the person who runs it' : r.missing ? `MISSING (${r.logical})` : `${r.display} (${r.logical}), owner ${r.owner}${r.connected ? '' : ', NO CONNECTION'}${r.active ? '' : ', INACTIVE'}`}`);
     for (const t of plan.flow.trigger) out.push(`Trigger ${t.name}: ${triggerText(t)}`);
     if (plan.flow.owner) out.push(`Flow owner: ${plan.flow.owner.name}`);
@@ -2290,6 +2386,16 @@ function planShapeProblems(plan) {
     if (typeof sol.name !== 'string' || !sol.name.trim() || /[\r\n]/.test(sol.name) || sol.name.length > 256) bad.push('a new solution with a bad friendly name');
     if (typeof sol.publisher !== 'string' || !GUID.test(sol.publisher)) bad.push('a new solution with no publisher GUID');
   }
+  // Written on behalf of another account (test slice, 11/19/26): a flow create, update, on or off only, never with a
+  // new solution, and the account as two GUIDs and a name. Who it really is gets read live again at apply.
+  const aa = plan.act_as;
+  if (aa !== null && aa !== undefined) {
+    if (set !== 'workflows' || !ACT_AS_MODES.has(plan.mode)) bad.push('a write on behalf of another account on something that is not a flow create, update, on or off');
+    else if (sol && sol.create) bad.push('a write on behalf of another account together with a new solution');
+    else if (!obj(aa) || typeof aa.id !== 'string' || !GUID.test(aa.id) || typeof aa.object_id !== 'string' || !GUID.test(aa.object_id) || typeof aa.name !== 'string' || !aa.name.trim() || typeof aa.email !== 'string') {
+      bad.push('a write on behalf of an account that is not named properly');
+    }
+  }
   // A new web resource (1.11.40): the same rules the job file was held to, on what the plan file now says.
   if (plan.mode === 'create' && set === 'webresourceset') {
     const x = plan.create_extra || {};
@@ -2329,6 +2435,12 @@ function isConnectionRefusal(e) {
 }
 
 function connectionRefusalText(plan) {
+  // Sent on behalf of the connection owner (round-2 review F4): the refusal is NOT "do it as them by hand", since the
+  // write already went out under their name and was still refused.
+  if (plan.act_as && plan.act_as.name) {
+    const act = plan.mode === 'own' ? 'hand this flow over' : plan.mode === 'off' ? 'turn this flow off' : plan.mode === 'on' ? 'turn this flow on' : 'save this flow';
+    return `Power Automate refused the write sent on behalf of ${plan.act_as.name}, the owner of this flow's connections: it did not let the toolkit ${act} as them. Nothing changed. Read the flow before planning again, and tell Dylan (writing as a service account is a test slice).`;
+  }
   const who = plan.flow ? plan.flow.runs_as_text : 'the owner of its connections';
   const act = plan.mode === 'own' ? 'hand this flow over' : 'turn this flow on';
   return `Power Automate refused: only the owner of this flow's connections (${who}) can ${act}. Nothing changed. `
@@ -2545,13 +2657,64 @@ function landedAfterTimeout(dv, plan, rid, table, e, sleep, clock) {
   return { outcome: `failed: the request timed out on this computer and the change was not on '${plan.component.name}' after 2 minutes. It may still land: read it before planning again (${why})` };
 }
 
+// Whose name a flow written on behalf of another account actually carries (test slice, 11/19/26), read back from
+// the flow itself after the write: a create must be OWNED by that account (a flow acts as its owner), and in EVERY
+// mode the flow must read created/modified by that account on behalf of the person. Anything else is a read-back
+// mismatch, never "written" (review F6: a note left the outcome and the headline disagreeing with the flow; if the
+// platform stamps a state change differently, the live test shows it as a mismatch). A read that fails proves
+// nothing, so it is a mismatch too (review F1: it counted as success). Fills row.written_as and row.notes; returns
+// the problems.
+function landedAs(dv, mode, rid, actAs, me, row) {
+  const lc = (v) => (v ? String(v).toLowerCase() : null);
+  let w;
+  try {
+    w = dv.get(`workflows(${rid})?$select=_ownerid_value,_createdby_value,_createdonbehalfby_value,_modifiedby_value,_modifiedonbehalfby_value`, { strong: true });
+  } catch (e) {
+    row.written_as = { id: actAs.id, name: actAs.name, on_behalf_of: lc(me.systemuserid), read_back: null };
+    row.notes.push(`asked to be written as ${actAs.name} on behalf of ${me.fullname}; whose name the flow carries could not be read back (${e.message})`);
+    return [`whose name the flow carries could not be read back, so it is not shown to be written as ${actAs.name}`];
+  }
+  const created = mode === 'create';
+  const by = lc(created ? w._createdby_value : w._modifiedby_value);
+  const onBehalf = lc(created ? w._createdonbehalfby_value : w._modifiedonbehalfby_value);
+  const owner = lc(w._ownerid_value);
+  row.written_as = { id: actAs.id, name: actAs.name, on_behalf_of: lc(me.systemuserid), read_back: { by, on_behalf_by: onBehalf, owner } };
+  const verb = created ? 'created' : 'modified';
+  const asAsked = by === actAs.id && onBehalf === lc(me.systemuserid);
+  row.notes.push(asAsked
+    ? `written as ${actAs.name} on behalf of ${me.fullname} (read back: ${verb} by ${actAs.name}, on behalf of ${me.fullname})`
+    : `asked to be written as ${actAs.name} on behalf of ${me.fullname}; the flow reads ${verb} by ${by || 'nobody'}, on behalf of ${onBehalf || 'nobody'}`);
+  return [
+    ...(created && owner !== actAs.id ? [`the new flow's owner is ${owner || 'unknown'}, not ${actAs.name}`] : []),
+    ...(asAsked ? [] : [`the flow reads ${verb} by ${by || 'nobody'} on behalf of ${onBehalf || 'nobody'}, not by ${actAs.name} on behalf of ${me.fullname}`]),
+  ];
+}
+
+// The account a write is carried out as, worked out from live reads (test slice): admin still, the flow's connection
+// references still owned by ONE listed service account, and that account the one the plan named. Used at apply and
+// AGAIN after the approval (review F8: the prompt can wait minutes, and removing the service row is the off switch).
+// `flow` carries runs_as as just read. Returns the account; throws ApplyRefused.
+function actAsNow(dv, plan, flow, me, access, waited) {
+  const accessList = resolveAccess(access, dv, plan.env);
+  const acc = accessFor(accessList, me.email, plan.env);
+  const when = waited ? ' (changed while the approval was waiting)' : '';
+  if (!atLeast(acc.level, 'admin')) throw new ApplyRefused(`writing a flow as the owner of its connection references takes admin access; you have ${acc.level}${when}. Nothing was written.`, 'access_revoked');
+  const t = actAsTarget(dv, flow, serviceAccounts(accessList, plan.env), me, plan.app, accessList && accessList.people);
+  if (t.why) throw new ApplyRefused(`${t.why.replace(/\.$/, '')}${when}. Nothing was written.`, 'not_permitted');
+  if (t.act.id !== String(plan.act_as.id).toLowerCase() || t.act.object_id !== String(plan.act_as.object_id).toLowerCase()) {
+    throw new ApplyRefused(`the account '${plan.component.name}' would be written as changed since the plan (now: ${t.act.name})${when}. Nothing was written; make a new plan.`, 'snapshot_moved');
+  }
+  return t.act;
+}
+
 async function applyComponent(plan, deps, { id, file, fs }) {
   const { access, connect, confirm, now = new Date(), sleep = defaultSleep, clock = Date.now } = deps;
   if (planTooOld(plan, now, MAX_AGE_MS)) throw new ApplyRefused(STALE_TEXT, 'stale_plan');
   const dv = connect(plan.host);
   const me = whoAmI(dv);
   if (me.systemuserid !== plan.identity.systemuserid) throw new ApplyRefused(`this plan was made by ${plan.identity.fullname}; you are signed in as ${me.fullname}. Nothing was written.`, 'different_person');
-  const acc = accessFor(resolveAccess(access, dv, plan.env), me.email, plan.env);
+  const accessList = resolveAccess(access, dv, plan.env);
+  const acc = accessFor(accessList, me.email, plan.env);
   const shapeBad = planShapeProblems(plan);
   if (shapeBad.length) throw new ApplyRefused(`this plan file asks to write ${shapeBad.join(', ')}, which no plan of this kind writes. It was changed after it was made; make a new plan. Nothing was written.`, 'plan_tampered');
   const set = plan.component.set;
@@ -2570,13 +2733,17 @@ async function applyComponent(plan, deps, { id, file, fs }) {
     live = readComponent(dv, set, plan.component.id);
     if (!live) throw new ApplyRefused(`'${plan.component.name}' no longer exists. Nothing was written.`, 'snapshot_moved');
     if (live.managed) throw new ApplyRefused(`'${plan.component.name}' is now managed; managed components are never changed.`, 'not_permitted');
+    // Written as another account: it must STILL be a cloud flow, read now (review F3: only the plan checked).
+    if (plan.act_as && (set !== 'workflows' || live.category !== 5)) throw new ApplyRefused(`'${plan.component.name}' is not a cloud flow (category ${live.category}), so nothing is written as another account. Nothing was written.`, 'not_permitted');
     let h = null;
     try { h = hashDef(set, live.id, live.definition); } catch { h = null; }
     if (h !== plan.before_hash) throw new ApplyRefused(`'${plan.component.name}' has changed since the plan (its definition no longer matches the snapshot). Nothing was written; make a new plan.`, 'snapshot_moved');
     if (plan.before && (live.statecode !== plan.before.statecode || (live.owner && plan.before.owner && live.owner.id !== plan.before.owner.id))) {
       // Only a flow's definition change survives its flow being switched since the plan, and then its
       // severity and level are worked out below on the new state (a flow turned on since now runs the change live).
-      if (plan.mode !== 'update' || set !== 'workflows') {
+      // Written as another account, even that is refused (review F4): the person approved a named account writing
+      // a flow in the state and hands the plan showed.
+      if (plan.mode !== 'update' || set !== 'workflows' || plan.act_as) {
         throw new ApplyRefused(`'${plan.component.name}' was turned on or off, or changed owner, since the plan. Nothing was written; make a new plan.`, 'snapshot_moved');
       }
     }
@@ -2621,6 +2788,14 @@ async function applyComponent(plan, deps, { id, file, fs }) {
     const owners = (list) => canonical((list || []).map((r) => [r.key, r.owner_id || null, Boolean(r.missing)]));
     if (owners(d.flow.runs_as) !== owners(plan.flow.runs_as)) throw new ApplyRefused(`the connections '${plan.component.name}' runs on changed since the plan (now: ${d.flow.runs_as_text}). Nothing was written; make a new plan.`, 'snapshot_moved');
   }
+  // Written on behalf of the flow's connection owner (test slice, 11/19/26): who that is, whether they are still a
+  // listed service account and whether the person is still an admin are all worked out AGAIN here from live reads;
+  // the plan's own `act_as` only has to agree with it.
+  let actAs = null;
+  if (plan.act_as) {
+    actAs = actAsNow(dv, plan, d.flow, me, access, false);
+    d.facts.act_as = actAs.name;
+  }
   const need = needFor(d.facts);
   if (!atLeast(acc.level, need.level)) {
     throw new ApplyRefused(need.level === 'admin' && atLeast(acc.level, 'develop')
@@ -2637,7 +2812,7 @@ async function applyComponent(plan, deps, { id, file, fs }) {
 
   const view = {
     ...plan, component: { ...plan.component, name: d.facts.name }, severity: sevNow, facts: d.facts, diff: d.diff, flow: d.flow,
-    need: need.level, need_why: need.why, access: acc.level,
+    need: need.level, need_why: need.why, access: acc.level, act_as: actAs,
   };
   const answer = confirm({ summaryText: componentSummary(view), detailText: componentDetail(view, { id }), title: `SBRM: approve this app change in the ${plan.app}?` });
   const base = entryFor(view, { time: now.toISOString(), planId: id, person: me, outcome: 'cancelled', rows: [] });
@@ -2673,6 +2848,30 @@ async function applyComponent(plan, deps, { id, file, fs }) {
     const clash = nameClash(set, plan.rename.to, live, nameTaken(dv, set, plan.rename.to, live));
     if (clash) throw new ApplyRefused(`${clash} (taken while the approval was waiting). Nothing was written.`, 'snapshot_moved');
   }
+  // Written as another account: admin, the service list and who owns the flow's connection references are read AGAIN
+  // after the approval (review F8), and for a flow that exists, that it is still the flow, in the state and hands, the
+  // prompt showed. The header below is built only from this last read.
+  if (plan.act_as) {
+    let nowLive = null;
+    if (live) {
+      nowLive = readComponent(dv, set, plan.component.id);
+      if (!nowLive || nowLive.category !== 5 || nowLive.managed || nowLive.statecode !== live.statecode || (nowLive.owner && nowLive.owner.id) !== (live.owner && live.owner.id)) {
+        throw new ApplyRefused(`'${plan.component.name}' was turned on or off, changed owner, or is no longer a cloud flow (changed while the approval was waiting). Nothing was written; make a new plan.`, 'snapshot_moved');
+      }
+      // Its definition too (round-2 review F1): an on / off goes with If-Match *, so a definition saved while the prompt
+      // was open would otherwise be turned on as the service account without the person having seen it.
+      let hNow = null;
+      try { hNow = hashDef(set, nowLive.id, nowLive.definition); } catch { hNow = null; }
+      if (hNow !== plan.before_hash) {
+        throw new ApplyRefused(`'${plan.component.name}' was edited while the approval was waiting (its definition no longer matches the snapshot). Nothing was written; make a new plan.`, 'snapshot_moved');
+      }
+    }
+    // Who owns the connection references is read from the definition this write leaves in place: the one it sends
+    // (create, update) or the flow as just re-read (on, off).
+    const cdNow = JSON.parse((written || nowLive.definition).clientdata || '{}');
+    actAs = actAsNow(dv, plan, { runs_as: runsAs(dv, cdNow) }, me, access, true);
+  }
+  const behalf = actAs ? { behalf: actAs.object_id } : {};
 
   // The one write, then publish (views, forms, sitemaps), then the read-back.
   // `sent_fields` (1.11.31, the 1.11.30 review's F4 in general): the fields this update actually sent, so a later revert
@@ -2708,7 +2907,7 @@ async function applyComponent(plan, deps, { id, file, fs }) {
           row.new_solution = plan.solution.uniquename;
           row.notes.push(`created the solution ${solutionText(plan.solution)}`);
         }
-        const res = dv.create(set, body, { solution: plan.solution.uniquename });
+        const res = dv.create(set, body, { solution: plan.solution.uniquename, ...behalf });
         rid = String(res[SETS[set].id] || '').toLowerCase();
         if (!rid) throw new Error('the new component id did not come back');
         row.id = rid;
@@ -2717,10 +2916,11 @@ async function applyComponent(plan, deps, { id, file, fs }) {
       } else {
         // R-1253 (11/11/26): the platform's own turn-off re-registers the trigger subscription and moves the flow's
         // version before the If-Match check, so every off of an ON flow was refused and the flow stayed on. A state
-        // change (on / off) is idempotent and its definition, state and owner were re-checked just above, so it goes
+        // change (on / off) is idempotent and its definition, state and owner were checked before the prompt (and,
+        // for a write as another account, again after it), so it goes
         // with If-Match: * (the row must still exist, any version). Every other write keeps the exact tag.
         try {
-          dv.update(set, rid, body, plan.mode === 'on' || plan.mode === 'off' ? '*' : etag);
+          dv.update(set, rid, body, plan.mode === 'on' || plan.mode === 'off' ? '*' : etag, behalf);
         } catch (e1) {
           // R-1309 (11/16/26): Dataverse refused the exact tag on a flow update though nothing had moved (version,
           // definition and modifiedon all unchanged; F-1032 on 10/22 the same). Only when a fresh read proves nothing
@@ -2730,7 +2930,7 @@ async function applyComponent(plan, deps, { id, file, fs }) {
           // The note goes on only once the retry's outcome is known (review F2, 11/16): never "written" ahead of a
           // retry that is then refused or times out.
           try {
-            dv.update(set, rid, body, '*');
+            dv.update(set, rid, body, '*', behalf);
           } catch (e2) {
             if (e2 && typeof e2 === 'object' && !isTimeout(e2)) e2.retryRefused = true;
             else row.notes.push('Dataverse refused the version check although nothing had moved, so the same change was sent once more without it; that second request timed out on this computer (the outcome says whether it landed).');
@@ -2775,7 +2975,18 @@ async function applyComponent(plan, deps, { id, file, fs }) {
       } else row.outcome = 'failed: the component changed between the check and the write; nothing was written to it';
     } else if (!wrote && e && e.code === '0x80060882') row.outcome = 'failed: the component changed between the check and the write; nothing was written to it';
     // The write went through and only what came after it failed (1.11.30 review F5): never "failed", as for records.
-    else if (wrote) row.outcome = `read-back failed: the write went through but '${view.component.name}' could not be read back: ${e.message}. Read it before doing anything else`;
+    else if (wrote) {
+      // Written as another account: whose name the flow carries is still read (round-2 review F2), so the outcome says
+      // whether the write landed as that account even when the rest of the read-back failed.
+      let asText = '';
+      if (actAs && !row.written_as) {
+        try {
+          const p = landedAs(dv, plan.mode, rid, actAs, me, row);
+          asText = p.length ? `; and ${p.join('; ')}` : `; it did read back written as ${actAs.name}`;
+        } catch { asText = ''; }
+      }
+      row.outcome = `read-back failed: the write went through but '${view.component.name}' could not be read back: ${e.message}${asText}. Read it before doing anything else`;
+    }
     else row.outcome = `failed: ${e.message}`;
     if (!wrote && row.new_solution) row.notes.push(`the solution '${plan.solution.name}' (${plan.solution.uniquename}) was created and stays (empty); plan again into it, or remove it in the maker portal`);
     else if (!wrote && solutionSent) row.notes.push(`the solution '${plan.solution.name}' (${plan.solution.uniquename}) was sent and may exist; look for it in the maker portal before planning again`);
@@ -2811,7 +3022,8 @@ async function applyComponent(plan, deps, { id, file, fs }) {
     const rb = readBack(dv, { ...plan, publish: pub, after_definition: written || plan.after_definition, live_before: stateOf(live) }, rid, sleep);
     row.after = rb.after;
     row.notes.push(...rb.notes);
-    const problems = [...rb.bad, ...(row.publish_failed ? ['not published'] : [])];
+    const asBad = actAs ? landedAs(dv, plan.mode, rid, actAs, me, row) : [];
+    const problems = [...rb.bad, ...asBad, ...(row.publish_failed ? ['not published'] : [])];
     row.outcome = problems.length ? `read-back mismatch: ${problems.join('; ')}` : 'written';
   }
 }
@@ -2916,4 +3128,5 @@ module.exports = {
   readSnapshot, parseXml, formFields, diffFlow, diffView, diffForm, diffSitemap, diffComponent, carryConcurrency, flowConnections,
   needFor, severityFor, SETS, MAX_ENTRY, sameChange, sectionContent, createBody, TOOLKIT_TABLES,
   flowSecrets, actionFacts, stepPower, triggerPower, viewHooks, formHooks, markupPower, planShapeProblems, bodyFor,
+  actAsTarget, landedAs,
 };

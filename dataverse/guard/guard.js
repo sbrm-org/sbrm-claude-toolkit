@@ -935,8 +935,23 @@ function describePlan(id) {
     else if (rec.kind === 'securityrole') {
       // A new SBRM security role (1.11.31): the prompt names the role and every privilege it gets.
       const ps = Array.isArray(rec.privileges) ? rec.privileges : [];
+      // 1.11.43: privileges taken off an existing role (and their undo) name every privilege and who holds the role.
+      const h = rec.holders || {};
+      const n = (xs, one, many) => `${(xs || []).length} ${(xs || []).length === 1 ? one : many}`;
       head = rec.action === 'delete' ? `Delete the security role '${rec.name}' in the ${app}`
+        : rec.action === 'remove' ? `Take ${ps.map((p) => `${p.access} on ${p.table} (${p.depth_word})`).join(', ')} off the security role '${rec.name}' in the ${app}; the role is held by ${n(h.people, 'person', 'people')}, ${n(h.apps, 'application user', 'application users')} and ${n(h.teams, 'team', 'teams')}`
+        : rec.action === 'restore' ? `Give ${ps.map((p) => (typeof p.plain === 'string' ? p.plain : `${p.name} (${p.depth})`)).join(', ')} back to the security role '${rec.name}' in the ${app}; the role is held by ${n(h.people, 'person', 'people')}, ${n(h.apps, 'application user', 'application users')} and ${n(h.teams, 'team', 'teams')}`
         : `Create the security role '${rec.name}' in the ${app}${rec.writes ? ' (WRITES)' : ' (read only)'}: ${ps.map((p) => `${p.access} ${p.table} (${p.depth_word})`).join(', ')}; plus the baseline Dataverse gives every role (Read on plug-ins, Read, Create and Write on SharePoint data)`;
+    }
+    else if (rec.kind === 'command') {
+      // A built-in button hidden (or shown again) for one table in one app (1.11.43): the prompt names the button,
+      // the table, the app and every place, and that it is for everyone.
+      const B = { deactivate: 'Deactivate', activate: 'Activate', new: 'New' };
+      const P = { list: 'the list', form: 'the form', subgrid: 'sub grids', associated: 'associated views' };
+      const steps = Array.isArray(rec.steps) ? rec.steps : [];
+      const uniq = (xs) => [...new Set(xs)];
+      const m = rec.model_app || {};
+      head = `${rec.action === 'show' ? 'Show' : 'Hide'} ${uniq(steps.map((s) => B[s.button] || s.button)).join(', ')} for ${(rec.table || {}).name} in the app '${m.name}' (${app}) on ${uniq(steps.map((s) => P[s.where] || s.where)).join(', ')}, for everyone who uses that app`;
     }
     else if (rec.kind === 'duperule') {
       // A duplicate-detection rule (11/16/26): the prompt names the rule and every condition it ends with.

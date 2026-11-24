@@ -80,6 +80,8 @@ and do not report it: switch to the engine. It is a licensing matter for Dylan, 
 
 - The gift's scan: `image donorapp msnfp_transactions sbrm_paymentimage <transaction id> [...]` (up to 200 ids per
   run; get the ids with `get` or `query`). Full size by default; `--thumb` gives the small preview.
+- Each scan takes about 4 seconds (26 took 98 s, 11/23/26), so for more than about 25 ids give the shell command a
+  10-minute timeout, or split the ids across runs: the shell's 2-minute default stops it part-way.
 - Each picture is saved to `sbrm-reads` as `<app>-<table>-<column>-<id>.jpg` (or `.png`); open it with the Read
   tool to look at it. A record with no picture (a cash gift) is said, not an error.
 
@@ -115,7 +117,7 @@ Each person has a level in each app, on that app's Dataverse Write Access list (
 | read | look only (anyone without a row) |
 | write | change records; merge only with a separate "may merge" yes |
 | develop | everything in write, plus change the app: tables, columns, choices, views, forms, sitemaps, flows |
-| admin | everything in develop, plus deleting app parts (a column, table, view, form, flow...), alternate keys, making a column required on a table that has rows, flow steps that reach beyond their connection (HTTP, child flows, a run-time table, someone else's connection, a changed trigger on a live flow), script or web content in views and forms, handing a flow to a new owner, changing an app setting (an environment variable's value), changing a duplicate-detection rule, giving or taking a person's security role, the toolkit's own lists, and closing reported items |
+| admin | everything in develop, plus deleting app parts (a column, table, view, form, flow...), alternate keys, making a column required on a table that has rows, flow steps that reach beyond their connection (HTTP, child flows, a run-time table, someone else's connection, a changed trigger on a live flow), script or web content in views and forms, handing a flow to a new owner, changing an app setting (an environment variable's value), changing a duplicate-detection rule, giving or taking a person's security role, taking privileges off one of SBRM's own roles, hiding a built-in button, writing a flow as its connections' service account, the toolkit's own lists, and closing reported items |
 
 There is no limit on how much one change may touch. Instead the engine flags a big or serious change
 (below), and the person decides knowing it. The level is the toolkit's; the person's own Dataverse role
@@ -138,8 +140,8 @@ Verify the path on first use and say it in full whenever you hand the person a c
    you are changing. App changes: `kind: "schema"` (tables, columns, relationships, keys, choices),
    `kind: "component"` (a view, form, sitemap, flow or web resource), `kind: "setting"` (an environment variable's
    value), `kind: "role"` (who holds a security role), `kind: "appuser"` (an application user for a server job's
-   Entra app), `kind: "securityrole"` (a new SBRM security role) or `kind: "duperule"` (a duplicate-detection rule),
-   see below. Save it in `~/.sbrm-dataverse/jobs/`,
+   Entra app), `kind: "securityrole"` (a new SBRM security role, or privileges taken off one), `kind: "duperule"` (a
+   duplicate-detection rule) or `kind: "command"` (hide a built-in button), see below. Save it in `~/.sbrm-dataverse/jobs/`,
    never in a git folder (Recovery job files there are refused), with your file-writing tool, not a
    shell command: the guard blocks a shell line that writes into that folder, so `plan` goes in a
    command of its own.
@@ -234,6 +236,21 @@ on its own. Never ask the person to run or paste a command.
   switches one off or on), then `kind: "role"` with `app_user` gives it the role. Three plans, three prompts; say
   which privileges the role gets, in words, before the person approves. Undo: revert deletes the role (while nobody
   holds it) and switches the application user off (never deleted).
+- **Taking privileges off an existing SBRM role** (`kind: "securityrole"` with `role` + `remove`, admin; JOBS.md): e.g.
+  Create off one table so its New button goes for everyone holding the role. The plan's "Ends access" line names who
+  holds the role, the application users by name (an integration that loses a privilege stops working) and every other
+  role that still gives it, at what depth: read it to the person before they approve. The plan and the apply each read
+  for about a minute on a widely held role, so run the apply in the background with a 10-minute timeout. A change in
+  who holds the role between the plan and the apply is refused: plan again. Undo gives back exactly what came off;
+  its "Gives access" line says who gains it.
+- **Hiding a built-in button** (`kind: "command"`, admin; JOBS.md): Deactivate, Activate or New, for one of SBRM's own
+  tables in one model-driven app, in an SBRM solution. Tell the person it goes for EVERYONE in that app, admins
+  included, and a role does not bring it back. After the apply, ask them to open the app and look: if the button still
+  shows, the app needs publishing in the maker portal. Undo shows it again (the rows stay).
+- **Writing a flow as its connections' owner** (`"act_as": "connection_owner"` on a flow create, update, on or off;
+  admin; TEST SLICE, Donor App Dev only until Dylan says otherwise): Power Automate lets only the owner of a flow's
+  connections save or turn on such a flow. The write goes out on behalf of that account only when it is on the app's
+  Write Access list as a service account; the headline ends "written as <account>". Read that to the person.
 - A column's type cannot be changed (that is delete and recreate). Managed components (Microsoft's own
   `msnfp_` tables, forms and views) are not changed; add your own beside them.
 
