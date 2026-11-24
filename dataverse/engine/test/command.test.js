@@ -123,7 +123,7 @@ test('plan: reads only; one step per button and place, each resting on Microsoft
   assert.match(s, /disappears for EVERYONE who uses 'SBRM Homeless', admins included\. A security role does not bring it back/);
   assert.match(s, /Other apps that show sbrm_waitlistcount keep the button/);
   assert.match(s, /New command rows go in solution SBRM Waitlist Count/);
-  assert.match(s, /if the button still shows, publish the app in the maker portal/);
+  assert.match(s, /no publish is needed, but a page that already had the list open can show the old bar for a few minutes/);
   assert.match(s, /Can be undone with revert \(shows the button again; the rows stay\)/);
   assert.match(C.commandDetail(plan, { id: 'p1' }), /new row for Deactivate on the list: template Mscrm\.HomepageGrid\.\{!EntityLogicalName\}\.Deactivate \([0-9a-f-]{36}\), 2 rule\(s\)/);
   // all four places, two buttons
@@ -205,7 +205,7 @@ test('apply: one new row per button and place in the designer\'s shape, in the s
   assert.deepEqual([row.name, row.action, row.button, row.where, row.outcome, row.id], ['Deactivate on the list', 'create', 'deactivate', 'list', 'written', made[0].appactionid]);
   assert.deepEqual(row.before, { exists: false });
   assert.deepEqual(row.after, { id: made[0].appactionid, hidden: true, uniquename: made[0].uniquename, rules: [...t._rules].sort() });
-  assert.ok(row.notes.some((n) => /Open the app and look: if the button still shows, publish the app/.test(n)));
+  assert.ok(row.notes.some((n) => /Open the app and look; no publish is needed/.test(n)));
   assert.equal(res.entry.mode, 'command');
   assert.equal(res.entry.command_table, TABLE);
   assert.match(shown[0].title, /approve hiding this button in the HGS apps/);

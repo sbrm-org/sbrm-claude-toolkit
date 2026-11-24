@@ -378,8 +378,10 @@ so nobody deactivates a nightly row from the list. A security role cannot do thi
   A role does not bring it back. Other apps that show the table keep it.
 - The plan refuses a button that is not Microsoft's plain, live definition, and a place where rows already override
   it twice or a managed row does. A row an earlier hide left showing is flipped; one already hidden is skipped.
-- After the apply the row reads hidden; that proves the ROW. Say to open the app and look: if the button still
-  shows, the app needs publishing in the maker portal (not yet known whether it does; the first live use will say).
+- After the apply the row reads hidden; that proves the ROW. Say to open the app and look. No publish is needed
+  (first live use, HGS 11/23/26: the list and form in a fresh page showed no button at once), but a browser that already
+  had the list open can keep showing the old bar for a few minutes, even after a hard reload: look again later before
+  calling it a failure.
 - Undo: `revert` shows the button again (the rows stay), including a row a failed apply made or flipped. A row a hide
   left with fewer rules than the button (it stopped part-way) is named in the undo's prompt. Showing is not itself
   undone: hide it again with a new job.

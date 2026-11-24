@@ -3,6 +3,15 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.44** (2026-11-23, what the first live uses of 1.11.43 taught)
+  A hidden button needs no publish: in HGS 11/23/26 a fresh page showed neither Deactivate on the Waitlist and Meals
+  lists and forms right after the apply. A browser that already had the list open kept the old bar for a few
+  minutes, even after a hard reload. The plan, the undo and the outcome note now say that instead of "publish the app
+  in the maker portal"; JOBS.md and the skill likewise.
+  A flow write Power Automate refuses (ConnectionAuthorizationFailed) now keeps Power Automate's own words after the
+  toolkit's ("Power Automate said: ..."): its message names the caller object id it judged. The act-as live test
+  (Donor App Dev 11/23/26, F-1569) was refused on behalf of SBRM App Admin, and the replaced message hid whether the
+  header reached that check.
 - **1.11.43** (2026-11-23: privileges taken off an existing role; a built-in button hidden for one
   table in one app; TEST: an admin can write a flow as the owner of its connection references)
   **Role edit** (Dylan 11/20/26, "Build both into the toolkit", after an operator made a duplicate night by hand). Kind
