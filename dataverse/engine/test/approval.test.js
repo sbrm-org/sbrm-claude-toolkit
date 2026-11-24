@@ -189,3 +189,26 @@ test('the prompt names an application user change and a new security role with e
   assert.equal(approvalText({ verb: 'apply', keys: ['20261109-150004-aaaaaaa4'] }), "Delete the security role '#_ sbrmapps Job (read)' in the HGS apps (an undo)");
   assert.equal(approvalText({ verb: 'apply', keys: ['20261109-150005-aaaaaaa5'] }), "Add '#_ sbrmapps Job (read)' to # Job (application user d4000000-0000-0000-0000-000000000001) in the HGS apps");
 });
+
+test('the prompt names every privilege taken off an existing role, who holds it, and what an undo gives back (1.11.43)', () => {
+  const { approvalText } = require('../../guard/guard');
+  const store = require('../lib/store');
+  const put = (id, rec) => fs.writeFileSync(path.join(store.dir('plans'), `${id}.json`), JSON.stringify(rec));
+  // Holders as the live HGS plan read 11/23/26: enabled people, application users and teams (disabled accounts apart).
+  put('20261123-150001-aaaaaaa1', { kind: 'securityrole', app: 'HGS apps', action: 'remove', name: '#_ SBRM Normal',
+    privileges: [{ access: 'create', table: 'sbrm_waitlistcount', depth_word: 'organization' }, { access: 'create', table: 'sbrm_mealcount', depth_word: 'organization' }],
+    holders: { people: Array.from({ length: 12 }, (_, i) => `P${i}`), apps: ['# SBRM Package Tracker'], teams: ['Homeless Program'], disabled: 12 },
+    severity: { lines: ['Ends access: 12 people, 1 application user and 1 team lose it.'] } });
+  put('20261123-150002-aaaaaaa2', { kind: 'securityrole', app: 'HGS apps', action: 'remove', name: '#_ SBRM Idle',
+    privileges: [{ access: 'create', table: 'sbrm_guest', depth_word: 'organization' }], holders: { people: ['One'], teams: [] }, severity: { lines: [] } });
+  put('20261123-150003-aaaaaaa3', { kind: 'securityrole', app: 'HGS apps', action: 'restore', name: '#_ SBRM Normal', reverts_plan_id: '20261123-150001-aaaaaaa1',
+    privileges: [{ name: 'prvCreatesbrm_WaitlistCount', id: 'x', depth: 'Global' }], severity: { lines: [] },
+    holders: { people: ['P1', 'P2'], apps: ['# SBRM Package Tracker'], teams: ['Homeless Program'], disabled: 3 } });
+  assert.equal(approvalText({ verb: 'apply', keys: ['20261123-150001-aaaaaaa1'] }),
+    "Take create on sbrm_waitlistcount (organization), create on sbrm_mealcount (organization) off the security role '#_ SBRM Normal' in the HGS apps; the role is held by 12 people, 1 application user and 1 team. Ends access: 12 people, 1 application user and 1 team lose it.");
+  // A plan from before the holder split (no `apps`) still reads cleanly.
+  assert.equal(approvalText({ verb: 'apply', keys: ['20261123-150002-aaaaaaa2'] }),
+    "Take create on sbrm_guest (organization) off the security role '#_ SBRM Idle' in the HGS apps; the role is held by 1 person, 0 application users and 0 teams");
+  assert.equal(approvalText({ verb: 'apply', keys: ['20261123-150003-aaaaaaa3'] }),
+    "Give prvCreatesbrm_WaitlistCount (Global) back to the security role '#_ SBRM Normal' in the HGS apps; the role is held by 2 people, 1 application user and 1 team (an undo)");
+});

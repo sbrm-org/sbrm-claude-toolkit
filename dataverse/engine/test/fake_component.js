@@ -36,6 +36,12 @@ const IDS = {
   otherpub: '00000001-0000-0000-0000-00000000005a',
 };
 
+// Entra object ids (systemuser.azureactivedirectoryobjectid): what Dataverse's on-behalf-of header names (11/19/26).
+const OIDS = {
+  appadmin: 'aaaaaaaa-0000-4000-8000-00000000ad01',
+  dev2: 'aaaaaaaa-0000-4000-8000-00000000de02',
+};
+
 const REF = (logical, api = 'shared_commondataserviceforapps') => ({ runtimeSource: 'embedded', connection: { connectionReferenceLogicalName: logical }, api: { name: api } });
 
 // A Dataverse-triggered flow, as Power Automate saves it.
@@ -150,8 +156,8 @@ function data() {
       { solutionid: '50000000-0000-0000-0000-000000000003', uniquename: 'Crfb496', friendlyname: 'Common Data Services Default Solution', ismanaged: false, _publisherid_value: IDS.otherpub },
     ],
     systemusers: {
-      [IDS.appadmin]: { fullname: 'SBRM App Admin', isdisabled: false },
-      [IDS.dev2]: { fullname: 'Dana Martin', isdisabled: false },
+      [IDS.appadmin]: { fullname: 'SBRM App Admin', isdisabled: false, internalemailaddress: 'appadmin@example.org', azureactivedirectoryobjectid: OIDS.appadmin },
+      [IDS.dev2]: { fullname: 'Dana Martin', isdisabled: false, internalemailaddress: 'dana@example.org', azureactivedirectoryobjectid: OIDS.dev2 },
       [IDS.gone]: { fullname: 'Former Staff', isdisabled: true },
     },
     callbackregistrations: [
@@ -224,6 +230,22 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
   const tag = (set, id) => `W/"${etags.get(`${set}/${id}`) || 1}"`;
   const bump = (set, id) => etags.set(`${set}/${id}`, (etags.get(`${set}/${id}`) || 1) + 1);
   const userName = (id) => (id === userId ? fullname : (d.systemusers[id] || {}).fullname || id);
+  // On-behalf-of (live 11/19/26, Donor App Dev, reads): a write that names another user's Entra object id is carried
+  // out AS that user; an id Dataverse does not know is refused. `ignoreBehalf` models a platform that drops the header.
+  const callerFor = (dv, behalf) => {
+    if (behalf === undefined || behalf === null || dv.ignoreBehalf) return userId;
+    const hit = Object.entries(d.systemusers).find(([, u]) => String(u.azureactivedirectoryobjectid || '').toLowerCase() === String(behalf).toLowerCase());
+    if (!hit) throw new DataverseError('User with the given Entra object id does not exist', { code: '0x80040220' });
+    return hit[0];
+  };
+  // Who owns every connection a flow definition names (null when it names none or they differ).
+  const connectionOwner = (clientdata) => {
+    try {
+      const refs = Object.values(JSON.parse(clientdata).properties.connectionReferences || {});
+      const owners = new Set(refs.map((r) => (d.connectionreferences.find((c) => c.connectionreferencelogicalname === r.connection.connectionReferenceLogicalName) || {})._ownerid_value));
+      return owners.size === 1 ? [...owners][0] : null;
+    } catch { return null; }
+  };
   const register = (dv, id) => {
     const w = d.workflows[id];
     const t = w && w.statecode === 1 ? daTrigger(w.clientdata) : null;
@@ -316,10 +338,17 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
       }
       throw new Error(`fake_component: unrouted GET ${p}`);
     },
-    update(set, id, body, etag) {
-      calls.push({ method: 'PATCH', path: `${set}(${id})`, body, etag });
+    update(set, id, body, etag, opts = {}) {
+      calls.push({ method: 'PATCH', path: `${set}(${id})`, body, etag, ...(opts.behalf ? { behalf: opts.behalf } : {}) });
       const rec = d[set] && d[set][id];
       if (!rec) throw notFound();
+      const caller = callerFor(dv, opts.behalf);
+      // Live 11/19/26 (Donor App Dev, plan 20261119-154350-19b2345a; Recovery R-1324, 11/16): Power Automate refuses a
+      // SAVE of a flow's definition, and turning it on, by anyone who does not own its connections, even while the
+      // flow is off. `connectionOwnerSaves` models it, judged on who the write is carried out as.
+      if (set === 'workflows' && dv.connectionOwnerSaves && (body.clientdata || body.statecode === 1) && connectionOwner(body.clientdata || rec.clientdata) !== caller) {
+        throw new DataverseError('Flow client error returned with status code "Forbidden" and details "{"error":{"code":"ConnectionAuthorizationFailed","message":"The caller object id is \'x\'. Connection \'shared-commondataser-1\' to \'shared_commondataserviceforapps\' cannot be used to activate this flow."}}"', { status: 403, code: '0x80060467' });
+      }
       // Live 11/9/26 (R-1253, recovery flow 5be9e73d): turning an ON flow off re-registers its trigger subscription,
       // which moves the flow's version before the version check, so an If-Match carrying the tag read at apply is
       // refused and the flow stays on. `offBumpsVersion` models it; `If-Match: *` (exists, any version) is not refused.
@@ -365,6 +394,8 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
       }
       // `formTextOnSave: [sent, stored]`: any other text the platform stores differently (a control for H-1016)
       if (set === 'systemforms' && typeof rec.formxml === 'string' && dv.formTextOnSave) rec.formxml = rec.formxml.split(dv.formTextOnSave[0]).join(dv.formTextOnSave[1]);
+      rec._modifiedby_value = caller;
+      rec._modifiedonbehalfby_value = caller === userId ? null : userId;
       bump(set, id);
       if (d.drafts[set]) delete d.drafts[set][id]; // a PATCH replaces the unpublished layer: the draft is gone
       if (set === 'workflows' && body.clientdata && dv.switchOffOnSave) Object.assign(rec, { statecode: 0, statuscode: 1 });
@@ -382,12 +413,13 @@ function fakeComponentDv({ email = 'dev@example.org', userId = IDS.me, fullname 
       return {};
     },
     create(set, body, opts = {}) {
-      calls.push({ method: 'POST', path: set, body, solution: opts.solution || null });
+      calls.push({ method: 'POST', path: set, body, solution: opts.solution || null, ...(opts.behalf ? { behalf: opts.behalf } : {}) });
       if (dv.failCreateOf === set) throw new DataverseError('A validation error occurred.', { code: '0x80040216' });
+      const caller = callerFor(dv, opts.behalf);
       const n = Object.keys(d[set]).length + 1;
       const id = `cccccccc-cccc-cccc-cccc-${String(n).padStart(12, '0')}`;
       // `readBackDrops` (above) applies to a create too (1.11.40): a field the platform silently does not store.
-      d[set][id] = { [ID_COL[set]]: id, ismanaged: false, statecode: 0, statuscode: 1, _ownerid_value: userId, solution: opts.solution || null, ...Object.fromEntries(Object.entries(body).filter(([k]) => k !== dv.readBackDrops)) };
+      d[set][id] = { [ID_COL[set]]: id, ismanaged: false, statecode: 0, statuscode: 1, _ownerid_value: caller, _createdby_value: caller, _createdonbehalfby_value: caller === userId ? null : userId, solution: opts.solution || null, ...Object.fromEntries(Object.entries(body).filter(([k]) => k !== dv.readBackDrops)) };
       // Live (10/23/26, plan 20261023-165142-37da2ab6): saving a NEW view, Dataverse adds savedqueryid="<its new
       // id>" to the root <fetch>. `fetchIdStamp: 'other'` stamps a different id (a control), false stamps nothing.
       if (set === 'savedqueries' && typeof body.fetchxml === 'string' && dv.fetchIdStamp !== false) {
@@ -474,4 +506,4 @@ const ACCESS = {
   },
 };
 
-module.exports = { fakeComponentDv, devDv, devEntry, secretFlowCd, PLACEHOLDER_SECRET, data, flowCd, REF, IDS, ENVS, ACCESS, FETCH, LAYOUT, FORM, SITEMAP, SCRIPT, b64 };
+module.exports = { fakeComponentDv, devDv, devEntry, secretFlowCd, PLACEHOLDER_SECRET, data, flowCd, REF, IDS, OIDS, ENVS, ACCESS, FETCH, LAYOUT, FORM, SITEMAP, SCRIPT, b64 };

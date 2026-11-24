@@ -216,7 +216,11 @@ function planJob(dv, job, { envs, access, warnRows }) {
     const dupeHint = /^duplicaterule(?:condition)?s$/.test(job.table)
       ? ' A duplicate-detection rule (its conditions, on or off, or a new one) is changed with kind "duperule", which takes admin access.'
       : '';
-    throw new PlanRefused([`${job.table} holds the app's own definitions, not records. Change a view, form, sitemap or flow with an app change (kind "component"; tables and columns are kind "schema"), which takes develop access.${settingHint}${roleHint}${dupeHint} Other access settings, and users themselves, are changed in the admin portal.`], 'not_permitted');
+    // And a command-bar button (1.11.43).
+    const commandHint = /^appaction(?:rule)?s$/.test(job.table)
+      ? ' A built-in button (Deactivate, Activate, New) is hidden for one SBRM table in one app with kind "command", which takes admin access.'
+      : '';
+    throw new PlanRefused([`${job.table} holds the app's own definitions, not records. Change a view, form, sitemap or flow with an app change (kind "component"; tables and columns are kind "schema"), which takes develop access.${settingHint}${roleHint}${dupeHint}${commandHint} Other access settings, and users themselves, are changed in the admin portal.`], 'not_permitted');
   }
   // No cap on how many rows (ruled 10/7: "I dont think placing caps on writes makes sense"); a big change
   // is flagged by its severity instead, below.

@@ -76,10 +76,16 @@ const APP_KINDS = {
     const m = require('./lib/duperule');
     return { label: 'duplicate detection rule', validate: m.validateDupeRuleJob, plan: m.planDupeRule, summary: m.dupeRuleSummary, detail: m.dupeRuleDetail, apply: m.applyDupeRule, revert: m.planDupeRuleRevert };
   },
-  // A new SBRM security role from an explicit privilege list (1.11.31, Dylan 10/21/26), admin only.
+  // A new SBRM security role from an explicit privilege list (1.11.31, Dylan 10/21/26), or privileges taken off an
+  // existing one (1.11.43, Dylan 11/20/26), admin only.
   securityrole: () => {
     const m = require('./lib/securityrole');
-    return { label: 'new security role', validate: m.validateSecurityRoleJob, plan: m.planSecurityRole, summary: m.securityRoleSummary, detail: m.securityRoleDetail, apply: m.applySecurityRole, revert: m.planSecurityRoleRevert };
+    return { label: 'SBRM security role change', validate: m.validateSecurityRoleJob, plan: m.planSecurityRole, summary: m.securityRoleSummary, detail: m.securityRoleDetail, apply: m.applySecurityRole, revert: m.planSecurityRoleRevert };
+  },
+  // A built-in command-bar button hidden for one SBRM table in one app (1.11.43, Dylan 11/20/26), admin only.
+  command: () => {
+    const m = require('./lib/command');
+    return { label: 'command bar change (hide a built-in button)', validate: m.validateCommandJob, plan: m.planCommand, summary: m.commandSummary, detail: m.commandDetail, apply: m.applyCommand, revert: m.planCommandRevert };
   },
 };
 const appKind = (kind) => (Object.prototype.hasOwnProperty.call(APP_KINDS, kind) ? APP_KINDS[kind]() : null);
@@ -218,8 +224,8 @@ function loadJob(file, envs) {
   } catch (e) {
     return { errors: [`cannot read ${file} as JSON: ${e.message}`] };
   }
-  // Nine kinds: rows (CONTRACT.md §2a), merge (DESIGN.md §8c), schema and component (§10e), setting (1.11.12), role (1.11.13),
-  // appuser and securityrole (1.11.31), duperule (1.11.36).
+  // Ten kinds: rows (CONTRACT.md §2a), merge (DESIGN.md §8c), schema and component (§10e), setting (1.11.12), role (1.11.13),
+  // appuser and securityrole (1.11.31), duperule (1.11.36), command (1.11.43).
   if (raw && raw.kind === 'merge') return merge.validateMergeJob(raw, { envs });
   const app = raw && appKind(raw.kind);
   return app ? app.validate(raw, { envs }) : validateJob(raw, { envs });

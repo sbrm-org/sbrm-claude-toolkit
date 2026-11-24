@@ -111,7 +111,10 @@ function entryText(entry, { rowLines = true } = {}) {
 //             alone do not fit)
 //   'all'     no rows: the counts and the plan's own fields, clipped, always under the limit
 const ENTRY_MAX = 1000000; // under the column's limit, with room for the escaping JSON.stringify adds
-const KEEP_FOR_UNDO = { update: ['changes'], create: ['after'], duperule: ['before', 'after', 'action', 'steps', 'conditions_removed', 'conditions_added', 'conditions_changed'] };
+// securityrole (1.11.43): undo reads the row's action, role, before (what a removal took off) and after (the read-back).
+const KEEP_FOR_UNDO = { update: ['changes'], create: ['after'], duperule: ['before', 'after', 'action', 'steps', 'conditions_removed', 'conditions_added', 'conditions_changed'], securityrole: ['action', 'role', 'before', 'after'],
+  // command (1.11.43): undo reads each row's button, place and the row it left hidden.
+  command: ['action', 'button', 'where', 'before', 'after'] };
 const BIG_VALUE = 2000;
 const sha256 = (v) => crypto.createHash('sha256').update(String(v), 'utf8').digest('hex');
 function hashBig(r) {

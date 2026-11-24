@@ -3,6 +3,67 @@
 One line per release from 1.11.5. Earlier releases are described in their pull requests and squash commits
 (`git log -- dataverse hooks`).
 
+- **1.11.43** (2026-11-23: privileges taken off an existing role; a built-in button hidden for one
+  table in one app; TEST: an admin can write a flow as the owner of its connection references)
+  **Role edit** (Dylan 11/20/26, "Build both into the toolkit", after an operator made a duplicate night by hand). Kind
+  `securityrole` takes `role` + `remove: [{table, access}]`: privileges come OFF one of SBRM's own "#_ " roles, at
+  whatever depth the role holds them. Admin only; never a Microsoft role, System Administrator / Customizer, or the
+  security and code tables. The plan names who holds the role and every other role that still gives each privilege.
+  Apply re-reads the role before the prompt and after the approval, sends one `RemovePrivilegeRole` per privilege, and
+  reads back that exactly those are gone and every other privilege is where it was. Undo gives back exactly what the
+  read-back showed gone, at the depth it was held, while the role is as the apply left it. A trimmed `securityrole`
+  log row now keeps what undo reads (`action`, `role`, `before`, `after`; a trimmed create row could not be undone
+  before). The plan counts the holders apart (enabled people, application users by name, teams) and says how many
+  disabled accounts also hold the role: run read-only against HGS 11/23/26, "25 people" were 12 enabled people, 12
+  disabled accounts and 1 application user. Tests `securityrole_remove.test.js` 13.
+  **Hide a built-in button** (Dylan 11/20/26, after an operator deactivated three nights on the shelter waitlist).
+  Kind `command`: `app` (unique name) + `table` (one of SBRM's own `sbrm_` tables) + `hide` (deactivate, activate,
+  new) + optional `where` (list, form, subgrid, associated; default all four) + `solution`. Admin only. The row made is
+  the one the maker portal's command designer sends for its own Hide (captured 11/23/26 in Donor App Dev): the global
+  template's name, context Entity with the table, the app, hidden, origin 2, an empty uniquename the server fills,
+  the template's label, icon and JavaScript action copied, and its classic visibility rules linked. A row an earlier
+  hide left showing is flipped, one already hidden is skipped. Apply re-reads every template and row before the prompt
+  and after the approval; each row is read back hidden with its rules. The read-back proves the ROW, not the screen:
+  the outcome says to open the app (and publish it if the button still shows). Undo shows the button again; a row is
+  never deleted. The button disappears for everyone using that app, admins included. Tests `command.test.js` 12.
+  **C2 review** `reviews/2026-11-23_role_edit_command/` (Codex Sol + two Opus seats + reconciler; the planted false
+  finding was caught). Fixed: who holds the role and the other roles are read again at apply (any change since the
+  plan is refused: the person approved the plan's picture), and each privilege taken off is worked out again from the
+  table and the live role; the undo of a removal names holders and other roles too; a hide re-reads the app and the
+  table by name; other roles are listed held or not, with the depth they
+  give it at; a root role read with no parent-root counts its own holders; the users table's privileges (`prvWriteUser`,
+  read live) count as a security table for an undo. A button hide refuses a managed table, a solution not under the
+  SBRM publisher (Default), and a template that is not a plain type-0 button; a row that lands but loses its answer (or
+  a flip whose read-back fails) is logged so revert can show it; an undo names a row a stopped hide left short of rules.
+  Round 2 (`reviews/2026-11-23_role_edit_command_r2/`, planted finding caught): Claude Code's prompt shows only the
+  headline and the severity lines, so those now carry the disclosure: a removal's "Ends access" line names the
+  application users and every other role with its depth, an undo of a removal gets a "Gives access" line in plain
+  words, a button's undo gets a "Note" line for a row short of its rules (judged from the live row against the live
+  template, never from an outcome line). Holders are compared by id; a privilege shared by several tables is refused; a
+  role write that landed but lost its answer is judged by the read-back; the log row keeps who held the role; a hide
+  re-checks its solution's publisher at apply; a button undo passes over rows already showing and never calls a read
+  error "gone". Tests `role_command_r1.test.js` 20.
+  **Act-as test slice** (Dylan 11/19/26, "do the test"). Power Automate lets only the owner of a flow's connections
+  save it or turn it on, so a flow on a service account's connections could be created through the toolkit but not
+  edited or switched on (R-1324, 11/16; reproduced in Donor App Dev 11/19). A flow `create`, `update`, `on` or `off` may
+  now carry `"act_as": "connection_owner"`: the engine sends that one write on behalf of the account that owns the
+  flow's connection references, using Dataverse's own on-behalf-of header. Admin only. The job never names the
+  account: the engine reads it live at plan, at apply and again after the approval, and refuses unless it is one
+  account, not the person, read as enabled, on that app's list of service accounts (a Write Access row with level
+  `service`) and not also listed there as a person. No app has such a row yet, so the key is refused everywhere until
+  an admin adds one; the test adds it in Donor App Dev only. The headline ends "written as <account>", the plan carries
+  a "Can't be fully undone" line and its undo line says undo writes as the person. Dataverse keeps both names on the
+  flow, and the engine reads them back into the log row (`written_as`); the entry keeps the request (`requested_as`).
+  A flow that does not read created/modified by the account on behalf of the person, in any mode, a new flow the
+  account does not own, or a read-back that fails, is a read-back mismatch. At apply the record must still be a cloud
+  flow in the state and hands the plan read. The Write Log row is still written as the person. Nothing changes for a
+  job without the key. If the test fails the slice comes out; the permanent design is a separate piece of work.
+  C2 review `reviews/2026-11-19_act_as/` round 1 (Codex Sol + two Opus seats): F1 F2 F3 F4 F6 F8 F10 F11 F15 fixed,
+  wording F5 F9 F13 F20. Round 2 (`reviews/2026-11-19_act_as_r2/`): after the approval the flow's definition must
+  still match the snapshot (an on / off goes without a version check, so an edit saved while the prompt was open was
+  otherwise turned on unseen); a read-back that fails still says whose name the flow carries; a refusal of a write sent
+  on behalf of the account says so instead of "they do it themselves"; refusal and comment wording. Tests
+  `component_act_as.test.js` 25.
 - **1.11.42** (2026-11-23, reads that need no Copilot credits: `get` and `image`)
   Dylan 11/23/26 ("go on the general read command"; "everything that's like recurring that we can build into the
   toolkit, we should, particularly if it doesn't use copilot credits"). On 11/23 the Dataverse read tools
@@ -31,7 +92,7 @@ One line per release from 1.11.5. Earlier releases are described in their pull r
   also covers `check` and `query`); R6 a JPEG or PNG that is cut short is not saved. Not changed: R1 a read run still
   sends the toolkit's own queued event rows, as every command has since 10/7 (no record or app data changes); R3 a
   scan overwriting a file already committed under a git-ignored reads folder needs that file planted by name.
-  Tests `get.test.js` 10, `image.test.js` 11, `query.test.js` +1.
+  Tests `get.test.js` 11, `image.test.js` 11, `query.test.js` +1.
 - **1.11.41** (2026-11-18, a component create can make its own new solution)
   Dylan 11/18/26 (the Bed Board page goes in a new solution; "Another toolkit release"). A component create's `solution`
   may be `{uniquename, friendlyname}`: an existing SBRM solution is used as before; a missing one is made in the same

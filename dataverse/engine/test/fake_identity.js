@@ -19,7 +19,7 @@ const IDS = {
   me: '99999999-9999-9999-9999-999999999999',
   tim: 'a1000000-0000-0000-0000-000000000001',
   ourApp: 'b2000000-0000-0000-0000-000000000001',      // an existing SBRM application user (Mail Sorting Guide)
-  ourAppClient: '28f6380d-c285-4e6f-9789-a8bd4b9da6e3',
+  ourAppClient: 'c3000000-0000-0000-0000-000000000001', // made up (review F23: no real Entra id in the public repo)
   offApp: 'b2000000-0000-0000-0000-000000000002',      // an application user that is switched off
   offAppClient: 'c3000000-0000-0000-0000-000000000002',
   msApp: 'b2000000-0000-0000-0000-000000000003',       // a Microsoft integration: holds a managed role
@@ -95,6 +95,18 @@ function data() {
       sbrm_dataversewritelog: tableMeta('sbrm_dataversewritelog'),
     },
   };
+}
+
+// For "remove" (1.11.43): '#_ SBRM Normal' as live in HGS 11/20/26, at Global, held by a person and by the team
+// Homeless Program; System Administrator also gives Create on sbrm_guest (privileges add up across roles). Added to a
+// data() copy only by the tests that need it, so the older tests see the data they were written for.
+function withNormal(d = data()) {
+  d.roleprivs[IDS.normal] = ['prvCreatesbrm_guest', 'prvReadsbrm_guest', 'prvWritesbrm_guest', 'prvAppendsbrm_guest', 'prvReadsbrm_bednight', 'prvReadrole']
+    .map((n) => ({ name: n, depth: 'Global' }));
+  d.roleprivs[IDS.sa] = [{ name: 'prvCreatesbrm_guest', depth: 'Global' }, { name: 'prvReadsbrm_guest', depth: 'Global' }];
+  d.userroles.push({ user: IDS.tim, role: IDS.normal });
+  d.teamroles.push({ team: IDS.team, role: IDS.normal });
+  return d;
 }
 
 const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
@@ -174,6 +186,22 @@ function fakeIdentityDv({ email = 'admin@example.org', userId = IDS.me, d = data
         if (!t) throw new DataverseError(`Could not find an entity with name ${m[1]}`, { code: '0x80060888' });
         return JSON.parse(JSON.stringify(t));
       }
+      // 1.11.43: every role holding a privilege (Dataverse lists each business unit's copy; this fake, the roots), and a
+      // privilege's name by its id.
+      // privilegedepthmask as read live 11/23/26 in HGS: 1 Basic, 2 Local, 4 Deep, 8 Global.
+      if ((m = /^roleprivilegescollection\?\$select=roleid,privilegedepthmask&\$filter=(.*)$/.exec(p))) {
+        const f = /^privilegeid eq ([0-9a-f-]{36})$/i.exec(decodeURIComponent(m[1]));
+        if (!f) throw new Error(`fake_identity: unsupported roleprivileges filter ${m[1]}`);
+        const name = Object.entries(PRIV).find(([, i]) => same(i, f[1]));
+        const MASK = { Basic: 1, Local: 2, Deep: 4, Global: 8 };
+        const holding = name ? Object.entries(d.roleprivs).map(([rid, ps]) => [rid, ps.find((x) => x.name === name[0])]).filter(([, x]) => x) : [];
+        return { value: holding.map(([rid, x]) => ({ roleid: rid, privilegedepthmask: MASK[x.depth] })) };
+      }
+      if ((m = /^privileges\(([0-9a-f-]{36})\)\?\$select=privilegeid,name$/.exec(p))) {
+        const name = Object.entries(PRIV).find(([, i]) => same(i, m[1]));
+        if (!name) throw notFound();
+        return { privilegeid: m[1], name: name[0] };
+      }
       if ((m = /^RetrieveRolePrivilegesRole\(RoleId=([0-9a-f-]{36})\)$/.exec(p))) {
         const ps = d.roleprivs[m[1].toLowerCase()];
         if (!ps) throw notFound();
@@ -240,6 +268,19 @@ function fakeIdentityDv({ email = 'admin@example.org', userId = IDS.me, d = data
       }
       return {};
     },
+    removeRolePrivilege(roleId, privilegeId) {
+      calls.push({ method: 'POST', verb: 'removeRolePrivilege', roleId, privilegeId });
+      take();
+      if (dv.failOn === 'removeRolePrivilege') { dv.failOn = null; throw new DataverseError('Privilege remove failed', { code: '0x80040220' }); }
+      const held = d.roleprivs[roleId.toLowerCase()];
+      if (!held) throw notFound();
+      const name = Object.entries(PRIV).find(([, i]) => same(i, privilegeId));
+      if (!name) throw new DataverseError(`privilege ${privilegeId} does not exist`, { code: '0x80040217' });
+      if (dv.readBackDrops || name[0] === dv.privsDrop) return {};
+      d.roleprivs[roleId.toLowerCase()] = held.filter((x) => x.name !== name[0]);
+      if (dv.privsExtra) d.roleprivs[roleId.toLowerCase()].push({ name: dv.privsExtra, depth: 'Global' });
+      return {};
+    },
     grantRole() { throw new Error('fake_identity: kind appuser / securityrole never gives a role'); },
     revokeRole() { throw new Error('fake_identity: kind appuser / securityrole never takes a role'); },
     update() { throw new Error('fake_identity: never a records PATCH'); },
@@ -260,4 +301,4 @@ const ACCESS = {
   },
 };
 
-module.exports = { fakeIdentityDv, data, IDS, ENVS, ACCESS, BASELINE, pid };
+module.exports = { fakeIdentityDv, data, withNormal, IDS, ENVS, ACCESS, BASELINE, pid };

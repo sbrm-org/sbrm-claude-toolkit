@@ -5,6 +5,8 @@
 //
 //   - one row per person per environment: email (the key), level read | write | develop | admin
 //     (lib/levels.js; the old `schema` reads as admin), may merge (yes/no; admin implies it);
+//   - or a SERVICE ACCOUNT row, level "service": an account an admin may write a flow as (it gets no level and no
+//     merge, and is not one of the people);
 //   - absent person = read; a row with an unknown level = read (never more than it says);
 //   - NO row limit (ruled 10/7: "I dont think placing caps on writes makes sense"). The table's
 //     Rows Per Approval column is no longer read; a big change is flagged instead (lib/severity.js);
@@ -12,11 +14,12 @@
 //     refuses any job aimed at the toolkit's own tables unless the person is an admin;
 //   - FAIL CLOSED: if the list cannot be read, every write in that environment is refused.
 //
-// Shape: { people: { email: { envs: { env: level }, merge: { env: bool }, name } } }.
+// Shape: { people: { email: { envs: { env: level }, merge: { env: bool }, name } }, service: { env: [email] } }.
 
 const { normalize } = require('./levels');
 
 const ACCESS_SET = 'sbrm_dataversewriteaccesses';
+const SERVICE_LEVEL = 'service';
 const LOG_TABLES = new Set(['sbrm_dataversewritelogs', 'sbrm_dataverseevents']);
 const TOOLKIT_SETS = new Set([...LOG_TABLES, ACCESS_SET]);
 
@@ -49,14 +52,26 @@ function readAccess(dv, env) {
     throw Object.assign(new Error(`could not read the Dataverse Write Access list in this app (${String(e.message).slice(0, 160)}), so writes here are refused until it can be read. Ask Dylan.`), { code: 'access_unreadable' });
   }
   const people = {};
+  const service = [];
   for (const r of rows) {
     const email = String(r.sbrm_email || '').trim().toLowerCase();
     if (!email) continue;
+    // A SERVICE ACCOUNT row (test slice, 11/19/26): level "service" (any case, spaces trimmed). It is not a person: it gets no level,
+    // no merge and no place among the people, and an engine that does not know the word reads it as read. It names
+    // an account an ADMIN may write a flow on behalf of (lib/component.js actAsTarget).
+    if (String(r.sbrm_level || '').trim().toLowerCase() === SERVICE_LEVEL) { service.push(email); continue; }
     const p = { envs: { [env]: normalize(r.sbrm_level) }, merge: { [env]: r.sbrm_merge === true } };
     if (r.sbrm_name) p.name = String(r.sbrm_name);
     people[email] = p;
   }
-  return { people };
+  return { people, service: { [env]: service } };
+}
+
+// The service accounts an admin may write on behalf of in one environment: a Set of lowercase emails. Empty when
+// the list names none, which is every environment until an admin adds a "service" row there.
+function serviceAccounts(access, env) {
+  const list = access && access.service && access.service[env];
+  return new Set(Array.isArray(list) ? list.map((e) => String(e).trim().toLowerCase()).filter(Boolean) : []);
 }
 
 // An `access` argument may be the object itself (tests, library callers) or a function the caller hands
@@ -67,8 +82,9 @@ function resolveAccess(access, dv, env) {
 
 // Several environments' lists as one (the review's list of who may write anywhere).
 function mergeAccessLists(lists) {
-  const out = { people: {} };
+  const out = { people: {}, service: {} };
   for (const l of lists) {
+    for (const [env, emails] of Object.entries(l.service || {})) out.service[env] = [...(out.service[env] || []), ...emails];
     for (const [email, p] of Object.entries(l.people || {})) {
       const o = out.people[email] || (out.people[email] = { envs: {}, merge: {} });
       Object.assign(o.envs, p.envs);
@@ -79,4 +95,4 @@ function mergeAccessLists(lists) {
   return out;
 }
 
-module.exports = { readAccess, resolveAccess, mergeAccessLists, ACCESS_SET, TOOLKIT_SETS, LOG_TABLES, APP_DEFINITION_SETS };
+module.exports = { readAccess, resolveAccess, mergeAccessLists, serviceAccounts, SERVICE_LEVEL, ACCESS_SET, TOOLKIT_SETS, LOG_TABLES, APP_DEFINITION_SETS };

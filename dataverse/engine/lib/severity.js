@@ -23,15 +23,21 @@ function plural(n, one, many) {
 
 // count: rows / pairs / objects the plan changes. noun: what they are, plural form ("contacts").
 // lasting / irreversible / ends: one plain phrase per item, no trailing period. unproven: a phrase or null.
-function assess({ count = 0, noun = 'records', lasting = [], irreversible = [], unproven = null, ends = [] } = {}, { warnRows = DEFAULT_WARN_ROWS } = {}) {
+// gives (1.11.43): access a change ADDS for people who hold something (the undo of a privilege removal). notes: a fact
+// the person must see at the Yes that is none of the above (an undo that brings a button back short of its rules).
+// Claude Code's prompt shows the headline and these lines only (guard.js describePlan), so whatever must be seen
+// before approval goes here.
+function assess({ count = 0, noun = 'records', lasting = [], irreversible = [], unproven = null, ends = [], gives = [], notes = [] } = {}, { warnRows = DEFAULT_WARN_ROWS } = {}) {
   const large = count > warnRows;
   const lines = [];
   if (large) lines.push(`Large change: ${count} ${noun}.`);
   for (const x of ends) lines.push(`Ends access: ${x}.`);
+  for (const x of gives) lines.push(`Gives access: ${x}.`);
   for (const x of irreversible) lines.push(`Can't be fully undone: ${x}.`);
   for (const x of lasting) lines.push(`Lasting: ${x}. Undo cannot remove it; only an admin delete can.`);
+  for (const x of notes) lines.push(`Note: ${x}.`);
   if (unproven) lines.push(`${unproven}.`);
-  return { count, noun, large, warn_rows: warnRows, lasting: [...lasting], irreversible: [...irreversible], unproven: unproven || null, ends: [...ends], lines };
+  return { count, noun, large, warn_rows: warnRows, lasting: [...lasting], irreversible: [...irreversible], unproven: unproven || null, ends: [...ends], gives: [...gives], notes: [...notes], lines };
 }
 
 // The plain-words block that heads the plan output and the pop-up. Empty for a routine change.
@@ -50,6 +56,8 @@ function grew(planned, now) {
   if (now.irreversible.length > planned.irreversible.length) return true;
   if (now.unproven && !planned.unproven) return true;
   if ((now.ends || []).length > (planned.ends || []).length) return true;
+  if ((now.gives || []).length > (planned.gives || []).length) return true;
+  if ((now.notes || []).length > (planned.notes || []).length) return true;
   return false;
 }
 
