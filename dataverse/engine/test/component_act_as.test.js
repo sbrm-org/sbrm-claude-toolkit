@@ -551,7 +551,8 @@ test('round-2 F4: Power Automate refusing a write sent as the connection owner s
     const { res } = await applied(plan, dv);
     assert.equal(res.outcome, 'applied with problems');
     const want = mode === 'update' ? 'save this flow' : 'turn this flow on';
-    assert.equal(res.rows[0].outcome, `refused: Power Automate refused the write sent on behalf of SBRM App Admin, the owner of this flow's connections: it did not let the toolkit ${want} as them. Nothing changed. Read the flow before planning again, and tell Dylan (writing as a service account is a test slice).`);
+    // Power Automate's own words follow ours (live test 11/23/26, F-1569): they name the caller object id it judged.
+    assert.equal(res.rows[0].outcome, `refused: Power Automate refused the write sent on behalf of SBRM App Admin, the owner of this flow's connections: it did not let the toolkit ${want} as them. Nothing changed. Read the flow before planning again, and tell Dylan (writing as a service account is a test slice). Power Automate said: Flow client error returned with status code "Forbidden" and details "{"error":{"code":"ConnectionAuthorizationFailed"}}"`);
     assert.doesNotMatch(res.rows[0].outcome, /does it there|Sharing their connection/);
   }
 });

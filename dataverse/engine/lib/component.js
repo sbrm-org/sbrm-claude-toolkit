@@ -2434,6 +2434,9 @@ function isConnectionRefusal(e) {
   return /ConnectionAuthorizationFailed/i.test(`${e && e.code} ${e && e.message}`);
 }
 
+// Power Automate's message as it came, on one line, trimmed (it carries ids, never a secret).
+const paWords = (e) => String((e && e.message) || '').replace(/\s+/g, ' ').trim().slice(0, 600) || '(no message)';
+
 function connectionRefusalText(plan) {
   // Sent on behalf of the connection owner (round-2 review F4): the refusal is NOT "do it as them by hand", since the
   // write already went out under their name and was still refused.
@@ -2957,7 +2960,9 @@ async function applyComponent(plan, deps, { id, file, fs }) {
       finishWrite();
     }
   } catch (e) {
-    if (!wrote && isConnectionRefusal(e)) row.outcome = `refused: ${connectionRefusalText(view)}`;
+    // Power Automate's own words are kept after ours (act-as live test 11/23/26, F-1569): its message names the caller
+    // object id it judged, the one fact that says whether an on-behalf-of write reached its check as the account.
+    if (!wrote && isConnectionRefusal(e)) row.outcome = `refused: ${connectionRefusalText(view)} Power Automate said: ${paWords(e)}`;
     else if (!wrote && e && e.retryRefused) {
       // R-1309: the retry without the version check was refused too. Never "the component changed" (it had not).
       const subAfter = subscriptionStamp(dv, rid);

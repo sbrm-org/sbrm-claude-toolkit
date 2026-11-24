@@ -16,7 +16,7 @@
 // templates and any row already there before the prompt and after the approval, makes one row per button and place
 // (or flips `hidden` on a row an earlier job made), links the rules, and reads each row back. Undo sets `hidden`
 // back to false; a row is never deleted. What the read-back proves is the ROW, not the screen: the first live use
-// decides whether the app also needs publishing, so the outcome says to look.
+// showed no publish is needed (HGS 11/23/26), though a page that had the list open kept the old bar for minutes.
 
 const { whoAmI, accessFor, PlanRefused } = require('./resolve');
 const { resolveAccess } = require('./access');
@@ -238,14 +238,14 @@ function commandSummary(plan) {
       // A hide that stopped part-way may have linked only some of the button's rules (review F28).
       ...(short.length ? [`  ${andList(short.map(stepText))}: the row carries fewer rules than the built-in button has, so it may show where it normally would not.`] : []),
       ...((plan.already_showing || []).length ? [`  Already showing, left as they are: ${andList(plan.already_showing)}.`] : []),
-      '  After this is applied, open the app and look: if the button is still missing, publish the app in the maker portal.', '',
+      '  After this is applied, open the app and look; a page that already had the list open can show the old bar for a few minutes.', '',
       '  Not undone by revert: hide it again with a new job.');
   } else {
     out.push(`  The button disappears for EVERYONE who uses '${plan.model_app.name}', admins included. A security role does not bring it back.`,
       `  Other apps that show ${plan.table.name} keep the button; this change is for this app only.`,
       ...((plan.already_hidden || []).length ? [`  Already hidden, left as they are: ${andList(plan.already_hidden)}.`] : []),
       ...(plan.steps.some((s) => s.action === 'create') ? [`  New command rows go in solution ${plan.solution.name}.`] : []),
-      '  After this is applied, open the app and look: if the button still shows, publish the app in the maker portal.', '',
+      '  After this is applied, open the app and look; no publish is needed, but a page that already had the list open can show the old bar for a few minutes.', '',
       '  Can be undone with revert (shows the button again; the rows stay).');
   }
   out.push('', `Reason given: ${plan.reason}`);
@@ -415,7 +415,7 @@ function applyHide(plan, dv, me, acc, { id, file, fs, confirm, now }) {
       stopped = stepText(s);
     }
     row.changes = [{ label: 'Command bar', old_text: `${stepText(s)}: shown`, new_text: row.outcome === 'written' ? 'hidden' : row.outcome }];
-    if (row.outcome === 'written') row.notes.push('The row reads hidden. Open the app and look: if the button still shows, publish the app in the maker portal.');
+    if (row.outcome === 'written') row.notes.push('The row reads hidden. Open the app and look; no publish is needed, but a page that already had the list open can show the old bar for a few minutes.');
   }
   fs.rmSync(file, { force: true });
   const ok = rows.filter((r) => r.outcome === 'written').length;

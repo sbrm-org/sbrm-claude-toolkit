@@ -245,8 +245,9 @@ on its own. Never ask the person to run or paste a command.
   its "Gives access" line says who gains it.
 - **Hiding a built-in button** (`kind: "command"`, admin; JOBS.md): Deactivate, Activate or New, for one of SBRM's own
   tables in one model-driven app, in an SBRM solution. Tell the person it goes for EVERYONE in that app, admins
-  included, and a role does not bring it back. After the apply, ask them to open the app and look: if the button still
-  shows, the app needs publishing in the maker portal. Undo shows it again (the rows stay).
+  included, and a role does not bring it back. After the apply, ask them to open the app and look. No publish is
+  needed, but a page that already had the list open can show the old bar for a few minutes: look again before calling
+  it a failure. Undo shows it again (the rows stay).
 - **Writing a flow as its connections' owner** (`"act_as": "connection_owner"` on a flow create, update, on or off;
   admin; TEST SLICE, Donor App Dev only until Dylan says otherwise): Power Automate lets only the owner of a flow's
   connections save or turn on such a flow. The write goes out on behalf of that account only when it is on the app's
